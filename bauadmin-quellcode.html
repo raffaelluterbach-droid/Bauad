@@ -1,0 +1,1853 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BauAdmin v4 – Vorschau</title>
+  <!-- Tailwind (Play CDN) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- React + ReactDOM (UMD) -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <!-- Babel (für JSX im Browser) -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style> html, body, #root { height: 100%; } body { margin: 0; } </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useReducer, useRef } = React;
+
+/* =========================================================================
+   BAUADMIN v4 — Bauadministration nach BKP (Schweizer Baukostenplan)
+   ========================================================================= */
+
+// ---------- Helpers ----------
+const uid = () => Math.random().toString(36).slice(2, 10);
+const chf = (n) => (Number(n) || 0).toLocaleString("de-CH", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+const today = () => new Date().toISOString().slice(0, 10);
+const bkpGroup = (bkp) => (String(bkp).trim()[0] || "?");
+const BKP_GROUPS = { "0": "Grundstück", "1": "Vorbereitungsarbeiten", "2": "Gebäude", "3": "Betriebseinrichtungen", "4": "Umgebung", "5": "Baunebenkosten", "6": "—", "7": "—", "8": "—", "9": "Ausstattung", "?": "Ohne BKP" };
+const METRICS = ["kv", "mutSumme", "kvRevidiert", "vertragNetto", "ntGen", "ntPend", "teuerung", "beauftragt", "rapportSumme", "regieUeber", "erwartung", "prognose", "bezahlt", "fakturiert"];
+const RTYP = { akonto: "Akonto", rechnung: "Rechnung", regie: "Regie" };
+
+function parseBetrag(raw) {
+  if (typeof raw === "number") return raw;
+  if (!raw) return 0;
+  let s = String(raw).replace(/CHF/gi, "").replace(/Fr\.?/gi, "").trim().replace(/'/g, "").replace(/\s/g, "");
+  if (s.includes(".") && s.includes(",")) s = s.replace(/\./g, "").replace(",", ".");
+  else if (s.includes(",")) s = s.replace(",", ".");
+  const n = parseFloat(s);
+  return isNaN(n) ? 0 : n;
+}
+function splitDelimited(line, delim) {
+  const cells = []; let cur = "", inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') inQ = !inQ;
+    else if (ch === delim && !inQ) { cells.push(cur); cur = ""; }
+    else cur += ch;
+  }
+  cells.push(cur);
+  return cells.map((c) => c.trim().replace(/^"|"$/g, ""));
+}
+function parseKvText(text) {
+  const lines = text.trim().split(/\r?\n/).filter((l) => l.trim());
+  if (!lines.length) return [];
+  const delim = lines[0].includes("\t") ? "\t" : lines[0].includes(";") ? ";" : ",";
+  const first = splitDelimited(lines[0], delim).join(" ").toLowerCase();
+  const hasHeader = /bkp|bezeichn|betrag|kv|text/.test(first);
+  return (hasHeader ? lines.slice(1) : lines).map((line) => {
+    const c = splitDelimited(line, delim);
+    return { bkp: (c[0] || "").trim(), bezeichnung: (c[1] || "").trim(), kv: parseBetrag(c[2]) };
+  }).filter((r) => r.bkp || r.bezeichnung);
+}
+function nestImported(rows, projektId) {
+  const withIds = rows.map((r) => ({ id: uid(), projektId, bkp: r.bkp, bezeichnung: r.bezeichnung, kv: r.kv, parentId: null }));
+  const byBkp = {}; withIds.forEach((p) => { byBkp[String(p.bkp).trim()] = p; });
+  withIds.forEach((p) => {
+    const bkp = String(p.bkp).trim(); let best = null;
+    Object.keys(byBkp).forEach((k) => { if (k !== bkp && bkp.startsWith(k) && /[.\- ]/.test(bkp.charAt(k.length))) { if (!best || k.length > best.length) best = k; } });
+    if (best) p.parentId = byBkp[best].id;
+  });
+  return withIds;
+}
+
+// ---------- Konditionen ----------
+function konditionenNetto(brutto, k, includeFixed) {
+  let x = (Number(brutto) || 0) * (1 - (Number(k.rabattPct) || 0) / 100);
+  if (includeFixed) x -= (Number(k.pauschalabzug) || 0);
+  x *= (1 - (Number(k.skontoPct) || 0) / 100);
+  x *= (1 - (Number(k.bauabzuegePct) || 0) / 100);
+  if (includeFixed) x += (Number(k.rundung) || 0);
+  return x;
+}
+const hatKonditionen = (v) => ["rabattPct", "pauschalabzug", "skontoPct", "bauabzuegePct", "rundung"].some((k) => Number(v[k]));
+const konditionenText = (v) => [Number(v.rabattPct) ? `Rabatt ${v.rabattPct}%` : "", Number(v.pauschalabzug) ? `Pauschal ${chf(v.pauschalabzug)}` : "", Number(v.skontoPct) ? `Skonto ${v.skontoPct}%` : "", Number(v.bauabzuegePct) ? `Bauabz. ${v.bauabzuegePct}%` : "", Number(v.rundung) ? `Rund. ${chf(v.rundung)}` : ""].filter(Boolean).join(" · ") || "—";
+const rapportBetrag = (r) => (Number(r.stunden) || 0) * (Number(r.ansatz) || 0) + (Number(r.material) || 0);
+const rapportNetto = (r, v) => konditionenNetto(rapportBetrag(r), v || {}, false);
+
+// ---------- SIA 451 / CRBX (NPK-Leistungsverzeichnis) ----------
+async function inflateRaw(arrayBuffer) {
+  const ds = new DecompressionStream("deflate-raw");
+  const stream = new Blob([arrayBuffer]).stream().pipeThrough(ds);
+  return await new Response(stream).arrayBuffer();
+}
+async function unzipCrbx(arrayBuffer) {
+  const dv = new DataView(arrayBuffer);
+  if (dv.getUint32(0, true) !== 0x04034b50) {
+    return new TextDecoder("utf-8").decode(arrayBuffer);
+  }
+  const method = dv.getUint16(8, true);
+  let compSize = dv.getUint32(18, true);
+  const nameLen = dv.getUint16(26, true), extraLen = dv.getUint16(28, true);
+  if (!compSize) {
+    for (let i = arrayBuffer.byteLength - 22; i >= 0; i--) {
+      if (dv.getUint32(i, true) === 0x06054b50) { const cdOff = dv.getUint32(i + 16, true); compSize = dv.getUint32(cdOff + 20, true); break; }
+    }
+  }
+  const dataStart = 30 + nameLen + extraLen;
+  const comp = arrayBuffer.slice(dataStart, dataStart + (compSize || arrayBuffer.byteLength - dataStart));
+  const out = method === 0 ? comp : await inflateRaw(comp);
+  return new TextDecoder("utf-8").decode(out);
+}
+const SIA_COND = { "101": ["rabattPct", "%"], "302": ["skontoPct", "%"], "503": ["bauabzuegePct", "%"], "504": ["pauschalabzug", "P"], "205": ["mwst", "%"] };
+function parseSia451(text) {
+  const lines = text.split(/\r?\n/).filter((l) => l.length);
+  const header = {}, conditions = {}, records = [], bedingungen = [];
+  for (const l of lines) {
+    const rt = l.slice(0, 4);
+    if (rt[0] === "A") {
+      const bkpM = l.match(/BKP[ .\d]+\D.{0,36}/);
+      if (bkpM && !header.titel) header.titel = bkpM[0].replace(/\s+$/, "").trim();
+      const pj = l.match(/\d{5,6}\s+([A-Za-zÄÖÜäöü][^\d]{3,40})/);
+      if (pj && !header.projekt) header.projekt = pj[1].trim();
+    } else if (rt.startsWith("C00") && rt !== "C000") {
+      const art = l.slice(4, 7);
+      const kind = l.slice(43, 44);
+      let digits, sign;
+      if (kind === "P") { const f = l.slice(61, 74); sign = f.includes("-") ? -1 : 1; digits = f.replace(/[^0-9]/g, ""); }
+      else { const f = l.slice(74, 81); sign = f.includes("-") ? -1 : 1; digits = f.replace(/[^0-9]/g, ""); }
+      const val = sign * (parseInt(digits || "0", 10) / 100);
+      const map = SIA_COND[art];
+      if (map) conditions[map[0]] = Math.abs(val);
+      if (map && map[0] === "mwst") conditions.mwst = Math.abs(val);
+    } else if (rt[0] === "G") {
+      const catalog = rt.slice(1).trim();
+      const code = l.slice(5, 17).replace(/\s/g, "");
+      const level = l.slice(41, 42).trim();
+      const unit = l.slice(50, 60).trim();
+      const txt = l.slice(90).trim();
+      let menge = null, preis = null;
+      if (level === "6" && l.includes("GP")) {
+        const qd = l.slice(45, 58).replace(/[^0-9]/g, "");
+        if (qd) menge = parseInt(qd, 10) / 1000;
+        const pd = l.slice(62, 74).replace(/[^0-9]/g, "");
+        if (pd && /[1-9]/.test(pd)) preis = parseInt(pd, 10) / 100;
+      }
+      records.push({ catalog, code, level, unit, txt });
+      if (catalog === "102" && txt && (level === "2" || level === "3")) bedingungen.push(txt);
+      if (menge !== null) records[records.length - 1].menge = menge;
+      if (preis !== null) records[records.length - 1].preis = preis;
+    }
+  }
+  const positionen = [];
+  for (let i = 0; i < records.length; i++) {
+    const r = records[i];
+    if (r.level !== "5") continue;
+    const gp = records[i + 1] && records[i + 1].level === "6" ? records[i + 1] : null;
+    const p6 = r.code.slice(0, 6);
+    let eigen = "";
+    for (let j = i - 1; j >= 0 && i - j < 8; j--) { if (records[j].code === r.code && records[j].level === "2" && records[j].txt) { eigen = records[j].txt; break; } }
+    const lang = [];
+    for (let j = 0; j < i; j++) { const rj = records[j]; if (rj.catalog === r.catalog && rj.level === "3" && rj.txt && rj.code.slice(0, 6) === p6) lang.push(rj.txt); }
+    positionen.push({ id: uid(), catalog: r.catalog, code: r.code, npk: r.code.slice(0, 3) + "." + r.code.slice(3), bezeichnung: eigen, langtext: [...new Set(lang)].filter((t) => t !== eigen), einheit: r.unit || (gp && gp.unit) || "", menge: gp && gp.menge ? gp.menge : 0, preis: gp && gp.preis ? gp.preis : 0 });
+  }
+  return { header, conditions, positionen, bedingungen };
+}
+function buildSia451(titel, positionen, preise) {
+  const pad = (s, n) => (String(s) + " ".repeat(n)).slice(0, n);
+  const num = (v, len) => { const s = Math.round(Math.abs(v || 0)).toString(); return (v < 0 ? "-" : "+") + "0".repeat(Math.max(0, len - s.length)) + s; };
+  const out = [];
+  out.push("A160425CRBX" + pad("", 20) + pad(titel, 80));
+  let n = 1;
+  positionen.forEach((p) => {
+    const cat = p.catalog || "661";
+    const codePad = pad(p.code, 12);
+    out.push("G" + cat + " " + codePad + pad("", 24) + "2" + pad("", 48) + (p.bezeichnung || ""));
+    out.push("G" + cat + " " + codePad + pad("", 24) + "5" + pad("", 9) + pad(p.einheit, 9));
+    const menge = num((p.menge || 0) * 1000, 13);
+    const ep = preise && preise[p.code] ? num(preise[p.code] * 100, 12) : "";
+    out.push("G" + cat + " " + codePad + "GP" + pad("", 22) + "6 A" + menge + "  " + (ep ? "A" + ep : ""));
+    n += 3;
+  });
+  out.push("Z160425" + pad("", 38) + num(n, 13));
+  return out.join("\r\n");
+}
+const CRC_TABLE = (() => { const t = []; for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+function crc32(bytes) { let c = 0xffffffff; for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; }
+function makeCrbxBlob(text) {
+  const enc = new TextEncoder(); const data = enc.encode(text); const name = enc.encode("SIAFILE.e1s");
+  const crc = crc32(data); const sz = data.length;
+  const u16 = (v) => [v & 255, (v >> 8) & 255]; const u32 = (v) => [v & 255, (v >> 8) & 255, (v >> 16) & 255, (v >> 24) & 255];
+  const local = [...u32(0x04034b50), ...u16(20), ...u16(0), ...u16(0), ...u16(0), ...u16(0), ...u32(crc), ...u32(sz), ...u32(sz), ...u16(name.length), ...u16(0), ...name, ...data];
+  const cdir = [...u32(0x02014b50), ...u16(20), ...u16(20), ...u16(0), ...u16(0), ...u16(0), ...u16(0), ...u32(crc), ...u32(sz), ...u32(sz), ...u16(name.length), ...u16(0), ...u16(0), ...u16(0), ...u16(0), ...u32(0), ...u32(0), ...name];
+  const cdOff = local.length;
+  const eocd = [...u32(0x06054b50), ...u16(0), ...u16(0), ...u16(1), ...u16(1), ...u32(cdir.length), ...u32(cdOff), ...u16(0)];
+  return new Blob([new Uint8Array([...local, ...cdir, ...eocd])], { type: "application/octet-stream" });
+}
+function download(blob, filename) { const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = filename; a.click(); URL.revokeObjectURL(url); }
+
+// ---------- Offerte als CSV (Unternehmer-Preise) ----------
+// Vorlage zum Versand an Unternehmer; sie tragen die Einheitspreise ein und senden zurück.
+function buildOfferteCsv(titel, positionen, preise) {
+  const esc = (s) => '"' + String(s == null ? "" : s).replace(/"/g, '""') + '"';
+  const head = ["NPK", "Code", "Bezeichnung", "Einheit", "Menge", "Einheitspreis"];
+  const lines = [esc(titel || "Ausschreibung"), head.join(";")];
+  (positionen || []).forEach((p) => lines.push([p.npk, p.code, esc(p.bezeichnung), p.einheit, p.menge, preise && preise[p.code] != null && preise[p.code] !== "" ? preise[p.code] : ""].join(";")));
+  return "﻿" + lines.join("\r\n");
+}
+// Zurückgesendete Offerte parsen: ordnet Einheitspreise per Code/NPK den Positionen zu.
+function parseOfferteCsv(text, positionen) {
+  const lines = text.replace(/^﻿/, "").trim().split(/\r?\n/).filter((l) => l.trim());
+  if (!lines.length) return { count: 0, preise: {} };
+  const norm = (s) => String(s || "").replace(/[^0-9]/g, "");
+  const byCode = {}; (positionen || []).forEach((p) => { byCode[norm(p.code)] = p.code; });
+  const detect = (line) => { const delim = line.includes("\t") ? "\t" : line.includes(";") ? ";" : ","; return { delim, cells: splitDelimited(line, delim) }; };
+  let codeCol = -1, priceCol = -1, start = 0;
+  for (let i = 0; i < Math.min(lines.length, 3); i++) {
+    const low = detect(lines[i]).cells.map((c) => c.toLowerCase());
+    if (low.some((h) => /code|npk/.test(h)) && low.some((h) => /preis|ep/.test(h))) {
+      low.forEach((h, idx) => { if (codeCol < 0 && /code|npk/.test(h)) codeCol = idx; if (/preis|ep/.test(h)) priceCol = idx; });
+      start = i + 1; break;
+    }
+  }
+  const preise = {}; let count = 0;
+  for (let i = start; i < lines.length; i++) {
+    const c = detect(lines[i]).cells;
+    const code = byCode[norm(codeCol >= 0 ? c[codeCol] : c[0])]; if (!code) continue;
+    let price = 0;
+    if (priceCol >= 0) price = parseBetrag(c[priceCol]);
+    else { for (let k = c.length - 1; k >= 1; k--) { if (c[k] !== "" && parseBetrag(c[k])) { price = parseBetrag(c[k]); break; } } }
+    if (price) { preise[code] = price; count++; }
+  }
+  return { count, preise };
+}
+
+// ---------- Persistence ----------
+const DB_KEY = "bauadmin:db:v5";
+async function loadDB() {
+  try {
+    const r = localStorage.getItem(DB_KEY); if (r) return JSON.parse(r);
+    const old = localStorage.getItem("bauadmin:db:v4"); if (old) return JSON.parse(old);
+  } catch (e) {}
+  return null;
+}
+async function saveDB(db) {
+  try { localStorage.setItem(DB_KEY, JSON.stringify(db)); } catch (e) {}
+}
+function normalize(db) {
+  db.projekte = db.projekte.map((p) => ({ mwstSatz: 8.1, teuerungsReserve: 0, strasse: "", plzOrt: "", bauherrAdresse: "", bauleitung: "", gewichtPreis: 70, gewichtReferenzen: 20, gewichtLehrlinge: 10, ...p }));
+  db.positionen = (db.positionen || []).map((p) => ({ parentId: null, ...p }));
+  ["mutationen", "umbuchungen", "vertraege", "nachtraege", "rechnungen", "angebote", "rapporte", "erwartungen"].forEach((c) => { if (!db[c]) db[c] = []; });
+  db.vertraege = db.vertraege.map((v) => ({ rabattPct: 0, pauschalabzug: 0, skontoPct: 0, bauabzuegePct: 0, rundung: 0, regieBudget: 0, teuerung: 0, ...v }));
+  db.rechnungen = db.rechnungen.map((r) => ({ typ: r.typ || "rechnung", ...r }));
+  db.positionen.forEach((p) => {
+    if (p.erwartungManuell !== undefined && p.erwartungManuell !== null && p.erwartungManuell !== "") {
+      db.erwartungen.push({ id: uid(), projektId: p.projektId, positionId: p.id, bezeichnung: "Übernommen (alt)", betrag: Number(p.erwartungManuell) || 0, datum: today() });
+      delete p.erwartungManuell;
+    }
+  });
+  db.angebote = db.angebote.map((a) => {
+    if (a.leistungen) {
+      const bieter = (a.bieter || []).map((b) => ({
+        name: b.name, bemerkung: b.bemerkung || "",
+        brutto: b.brutto !== undefined ? b.brutto : (a.leistungen || []).reduce((s, l) => s + (parseBetrag(b.preise?.[l.pos]) || 0) * (Number(l.menge) || 0), 0),
+        rabattPct: b.rabattPct || 0, pauschalabzug: b.pauschalabzug || 0, skontoPct: b.skontoPct || 0, bauabzuegePct: b.bauabzuegePct || 0, rundung: b.rundung || 0,
+        referenzPunkte: b.referenzPunkte !== undefined ? b.referenzPunkte : (Number(b.referenzNote) || 0) * 20,
+        lehrlingPunkte: b.lehrlingPunkte !== undefined ? b.lehrlingPunkte : (Number(b.lehrlingNote) || 0) * 20,
+      }));
+      const { leistungen, ...rest } = a;
+      return { ...rest, bieter };
+    }
+    a.bieter = (a.bieter || []).map((b) => ({ bemerkung: "", rabattPct: 0, pauschalabzug: 0, skontoPct: 0, bauabzuegePct: 0, rundung: 0, referenzPunkte: 0, lehrlingPunkte: 0, preise: {}, ...b }));
+    return a;
+  });
+  db.angebote = db.angebote.map((a) => ({ positionen: [], bedingungen: "", modus: (a.positionen && a.positionen.length) ? "lv" : "pauschal", ...a, bieter: (a.bieter || []).map((b) => ({ preise: {}, ...b })) }));
+  return db;
+}
+
+function reducer(db, a) {
+  switch (a.type) {
+    case "load": return a.db;
+    case "setAktiv": return { ...db, aktiv: a.id };
+    case "add": return { ...db, [a.coll]: [...db[a.coll], a.item] };
+    case "addMany": return { ...db, [a.coll]: [...db[a.coll], ...a.items] };
+    case "update": return { ...db, [a.coll]: db[a.coll].map((x) => (x.id === a.id ? { ...x, ...a.patch } : x)) };
+    case "remove": {
+      if (a.coll === "positionen") {
+        const descend = new Set([a.id]); let added = true;
+        while (added) { added = false; db.positionen.forEach((p) => { if (p.parentId && descend.has(p.parentId) && !descend.has(p.id)) { descend.add(p.id); added = true; } }); }
+        return { ...db, positionen: db.positionen.filter((x) => !descend.has(x.id)) };
+      }
+      return { ...db, [a.coll]: db[a.coll].filter((x) => x.id !== a.id) };
+    }
+    case "seed": return a.db;
+    default: return db;
+  }
+}
+
+// ---------- Cost engine v4 ----------
+function eigenPosition(pos, d) {
+  const mutSumme = d.mutationen.filter((m) => m.positionId === pos.id).reduce((s, m) => s + (Number(m.betrag) || 0), 0);
+  const umbIn = d.umbuchungen.filter((u) => u.nachPositionId === pos.id).reduce((s, u) => s + (Number(u.betrag) || 0), 0);
+  const umbOut = d.umbuchungen.filter((u) => u.vonPositionId === pos.id).reduce((s, u) => s + (Number(u.betrag) || 0), 0);
+  const kvRevidiert = (Number(pos.kv) || 0) + mutSumme + umbIn - umbOut;
+
+  const vts = d.vertraege.filter((v) => v.positionId === pos.id);
+  const vertragNetto = vts.reduce((s, v) => s + konditionenNetto(v.betrag, v, true), 0);
+  const teuerung = vts.reduce((s, v) => s + (Number(v.teuerung) || 0), 0);
+  const vIds = vts.map((v) => v.id);
+  let ntGen = 0, ntPend = 0;
+  d.nachtraege.forEach((n) => {
+    const v = vts.find((x) => x.id === n.vertragId); if (!v) return;
+    const net = konditionenNetto(n.betrag, v, false);
+    if (n.status === "genehmigt") ntGen += net; else if (n.status === "pendent") ntPend += net;
+  });
+  const beauftragt = vertragNetto + ntGen + teuerung;
+
+  let regieUeber = 0, rapportSumme = 0;
+  vts.forEach((v) => {
+    const rs = d.rapporte.filter((r) => r.vertragId === v.id).reduce((s, r) => s + rapportNetto(r, v), 0);
+    rapportSumme += rs; regieUeber += Math.max(0, rs - (Number(v.regieBudget) || 0));
+  });
+
+  const erwZeilen = d.erwartungen.filter((e) => e.positionId === pos.id).reduce((s, e) => s + (Number(e.betrag) || 0), 0);
+  const erwartung = erwZeilen + regieUeber;
+
+  const rechs = d.rechnungen.filter((r) => vIds.includes(r.vertragId) || r.positionId === pos.id);
+  const bezahlt = rechs.filter((r) => r.status === "bezahlt").reduce((s, r) => s + (Number(r.betrag) || 0), 0);
+  const fakturiert = rechs.reduce((s, r) => s + (Number(r.betrag) || 0), 0);
+
+  const basis = beauftragt > 0 ? beauftragt + ntPend : kvRevidiert;
+  const prognose = Math.max(basis + erwartung, fakturiert);
+  return { kv: Number(pos.kv) || 0, mutSumme: mutSumme + umbIn - umbOut, kvRevidiert, vertragNetto, ntGen, ntPend, teuerung, beauftragt, rapportSumme, regieUeber, erwartung, prognose, bezahlt, fakturiert };
+}
+const prognoseBasis = (e) => (e.beauftragt > 0 ? e.beauftragt + e.ntPend : e.kvRevidiert);
+
+function orderedPositions(positionen) {
+  const byParent = {}; positionen.forEach((p) => { const k = p.parentId || "__root"; (byParent[k] = byParent[k] || []).push(p); });
+  const sortFn = (a, b) => String(a.bkp).localeCompare(String(b.bkp), "de", { numeric: true });
+  const out = []; const seen = new Set();
+  function walk(key, depth) { (byParent[key] || []).sort(sortFn).forEach((p) => { if (seen.has(p.id)) return; seen.add(p.id); out.push({ ...p, depth }); walk(p.id, depth + 1); }); }
+  walk("__root", 0);
+  positionen.forEach((p) => { if (!seen.has(p.id)) { seen.add(p.id); out.push({ ...p, depth: 0 }); } });
+  return out;
+}
+
+function useKostenStand(d, projekt) {
+  return useMemo(() => {
+    const eig = {}; d.positionen.forEach((p) => { eig[p.id] = eigenPosition(p, d); });
+    const childrenOf = {}; d.positionen.forEach((p) => { const k = p.parentId || "__root"; (childrenOf[k] = childrenOf[k] || []).push(p.id); });
+    const roll = {}; const visiting = new Set();
+    function computeRoll(id) {
+      if (roll[id] || visiting.has(id)) return; visiting.add(id);
+      const r = { ...eig[id] };
+      (childrenOf[id] || []).forEach((cid) => { computeRoll(cid); METRICS.forEach((k) => r[k] += roll[cid][k]); });
+      r.abwKv = r.prognose - r.kv; r.offen = r.prognose - r.bezahlt;
+      roll[id] = r; visiting.delete(id);
+    }
+    d.positionen.forEach((p) => computeRoll(p.id));
+    const ordered = orderedPositions(d.positionen).map((p) => ({ pos: p, depth: p.depth, eigen: eig[p.id], roll: roll[p.id], hasChildren: (childrenOf[p.id] || []).length > 0 }));
+    const total = {}; METRICS.forEach((k) => total[k] = d.positionen.reduce((s, p) => s + eig[p.id][k], 0));
+    total.abwKv = total.prognose - total.kv; total.offen = total.prognose - total.bezahlt;
+    const groups = {};
+    d.positionen.forEach((p) => {
+      const g = bkpGroup(p.bkp);
+      if (!groups[g]) { groups[g] = { g, name: BKP_GROUPS[g] || "—" }; METRICS.forEach((k) => groups[g][k] = 0); }
+      METRICS.forEach((k) => groups[g][k] += eig[p.id][k]);
+    });
+    Object.values(groups).forEach((g) => { g.abwKv = g.prognose - g.kv; });
+    const satz = Number(projekt?.mwstSatz) || 0;
+    const resSatz = Number(projekt?.teuerungsReserve) || 0;
+    const mwst = total.prognose * satz / 100;
+    const reserve = total.kvRevidiert * resSatz / 100;
+    return { ordered, total, groups: Object.values(groups).sort((a, b) => a.g.localeCompare(b.g)), satz, resSatz, mwst, brutto: total.prognose + mwst, reserve };
+  }, [d, projekt]);
+}
+
+function posSelectOptions(positionen) {
+  return orderedPositions(positionen).map((p) => ({ id: p.id, depth: p.depth, label: "  ".repeat(p.depth) + (p.depth ? "↳ " : "") + p.bkp + " " + p.bezeichnung }));
+}
+function descendantIds(positionen, id) {
+  const set = new Set(); let added = true;
+  while (added) { added = false; positionen.forEach((p) => { if ((p.parentId === id || set.has(p.parentId)) && !set.has(p.id)) { set.add(p.id); added = true; } }); }
+  return set;
+}
+
+// ---------- UI atoms ----------
+const card = "bg-white border border-slate-200 rounded-lg";
+const btn = "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors";
+const btnPrimary = `${btn} bg-blue-700 text-white hover:bg-blue-800`;
+const btnGhost = `${btn} text-slate-700 hover:bg-slate-100 border border-slate-200`;
+const inputCls = "w-full px-2.5 py-1.5 text-sm border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500";
+const labelCls = "block text-xs font-medium text-slate-500 mb-1";
+
+function Num({ v }) { return <span className="tabular-nums">{chf(v)}</span>; }
+function Abw({ v }) { const cls = v > 0 ? "text-red-600" : v < 0 ? "text-emerald-600" : "text-slate-400"; return <span className={`tabular-nums font-medium ${cls}`}>{v > 0 ? "+" : ""}{chf(v)}</span>; }
+function Field({ label, children }) { return <div><label className={labelCls}>{label}</label>{children}</div>; }
+function Stat({ label, value, sub, accent }) {
+  return (<div className={`${card} p-4`}><div className="text-xs uppercase tracking-wide text-slate-500">{label}</div><div className={`mt-1 text-2xl font-semibold tabular-nums ${accent || "text-slate-900"}`}>{value}</div>{sub && <div className="text-xs text-slate-400 mt-0.5">{sub}</div>}</div>);
+}
+function Ampel({ kv, prognose }) {
+  const max = Math.max(kv, prognose, 1); const kvPct = (kv / max) * 100; const pPct = (prognose / max) * 100; const over = prognose > kv;
+  return (<div className="relative h-2.5 rounded-full bg-slate-100 overflow-hidden"><div className={`absolute inset-y-0 left-0 ${over ? "bg-red-500" : "bg-emerald-500"}`} style={{ width: pPct + "%" }} /><div className="absolute inset-y-0 w-0.5 bg-slate-800" style={{ left: kvPct + "%" }} /></div>);
+}
+function Modal({ title, onClose, children, wide }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-900/40 p-4 overflow-y-auto" onClick={onClose}>
+      <div className={`${card} shadow-xl w-full ${wide ? "max-w-4xl" : "max-w-lg"} mt-10`} onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-200"><h3 className="font-semibold text-slate-900">{title}</h3><button className="text-slate-400 hover:text-slate-700 text-xl leading-none" onClick={onClose}>×</button></div>
+        <div className="p-5">{children}</div>
+      </div>
+    </div>
+  );
+}
+function Empty({ text }) { return <div className="text-center py-12 text-slate-400 text-sm">{text}</div>; }
+function EditCell({ value, display, onSave }) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState("");
+  if (editing) return (
+    <input autoFocus className="w-24 text-xs text-right border border-blue-500 rounded px-1 py-0.5 tabular-nums bg-white"
+      value={val} onChange={(e) => setVal(e.target.value)}
+      onBlur={() => { onSave(parseBetrag(val)); setEditing(false); }}
+      onKeyDown={(e) => { if (e.key === "Enter") { onSave(parseBetrag(val)); setEditing(false); } if (e.key === "Escape") setEditing(false); }} />
+  );
+  return <span className="cursor-pointer hover:bg-blue-50 rounded px-0.5 -mx-0.5" title="Doppelklick zum Bearbeiten" onDoubleClick={() => { setVal(String(Math.round(Number(value) || 0))); setEditing(true); }}>{display}</span>;
+}
+
+// =========================================================================
+//  MAIN
+// =========================================================================
+function App() {
+  const [db, dispatch] = useReducer(reducer, null, demoDB);
+  const [loaded, setLoaded] = useState(false);
+  const [view, setView] = useState("dashboard");
+  const firstSave = useRef(true);
+
+  useEffect(() => {
+    loadDB().then((stored) => {
+      if (stored && stored.projekte && stored.projekte.length && stored.positionen && stored.positionen.length) dispatch({ type: "load", db: normalize(stored) });
+      setLoaded(true);
+    });
+  }, []);
+  useEffect(() => { if (!loaded) return; if (firstSave.current) { firstSave.current = false; return; } saveDB(db); }, [db, loaded]);
+
+  const p = db.aktiv;
+  const d = useMemo(() => {
+    const f = (coll) => (db[coll] || []).filter((x) => x.projektId === p);
+    return { positionen: f("positionen"), mutationen: f("mutationen"), umbuchungen: f("umbuchungen"), vertraege: f("vertraege"), nachtraege: f("nachtraege"), rechnungen: f("rechnungen"), angebote: f("angebote"), rapporte: f("rapporte"), erwartungen: f("erwartungen") };
+  }, [db, p]);
+  const projekt = db.projekte.find((x) => x.id === db.aktiv) || db.projekte[0];
+  const ks = useKostenStand(d, projekt);
+
+  const nav = [
+    ["projekt", "Projekt"], ["dashboard", "Kostenübersicht"], ["kv", "KV / BKP-Positionen"],
+    ["mutationen", "Mutationen"], ["umbuchungen", "Umbuchungen"], ["vertraege", "Verträge & Nachträge"],
+    ["rechnungen", "Rechnungen"], ["lv", "Leistungsverzeichnisse"], ["angebote", "Angebote & Vergleich"], ["rapporte", "Rapporte"],
+    ["erwartungen", "Erwartungen"], ["abrechnung", "Bauabrechnung"],
+  ];
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-900" style={{ fontFamily: "ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" }}>
+      <header className="bg-slate-900 text-white print:hidden">
+        <div className="max-w-[1480px] mx-auto px-5 py-3 flex items-center justify-between flex-wrap gap-3">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded bg-blue-600 flex items-center justify-center font-bold text-sm">BA</div>
+            <div><div className="font-semibold leading-tight">BauAdmin</div><div className="text-[11px] text-slate-400 leading-tight">Kostenkontrolle nach BKP</div></div>
+          </div>
+          <div className="flex items-center gap-2">
+            <select className="bg-slate-800 border border-slate-700 rounded-md px-3 py-1.5 text-sm" value={db.aktiv} onChange={(e) => dispatch({ type: "setAktiv", id: e.target.value })}>
+              {db.projekte.map((pr) => <option key={pr.id} value={pr.id}>{pr.name}</option>)}
+            </select>
+            <ProjektNeu dispatch={dispatch} setView={setView} />
+          </div>
+        </div>
+      </header>
+
+      <div className="max-w-[1480px] mx-auto px-5 py-5 grid grid-cols-1 lg:grid-cols-[210px_1fr] gap-5">
+        <nav className="lg:sticky lg:top-5 self-start print:hidden">
+          <div className="flex lg:flex-col gap-1 overflow-x-auto pb-1">
+            {nav.map(([key, label]) => (
+              <button key={key} onClick={() => setView(key)} className={`text-left px-3 py-2 rounded-md text-sm whitespace-nowrap transition-colors ${view === key ? "bg-blue-700 text-white font-medium" : "text-slate-600 hover:bg-slate-200/60"}`}>{label}</button>
+            ))}
+          </div>
+        </nav>
+
+        <main className="min-w-0">
+          <div className="mb-4">
+            <h1 className="text-xl font-semibold">{nav.find((n) => n[0] === view)?.[1]}</h1>
+            <p className="text-sm text-slate-500">{projekt?.name} · {projekt?.bauherr} · {projekt?.plzOrt || projekt?.ort} · MwSt {ks.satz}%</p>
+          </div>
+          {view === "projekt" && <ProjektView projekt={projekt} dispatch={dispatch} />}
+          {view === "dashboard" && <Dashboard ks={ks} />}
+          {view === "kv" && <KvView d={d} dispatch={dispatch} projektId={db.aktiv} ks={ks} />}
+          {view === "mutationen" && <MutationenView d={d} dispatch={dispatch} projektId={db.aktiv} />}
+          {view === "umbuchungen" && <UmbuchungenView d={d} dispatch={dispatch} projektId={db.aktiv} />}
+          {view === "vertraege" && <VertraegeView d={d} dispatch={dispatch} projektId={db.aktiv} />}
+          {view === "rechnungen" && <RechnungenView d={d} dispatch={dispatch} projektId={db.aktiv} />}
+          {view === "lv" && <LeistungsverzeichnisView d={d} dispatch={dispatch} projektId={db.aktiv} projekt={projekt} />}
+          {view === "angebote" && <AngeboteView d={d} dispatch={dispatch} projektId={db.aktiv} projekt={projekt} />}
+          {view === "rapporte" && <RapporteView d={d} dispatch={dispatch} projektId={db.aktiv} />}
+          {view === "erwartungen" && <ErwartungenView d={d} dispatch={dispatch} projektId={db.aktiv} ks={ks} />}
+          {view === "abrechnung" && <AbrechnungView ks={ks} projekt={projekt} d={d} dispatch={dispatch} projektId={db.aktiv} />}
+        </main>
+      </div>
+    </div>
+  );
+}
+
+function ProjektNeu({ dispatch, setView }) {
+  const [open, setOpen] = useState(false);
+  const [f, setF] = useState({ name: "", bauherr: "", ort: "" });
+  return (
+    <>
+      <button className={`${btn} bg-slate-700 hover:bg-slate-600 text-white`} onClick={() => setOpen(true)}>+ Projekt</button>
+      {open && (
+        <Modal title="Neues Bauprojekt" onClose={() => setOpen(false)}>
+          <div className="space-y-3">
+            <Field label="Projektname"><input className={inputCls} value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Bauherrschaft"><input className={inputCls} value={f.bauherr} onChange={(e) => setF({ ...f, bauherr: e.target.value })} /></Field>
+              <Field label="Ort"><input className={inputCls} value={f.ort} onChange={(e) => setF({ ...f, ort: e.target.value })} /></Field>
+            </div>
+            <p className="text-xs text-slate-400">Adressen, MwSt und Gewichtungen anschliessend im Reiter «Projekt».</p>
+            <div className="flex justify-end gap-2 pt-1">
+              <button className={btnGhost} onClick={() => setOpen(false)}>Abbrechen</button>
+              <button className={btnPrimary} disabled={!f.name} onClick={() => { const id = uid(); dispatch({ type: "add", coll: "projekte", item: { id, ...f, plzOrt: f.ort, strasse: "", bauherrAdresse: "", bauleitung: "", mwstSatz: 8.1, teuerungsReserve: 0, gewichtPreis: 70, gewichtReferenzen: 20, gewichtLehrlinge: 10 } }); dispatch({ type: "setAktiv", id }); setOpen(false); setView("projekt"); }}>Erstellen</button>
+            </div>
+          </div>
+        </Modal>
+      )}
+    </>
+  );
+}
+
+function ProjektView({ projekt, dispatch }) {
+  const [f, setF] = useState({ ...projekt });
+  const [saved, setSaved] = useState(false);
+  useEffect(() => { setF({ ...projekt }); setSaved(false); }, [projekt?.id]);
+  const wSum = parseBetrag(f.gewichtPreis) + parseBetrag(f.gewichtReferenzen) + parseBetrag(f.gewichtLehrlinge);
+  function save() {
+    dispatch({ type: "update", coll: "projekte", id: projekt.id, patch: { ...f, mwstSatz: parseBetrag(f.mwstSatz), teuerungsReserve: parseBetrag(f.teuerungsReserve), gewichtPreis: parseBetrag(f.gewichtPreis), gewichtReferenzen: parseBetrag(f.gewichtReferenzen), gewichtLehrlinge: parseBetrag(f.gewichtLehrlinge) } });
+    setSaved(true); setTimeout(() => setSaved(false), 2000);
+  }
+  return (
+    <div className="space-y-4 max-w-2xl">
+      <div className={`${card} p-5 space-y-3`}>
+        <h2 className="font-semibold">Projektadresse</h2>
+        <Field label="Projektname"><input className={inputCls} value={f.name || ""} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Strasse / Nr."><input className={inputCls} value={f.strasse || ""} onChange={(e) => setF({ ...f, strasse: e.target.value })} placeholder="Seestrasse 12" /></Field>
+          <Field label="PLZ / Ort"><input className={inputCls} value={f.plzOrt || f.ort || ""} onChange={(e) => setF({ ...f, plzOrt: e.target.value })} placeholder="8000 Zürich" /></Field>
+        </div>
+      </div>
+      <div className={`${card} p-5 space-y-3`}>
+        <h2 className="font-semibold">Bauherrschaft & Bauleitung</h2>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Bauherr"><input className={inputCls} value={f.bauherr || ""} onChange={(e) => setF({ ...f, bauherr: e.target.value })} /></Field>
+          <Field label="Adresse Bauherr"><input className={inputCls} value={f.bauherrAdresse || ""} onChange={(e) => setF({ ...f, bauherrAdresse: e.target.value })} placeholder="Strasse, PLZ Ort" /></Field>
+        </div>
+        <Field label="Bauleitung / Architekt"><input className={inputCls} value={f.bauleitung || ""} onChange={(e) => setF({ ...f, bauleitung: e.target.value })} /></Field>
+      </div>
+      <div className={`${card} p-5 space-y-3`}>
+        <h2 className="font-semibold">Abrechnungsparameter</h2>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="MwSt-Satz % (Standard CH 8.1)"><input className={inputCls} value={f.mwstSatz} onChange={(e) => setF({ ...f, mwstSatz: e.target.value })} /></Field>
+          <Field label="Teuerungsreserve % (auf KV rev.)"><input className={inputCls} value={f.teuerungsReserve} onChange={(e) => setF({ ...f, teuerungsReserve: e.target.value })} /></Field>
+        </div>
+        <p className="text-xs text-slate-400">Alle Beträge im Tool sind netto. MwSt und Teuerungsreserve werden in der Bauabrechnung separat ausgewiesen.</p>
+      </div>
+      <div className={`${card} p-5 space-y-3`}>
+        <h2 className="font-semibold">Angebotsbewertung — Standard-Gewichtung {wSum !== 100 && <span className="text-red-600 text-sm font-normal">(Summe {wSum}% — sollte 100% sein)</span>}</h2>
+        <div className="grid grid-cols-3 gap-3">
+          <Field label="Preis %"><input className={inputCls} value={f.gewichtPreis} onChange={(e) => setF({ ...f, gewichtPreis: e.target.value })} /></Field>
+          <Field label="Referenzen %"><input className={inputCls} value={f.gewichtReferenzen} onChange={(e) => setF({ ...f, gewichtReferenzen: e.target.value })} /></Field>
+          <Field label="Lehrlingsausbildung %"><input className={inputCls} value={f.gewichtLehrlinge} onChange={(e) => setF({ ...f, gewichtLehrlinge: e.target.value })} /></Field>
+        </div>
+        <p className="text-xs text-slate-400">Gilt als Vorgabe für neue Ausschreibungen; pro Ausschreibung übersteuerbar. Punkte 1–100, Preispunkte = 100 × günstigste Nettosumme ÷ Nettosumme.</p>
+      </div>
+      <div className="flex items-center gap-3">
+        <button className={btnPrimary} onClick={save}>Speichern</button>
+        {saved && <span className="text-sm text-emerald-600">✓ gespeichert</span>}
+      </div>
+    </div>
+  );
+}
+
+function Dashboard({ ks }) {
+  const t = ks.total;
+  if (!ks.ordered.length) return <Empty text="Noch keine BKP-Positionen erfasst. Importiere zuerst den Kostenvoranschlag." />;
+  const over = ks.ordered.filter((z) => !z.hasChildren && z.roll.abwKv > 0).sort((a, b) => b.roll.abwKv - a.roll.abwKv).slice(0, 5);
+  return (
+    <div className="space-y-5">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <Stat label="KV revidiert" value={chf(t.kvRevidiert)} sub="Budget netto" />
+        <Stat label="Beauftragt" value={chf(t.beauftragt)} sub="Verträge netto + NT + Teuerung" />
+        <Stat label="Prognose" value={chf(t.prognose)} accent={t.abwKv > 0 ? "text-red-600" : "text-emerald-600"} sub={`davon Erwartung ${chf(t.erwartung)}`} />
+        <Stat label="Bezahlt" value={chf(t.bezahlt)} sub={`offen ${chf(t.offen)}`} />
+      </div>
+      <div className={`${card} p-5`}>
+        <div className="flex items-baseline justify-between mb-2"><h2 className="font-semibold">Prognose vs. Budget (KV)</h2><div>Abweichung: <Abw v={t.abwKv} /></div></div>
+        <Ampel kv={t.kv} prognose={t.prognose} />
+        <div className="flex justify-between text-xs text-slate-500 mt-1.5 tabular-nums"><span>KV-Budget: {chf(t.kv)}</span><span>Prognose: {chf(t.prognose)} · brutto {chf(ks.brutto)}</span></div>
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <div className={`${card} p-5`}>
+          <h2 className="font-semibold mb-3">Kostengruppen (BKP)</h2>
+          <table className="w-full text-sm">
+            <thead><tr className="text-slate-500 text-xs"><th className="text-left font-medium pb-2">Gruppe</th><th className="text-right font-medium pb-2">KV rev.</th><th className="text-right font-medium pb-2">Prognose</th><th className="text-right font-medium pb-2">Abw.</th></tr></thead>
+            <tbody>{ks.groups.map((g) => (<tr key={g.g} className="border-t border-slate-100"><td className="py-1.5"><span className="font-medium">{g.g}</span> <span className="text-slate-500">{g.name}</span></td><td className="text-right py-1.5"><Num v={g.kvRevidiert} /></td><td className="text-right py-1.5"><Num v={g.prognose} /></td><td className="text-right py-1.5"><Abw v={g.abwKv} /></td></tr>))}</tbody>
+          </table>
+        </div>
+        <div className={`${card} p-5`}>
+          <h2 className="font-semibold mb-3">Grösste Mehrkosten (Prognose vs. KV)</h2>
+          {over.length === 0 ? <p className="text-sm text-slate-400">Keine Position über Budget.</p> : (
+            <ul className="space-y-2">{over.map((z) => (<li key={z.pos.id} className="flex items-center justify-between text-sm"><span className="truncate pr-2"><span className="font-medium tabular-nums">{z.pos.bkp}</span> {z.pos.bezeichnung}</span><Abw v={z.roll.abwKv} /></li>))}</ul>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function KvView({ d, dispatch, projektId, ks }) {
+  const [importOpen, setImportOpen] = useState(false);
+  const [edit, setEdit] = useState(null);
+  return (
+    <div className="space-y-4">
+      <div className="flex gap-2 flex-wrap">
+        <button className={btnPrimary} onClick={() => setEdit({ bkp: "", bezeichnung: "", kv: "", parentId: null })}>+ Hauptposition</button>
+        <button className={btnGhost} onClick={() => setImportOpen(true)}>KV importieren (CSV)</button>
+      </div>
+      {!ks.ordered.length ? <Empty text="Noch keine BKP-Positionen. Importiere den KV oder erfasse Positionen einzeln." /> : (
+        <div className={`${card} overflow-x-auto`}>
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 text-slate-500 text-xs"><tr>
+              <th className="text-left font-medium px-3 py-2">BKP / Bezeichnung</th><th className="text-right font-medium px-3 py-2">KV</th><th className="text-right font-medium px-3 py-2">KV rev.</th><th className="text-right font-medium px-3 py-2">Beauftragt</th><th className="text-right font-medium px-3 py-2">Erwartung</th><th className="text-right font-medium px-3 py-2">Prognose</th><th className="text-right font-medium px-3 py-2">Abw. KV</th><th className="px-3 py-2 w-28"></th>
+            </tr></thead>
+            <tbody>
+              {ks.ordered.map((z) => (
+                <tr key={z.pos.id} className={`border-t border-slate-100 hover:bg-slate-50/60 ${z.hasChildren ? "bg-slate-50/40" : ""}`}>
+                  <td className="px-3 py-2" style={{ paddingLeft: 12 + z.depth * 18 }}><span className={`tabular-nums ${z.hasChildren ? "font-semibold" : "font-medium"}`}>{z.pos.bkp}</span> <span className={z.hasChildren ? "font-semibold" : ""}>{z.pos.bezeichnung}</span></td>
+                  <td className="px-3 py-2 text-right"><Num v={z.roll.kv} /></td>
+                  <td className="px-3 py-2 text-right"><Num v={z.roll.kvRevidiert} /></td>
+                  <td className="px-3 py-2 text-right text-slate-600"><Num v={z.roll.beauftragt} /></td>
+                  <td className="px-3 py-2 text-right text-slate-600">{z.roll.erwartung ? <Abw v={z.roll.erwartung} /> : "–"}</td>
+                  <td className="px-3 py-2 text-right font-medium"><Num v={z.roll.prognose} /></td>
+                  <td className="px-3 py-2 text-right"><Abw v={z.roll.abwKv} /></td>
+                  <td className="px-3 py-2 text-right whitespace-nowrap">
+                    <button className="text-slate-500 hover:underline text-xs mr-2" onClick={() => setEdit({ bkp: "", bezeichnung: "", kv: "", parentId: z.pos.id })}>+ Unter</button>
+                    <button className="text-blue-700 hover:underline text-xs mr-2" onClick={() => setEdit(z.pos)}>Bearb.</button>
+                    <button className="text-red-600 hover:underline text-xs" onClick={() => dispatch({ type: "remove", coll: "positionen", id: z.pos.id })}>Lö.</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot><tr className="border-t-2 border-slate-300 font-semibold bg-slate-50">
+              <td className="px-3 py-2">Total netto</td><td className="px-3 py-2 text-right"><Num v={ks.total.kv} /></td><td className="px-3 py-2 text-right"><Num v={ks.total.kvRevidiert} /></td><td className="px-3 py-2 text-right"><Num v={ks.total.beauftragt} /></td><td className="px-3 py-2 text-right"><Abw v={ks.total.erwartung} /></td><td className="px-3 py-2 text-right"><Num v={ks.total.prognose} /></td><td className="px-3 py-2 text-right"><Abw v={ks.total.abwKv} /></td><td></td>
+            </tr></tfoot>
+          </table>
+        </div>
+      )}
+      {edit && <PositionEditor pos={edit} positionen={d.positionen} onClose={() => setEdit(null)} onSave={(pp) => { if (pp.id) dispatch({ type: "update", coll: "positionen", id: pp.id, patch: pp }); else dispatch({ type: "add", coll: "positionen", item: { id: uid(), projektId, ...pp } }); setEdit(null); }} />}
+      {importOpen && <KvImport onClose={() => setImportOpen(false)} onImport={(rows) => { dispatch({ type: "addMany", coll: "positionen", items: nestImported(rows, projektId) }); setImportOpen(false); }} />}
+    </div>
+  );
+}
+
+function PositionEditor({ pos, positionen, onClose, onSave }) {
+  const [f, setF] = useState({ bkp: pos.bkp || "", bezeichnung: pos.bezeichnung || "", kv: pos.kv ?? "", parentId: pos.parentId ?? null });
+  const exclude = pos.id ? descendantIds(positionen, pos.id) : new Set();
+  const opts = posSelectOptions(positionen).filter((o) => o.id !== pos.id && !exclude.has(o.id));
+  return (
+    <Modal title={pos.id ? "Position bearbeiten" : (pos.parentId ? "Neue Unterposition" : "Neue BKP-Hauptposition")} onClose={onClose}>
+      <div className="space-y-3">
+        <div className="grid grid-cols-3 gap-3">
+          <Field label="BKP-Nr."><input className={inputCls} value={f.bkp} onChange={(e) => setF({ ...f, bkp: e.target.value })} placeholder="211 / 211.1" /></Field>
+          <div className="col-span-2"><Field label="Bezeichnung"><input className={inputCls} value={f.bezeichnung} onChange={(e) => setF({ ...f, bezeichnung: e.target.value })} /></Field></div>
+        </div>
+        <Field label="Übergeordnete Position (optional)">
+          <select className={inputCls} value={f.parentId || ""} onChange={(e) => setF({ ...f, parentId: e.target.value || null })}>
+            <option value="">— keine (Hauptposition) —</option>
+            {opts.map((o) => <option key={o.id} value={o.id}>{o.label.trim()}</option>)}
+          </select>
+        </Field>
+        <Field label="KV-Betrag netto (CHF)"><input className={inputCls} value={f.kv} onChange={(e) => setF({ ...f, kv: e.target.value })} placeholder="850000" /></Field>
+        <div className="flex justify-end gap-2 pt-1">
+          <button className={btnGhost} onClick={onClose}>Abbrechen</button>
+          <button className={btnPrimary} disabled={!f.bezeichnung} onClick={() => onSave({ ...pos, bkp: f.bkp, bezeichnung: f.bezeichnung, kv: parseBetrag(f.kv), parentId: f.parentId })}>Speichern</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function KvImport({ onClose, onImport }) {
+  const [text, setText] = useState("BKP;Bezeichnung;Betrag\n211;Baumeisterarbeiten;0\n211.1;Aushub;300'000\n211.4;Beton- und Stahlbeton;550'000\n221;Fenster;180'000");
+  const preview = useMemo(() => parseKvText(text), [text]);
+  return (
+    <Modal title="Kostenvoranschlag importieren" onClose={onClose} wide>
+      <p className="text-sm text-slate-500 mb-2">Spalten: BKP · Bezeichnung · Betrag netto. Unterpositionen (211.1) werden automatisch unter ihre Hauptposition (211) gehängt.</p>
+      <textarea className={`${inputCls} font-mono h-40`} value={text} onChange={(e) => setText(e.target.value)} />
+      <div className="mt-3"><div className="text-xs font-medium text-slate-500 mb-1">Vorschau ({preview.length} Positionen)</div>
+        <div className="max-h-48 overflow-y-auto border border-slate-200 rounded-md"><table className="w-full text-sm"><tbody>
+          {preview.map((r, i) => (<tr key={i} className="border-b border-slate-100 last:border-0"><td className="px-3 py-1 font-medium tabular-nums w-20">{r.bkp}</td><td className="px-3 py-1">{r.bezeichnung}</td><td className="px-3 py-1 text-right tabular-nums">{chf(r.kv)}</td></tr>))}
+        </tbody></table></div>
+      </div>
+      <div className="flex justify-end gap-2 pt-4"><button className={btnGhost} onClick={onClose}>Abbrechen</button><button className={btnPrimary} disabled={!preview.length} onClick={() => onImport(preview)}>{preview.length} Positionen importieren</button></div>
+    </Modal>
+  );
+}
+
+function MutationenView({ d, dispatch, projektId }) {
+  const [f, setF] = useState({ positionId: "", betrag: "", grund: "", datum: today() });
+  const opts = posSelectOptions(d.positionen);
+  const posLabel = (id) => { const x = d.positionen.find((p) => p.id === id); return x ? `${x.bkp} ${x.bezeichnung}` : "—"; };
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-slate-500">Mutationen ändern das KV-Budget einer Position (+/−), z.B. Projektänderungen. Für Verschiebungen zwischen zwei BKP nutze «Umbuchungen».</p>
+      <div className={`${card} p-4`}>
+        <div className="grid grid-cols-1 md:grid-cols-[1fr_140px_1fr_140px_auto] gap-3 items-end">
+          <Field label="BKP-Position"><select className={inputCls} value={f.positionId} onChange={(e) => setF({ ...f, positionId: e.target.value })}><option value="">wählen…</option>{opts.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</select></Field>
+          <Field label="Betrag (+/−)"><input className={inputCls} value={f.betrag} onChange={(e) => setF({ ...f, betrag: e.target.value })} placeholder="-15000" /></Field>
+          <Field label="Grund"><input className={inputCls} value={f.grund} onChange={(e) => setF({ ...f, grund: e.target.value })} /></Field>
+          <Field label="Datum"><input type="date" className={inputCls} value={f.datum} onChange={(e) => setF({ ...f, datum: e.target.value })} /></Field>
+          <button className={btnPrimary} disabled={!f.positionId || !f.betrag} onClick={() => { dispatch({ type: "add", coll: "mutationen", item: { id: uid(), projektId, ...f, betrag: parseBetrag(f.betrag) } }); setF({ positionId: "", betrag: "", grund: "", datum: today() }); }}>Erfassen</button>
+        </div>
+      </div>
+      {!d.mutationen.length ? <Empty text="Keine Mutationen erfasst." /> : (
+        <div className={`${card} overflow-x-auto`}><table className="w-full text-sm">
+          <thead className="bg-slate-50 text-slate-500 text-xs"><tr><th className="text-left font-medium px-3 py-2">Datum</th><th className="text-left font-medium px-3 py-2">Position</th><th className="text-left font-medium px-3 py-2">Grund</th><th className="text-right font-medium px-3 py-2">Betrag</th><th className="w-12"></th></tr></thead>
+          <tbody>{d.mutationen.map((m) => (<tr key={m.id} className="border-t border-slate-100"><td className="px-3 py-2 tabular-nums text-slate-500">{m.datum}</td><td className="px-3 py-2">{posLabel(m.positionId)}</td><td className="px-3 py-2 text-slate-600">{m.grund}</td><td className="px-3 py-2 text-right"><Abw v={m.betrag} /></td><td className="px-3 py-2 text-right"><button className="text-red-600 text-xs hover:underline" onClick={() => dispatch({ type: "remove", coll: "mutationen", id: m.id })}>Lö.</button></td></tr>))}</tbody>
+        </table></div>
+      )}
+    </div>
+  );
+}
+
+function UmbuchungenView({ d, dispatch, projektId }) {
+  const [f, setF] = useState({ vonPositionId: "", nachPositionId: "", betrag: "", grund: "", datum: today() });
+  const opts = posSelectOptions(d.positionen);
+  const posLabel = (id) => { const x = d.positionen.find((p) => p.id === id); return x ? `${x.bkp} ${x.bezeichnung}` : "—"; };
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-slate-500">Umbuchungen verschieben KV-Budget von einem BKP in einen anderen. Das Gesamtbudget bleibt unverändert (Abgang bei «von», Zugang bei «nach»).</p>
+      <div className={`${card} p-4`}>
+        <div className="grid grid-cols-1 md:grid-cols-[1fr_1fr_130px_1fr_130px_auto] gap-3 items-end">
+          <Field label="Von BKP"><select className={inputCls} value={f.vonPositionId} onChange={(e) => setF({ ...f, vonPositionId: e.target.value })}><option value="">wählen…</option>{opts.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</select></Field>
+          <Field label="Nach BKP"><select className={inputCls} value={f.nachPositionId} onChange={(e) => setF({ ...f, nachPositionId: e.target.value })}><option value="">wählen…</option>{opts.filter((o) => o.id !== f.vonPositionId).map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</select></Field>
+          <Field label="Betrag"><input className={inputCls} value={f.betrag} onChange={(e) => setF({ ...f, betrag: e.target.value })} placeholder="10000" /></Field>
+          <Field label="Grund"><input className={inputCls} value={f.grund} onChange={(e) => setF({ ...f, grund: e.target.value })} /></Field>
+          <Field label="Datum"><input type="date" className={inputCls} value={f.datum} onChange={(e) => setF({ ...f, datum: e.target.value })} /></Field>
+          <button className={btnPrimary} disabled={!f.vonPositionId || !f.nachPositionId || !f.betrag || f.vonPositionId === f.nachPositionId} onClick={() => { dispatch({ type: "add", coll: "umbuchungen", item: { id: uid(), projektId, ...f, betrag: Math.abs(parseBetrag(f.betrag)) } }); setF({ vonPositionId: "", nachPositionId: "", betrag: "", grund: "", datum: today() }); }}>Umbuchen</button>
+        </div>
+      </div>
+      {!d.umbuchungen.length ? <Empty text="Keine Umbuchungen erfasst." /> : (
+        <div className={`${card} overflow-x-auto`}><table className="w-full text-sm">
+          <thead className="bg-slate-50 text-slate-500 text-xs"><tr><th className="text-left font-medium px-3 py-2">Datum</th><th className="text-left font-medium px-3 py-2">Von</th><th className="text-left font-medium px-3 py-2">Nach</th><th className="text-left font-medium px-3 py-2">Grund</th><th className="text-right font-medium px-3 py-2">Betrag</th><th className="w-12"></th></tr></thead>
+          <tbody>{d.umbuchungen.map((u) => (<tr key={u.id} className="border-t border-slate-100"><td className="px-3 py-2 tabular-nums text-slate-500">{u.datum}</td><td className="px-3 py-2">{posLabel(u.vonPositionId)}</td><td className="px-3 py-2">{posLabel(u.nachPositionId)}</td><td className="px-3 py-2 text-slate-600">{u.grund}</td><td className="px-3 py-2 text-right tabular-nums">{chf(u.betrag)}</td><td className="px-3 py-2 text-right"><button className="text-red-600 text-xs hover:underline" onClick={() => dispatch({ type: "remove", coll: "umbuchungen", id: u.id })}>Lö.</button></td></tr>))}</tbody>
+        </table></div>
+      )}
+    </div>
+  );
+}
+
+function VertraegeView({ d, dispatch, projektId }) {
+  const [vForm, setVForm] = useState(null);
+  const [ntFor, setNtFor] = useState(null);
+  const posOrder = useMemo(() => { const m = {}; orderedPositions(d.positionen).forEach((p, i) => { m[p.id] = i; }); return m; }, [d.positionen]);
+  const sorted = useMemo(() => [...d.vertraege].sort((a, b) => { const pa = posOrder[a.positionId] ?? 99999, pb = posOrder[b.positionId] ?? 99999; return pa !== pb ? pa - pb : String(a.unternehmer || "").localeCompare(String(b.unternehmer || ""), "de"); }), [d.vertraege, posOrder]);
+  const totalBeauftragt = d.vertraege.reduce((s, v) => { const ntGen = d.nachtraege.filter((n) => n.vertragId === v.id && n.status === "genehmigt").reduce((a, n) => a + konditionenNetto(n.betrag, v, false), 0); return s + konditionenNetto(v.betrag, v, true) + ntGen + (Number(v.teuerung) || 0); }, 0);
+
+  const rows = [];
+  let lastGroup = null;
+  sorted.forEach((v) => {
+    const pos = d.positionen.find((p) => p.id === v.positionId);
+    const g = pos ? bkpGroup(pos.bkp) : "?";
+    if (g !== lastGroup) { lastGroup = g; rows.push(<div key={"g" + g} className="flex items-center gap-2 pt-3 first:pt-0"><span className="text-xs font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap">BKP {g} · {BKP_GROUPS[g] || "—"}</span><div className="flex-1 h-px bg-slate-200" /></div>); }
+    const netto = konditionenNetto(v.betrag, v, true);
+    const nts = d.nachtraege.filter((n) => n.vertragId === v.id);
+    const ntGen = nts.filter((n) => n.status === "genehmigt").reduce((s, n) => s + konditionenNetto(n.betrag, v, false), 0);
+    const ntPend = nts.filter((n) => n.status === "pendent").reduce((s, n) => s + konditionenNetto(n.betrag, v, false), 0);
+    const rapSum = d.rapporte.filter((r) => r.vertragId === v.id).reduce((s, r) => s + rapportNetto(r, v), 0);
+    const regieUeber = Math.max(0, rapSum - (Number(v.regieBudget) || 0));
+    const beauftragt = netto + ntGen + (Number(v.teuerung) || 0);
+    rows.push(
+      <div key={v.id} className={`${card} p-4`}>
+        <div className="flex items-start gap-3">
+          <span className="shrink-0 inline-block bg-blue-50 text-blue-700 font-semibold tabular-nums text-sm rounded px-2 py-1 mt-0.5">{pos ? pos.bkp : "—"}</span>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-start justify-between gap-3 flex-wrap">
+              <div className="min-w-0">
+                <div className="font-semibold">{v.unternehmer}{v.nr && <span className="text-slate-400 font-normal text-sm"> · {v.nr}</span>}</div>
+                <div className="text-sm text-slate-500">{pos ? pos.bezeichnung : "—"} · {v.datum}</div>
+              </div>
+              <div className="text-right shrink-0">
+                <div className="text-[10px] text-slate-400 uppercase tracking-wide">Beauftragt netto</div>
+                <div className="tabular-nums font-semibold text-base">{chf(beauftragt)}</div>
+              </div>
+            </div>
+            <div className="mt-2 grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-1 text-xs">
+              <div className="flex justify-between sm:block"><span className="text-slate-400">Brutto</span><span className="tabular-nums">{chf(v.betrag)}</span></div>
+              <div className="flex justify-between sm:block"><span className="text-slate-400">Netto</span><span className="tabular-nums">{chf(netto)}</span></div>
+              <div className="flex justify-between sm:block"><span className="text-slate-400">NT genehmigt</span><span className="tabular-nums">{ntGen ? chf(ntGen) : "–"}</span></div>
+              <div className="flex justify-between sm:block"><span className="text-slate-400">Teuerung</span><span className="tabular-nums">{Number(v.teuerung) ? chf(v.teuerung) : "–"}</span></div>
+            </div>
+            {(hatKonditionen(v) || ntPend > 0) && <div className="text-xs text-slate-500 mt-2">{hatKonditionen(v) ? `Konditionen: ${konditionenText(v)}` : ""}{hatKonditionen(v) && ntPend > 0 ? " · " : ""}{ntPend > 0 ? `NT pendent ${chf(ntPend)} netto` : ""}</div>}
+            {Number(v.regieBudget) > 0 && <div className="text-xs mt-1"><span className="text-slate-500">Regiebudget {chf(v.regieBudget)} · verbraucht {chf(rapSum)} netto</span>{regieUeber > 0 && <span className="text-red-600 font-medium"> · Überschuss +{chf(regieUeber)} → Erwartung</span>}</div>}
+          </div>
+        </div>
+        <div className="mt-3 border-t border-slate-100 pt-3">
+          <div className="flex items-center justify-between mb-2"><span className="text-xs font-medium text-slate-500 uppercase tracking-wide">Nachträge <span className="normal-case font-normal text-slate-400">(erben %-Konditionen)</span></span>
+            <div className="flex gap-3"><button className="text-blue-700 text-xs hover:underline" onClick={() => setNtFor({ vertragId: v.id, _v: v, bezeichnung: "", betrag: "", status: "pendent", datum: today() })}>+ Nachtrag</button><button className="text-blue-700 text-xs hover:underline" onClick={() => setVForm(v)}>Bearbeiten</button><button className="text-red-600 text-xs hover:underline" onClick={() => dispatch({ type: "remove", coll: "vertraege", id: v.id })}>Löschen</button></div>
+          </div>
+          {!nts.length ? <div className="text-xs text-slate-400">keine Nachträge</div> : (
+            <table className="w-full text-sm"><tbody>{nts.map((n) => (
+              <tr key={n.id} className="border-t border-slate-50">
+                <td className="py-1.5">{n.bezeichnung}</td><td className="py-1.5 text-slate-500 tabular-nums">{n.datum}</td>
+                <td className="py-1.5"><select className="text-xs border border-slate-200 rounded px-1.5 py-0.5" value={n.status} onChange={(e) => dispatch({ type: "update", coll: "nachtraege", id: n.id, patch: { status: e.target.value } })}><option value="pendent">pendent</option><option value="genehmigt">genehmigt</option><option value="abgelehnt">abgelehnt</option></select></td>
+                <td className="py-1.5 text-right tabular-nums text-slate-500">{chf(n.betrag)} brutto</td>
+                <td className="py-1.5 text-right tabular-nums font-medium">{chf(konditionenNetto(n.betrag, v, false))} netto</td>
+                <td className="py-1.5 text-right w-8"><button className="text-red-600 text-xs" onClick={() => dispatch({ type: "remove", coll: "nachtraege", id: n.id })}>×</button></td>
+              </tr>))}</tbody></table>
+          )}
+        </div>
+      </div>
+    );
+  });
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <button className={btnPrimary} onClick={() => setVForm({ positionId: "", unternehmer: "", nr: "", betrag: "", rabattPct: "", pauschalabzug: "", skontoPct: "", bauabzuegePct: "", rundung: "", regieBudget: "", teuerung: "", datum: today() })}>+ Vertrag</button>
+        {d.vertraege.length > 0 && <div className="text-sm text-slate-500">{d.vertraege.length} Verträge · Total beauftragt <span className="font-semibold tabular-nums text-slate-700">{chf(totalBeauftragt)}</span></div>}
+      </div>
+      {!d.vertraege.length ? <Empty text="Keine Verträge erfasst." /> : rows}
+
+      {vForm && <VertragEditor v={vForm} positionen={d.positionen} onClose={() => setVForm(null)} onSave={(v) => { if (v.id) dispatch({ type: "update", coll: "vertraege", id: v.id, patch: v }); else dispatch({ type: "add", coll: "vertraege", item: { id: uid(), projektId, ...v } }); setVForm(null); }} />}
+      {ntFor && (
+        <Modal title="Nachtrag erfassen" onClose={() => setNtFor(null)}>
+          <div className="space-y-3">
+            <Field label="Bezeichnung"><input className={inputCls} value={ntFor.bezeichnung} onChange={(e) => setNtFor({ ...ntFor, bezeichnung: e.target.value })} placeholder="NT1 Zusatzleistung" /></Field>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Betrag brutto (CHF)"><input className={inputCls} value={ntFor.betrag} onChange={(e) => setNtFor({ ...ntFor, betrag: e.target.value })} /></Field>
+              <Field label="Status"><select className={inputCls} value={ntFor.status} onChange={(e) => setNtFor({ ...ntFor, status: e.target.value })}><option value="pendent">pendent</option><option value="genehmigt">genehmigt</option><option value="abgelehnt">abgelehnt</option></select></Field>
+            </div>
+            {ntFor._v && hatKonditionen(ntFor._v) && <p className="text-xs text-slate-500">Netto nach Vertragskonditionen: <span className="font-medium tabular-nums">{chf(konditionenNetto(parseBetrag(ntFor.betrag), ntFor._v, false))}</span></p>}
+            <div className="flex justify-end gap-2 pt-1"><button className={btnGhost} onClick={() => setNtFor(null)}>Abbrechen</button><button className={btnPrimary} disabled={!ntFor.bezeichnung} onClick={() => { const { _v, ...rest } = ntFor; dispatch({ type: "add", coll: "nachtraege", item: { id: uid(), projektId, ...rest, betrag: parseBetrag(ntFor.betrag) } }); setNtFor(null); }}>Speichern</button></div>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function VertragEditor({ v, positionen, onClose, onSave }) {
+  const [f, setF] = useState({ positionId: v.positionId || "", unternehmer: v.unternehmer || "", nr: v.nr || "", betrag: v.betrag ?? "", rabattPct: v.rabattPct ?? "", pauschalabzug: v.pauschalabzug ?? "", skontoPct: v.skontoPct ?? "", bauabzuegePct: v.bauabzuegePct ?? "", rundung: v.rundung ?? "", regieBudget: v.regieBudget ?? "", teuerung: v.teuerung ?? "", datum: v.datum || today() });
+  const opts = posSelectOptions(positionen);
+  const k = { rabattPct: parseBetrag(f.rabattPct), pauschalabzug: parseBetrag(f.pauschalabzug), skontoPct: parseBetrag(f.skontoPct), bauabzuegePct: parseBetrag(f.bauabzuegePct), rundung: parseBetrag(f.rundung) };
+  const netto = konditionenNetto(parseBetrag(f.betrag), k, true);
+  return (
+    <Modal title={v.id ? "Vertrag bearbeiten" : "Vertrag erfassen"} onClose={onClose} wide>
+      <div className="space-y-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <Field label="BKP-Position"><select className={inputCls} value={f.positionId} onChange={(e) => setF({ ...f, positionId: e.target.value })}><option value="">wählen…</option>{opts.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</select></Field>
+          <div className="grid grid-cols-2 gap-3"><Field label="Unternehmer"><input className={inputCls} value={f.unternehmer} onChange={(e) => setF({ ...f, unternehmer: e.target.value })} /></Field><Field label="Vertrags-Nr."><input className={inputCls} value={f.nr} onChange={(e) => setF({ ...f, nr: e.target.value })} /></Field></div>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+          <Field label="Vertragssumme brutto"><input className={inputCls} value={f.betrag} onChange={(e) => setF({ ...f, betrag: e.target.value })} /></Field>
+          <Field label="Datum"><input type="date" className={inputCls} value={f.datum} onChange={(e) => setF({ ...f, datum: e.target.value })} /></Field>
+          <Field label="Teuerung (CHF)"><input className={inputCls} value={f.teuerung} onChange={(e) => setF({ ...f, teuerung: e.target.value })} placeholder="0" /></Field>
+        </div>
+        <div className={`${card} p-3 bg-slate-50/60`}>
+          <div className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-2">Konditionen (Kaskade in dieser Reihenfolge — gelten auch für Nachträge und Rapporte, Fixbeträge nur auf Hauptvertrag)</div>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+            <Field label="Rabatt %"><input className={inputCls} value={f.rabattPct} onChange={(e) => setF({ ...f, rabattPct: e.target.value })} placeholder="0" /></Field>
+            <Field label="Pauschalabzug CHF"><input className={inputCls} value={f.pauschalabzug} onChange={(e) => setF({ ...f, pauschalabzug: e.target.value })} placeholder="0" /></Field>
+            <Field label="Skonto %"><input className={inputCls} value={f.skontoPct} onChange={(e) => setF({ ...f, skontoPct: e.target.value })} placeholder="0" /></Field>
+            <Field label="Allg. Bauabzüge %"><input className={inputCls} value={f.bauabzuegePct} onChange={(e) => setF({ ...f, bauabzuegePct: e.target.value })} placeholder="0" /></Field>
+            <Field label="Rundung ± CHF"><input className={inputCls} value={f.rundung} onChange={(e) => setF({ ...f, rundung: e.target.value })} placeholder="0" /></Field>
+          </div>
+          <div className="text-sm mt-2">Werkvertragssumme netto: <span className="font-semibold tabular-nums">{chf(netto)}</span></div>
+        </div>
+        <Field label="Regiebudget im Vertrag (CHF netto) — Rapporte bis zu diesem Betrag erhöhen die Erwartung nicht">
+          <input className={inputCls} value={f.regieBudget} onChange={(e) => setF({ ...f, regieBudget: e.target.value })} placeholder="0" />
+        </Field>
+        <div className="flex justify-end gap-2"><button className={btnGhost} onClick={onClose}>Abbrechen</button><button className={btnPrimary} disabled={!f.positionId || !f.unternehmer} onClick={() => onSave({ ...v, ...f, betrag: parseBetrag(f.betrag), rabattPct: parseBetrag(f.rabattPct), pauschalabzug: parseBetrag(f.pauschalabzug), skontoPct: parseBetrag(f.skontoPct), bauabzuegePct: parseBetrag(f.bauabzuegePct), rundung: parseBetrag(f.rundung), regieBudget: parseBetrag(f.regieBudget), teuerung: parseBetrag(f.teuerung) })}>Speichern</button></div>
+      </div>
+    </Modal>
+  );
+}
+
+function RechnungenView({ d, dispatch, projektId }) {
+  const [f, setF] = useState({ buchung: "vertrag", vertragId: "", positionId: "", typ: "akonto", nr: "", betrag: "", datum: today(), status: "geprueft" });
+  const vLabel = (id) => { const v = d.vertraege.find((x) => x.id === id); return v ? v.unternehmer + (v.nr ? ` (${v.nr})` : "") : "—"; };
+  const posLabel = (id) => { const x = d.positionen.find((p) => p.id === id); return x ? `${x.bkp} ${x.bezeichnung}` : "—"; };
+  const opts = posSelectOptions(d.positionen);
+  const statusCol = { erfasst: "bg-slate-100 text-slate-600", geprueft: "bg-amber-100 text-amber-700", bezahlt: "bg-emerald-100 text-emerald-700" };
+  const typCol = { akonto: "bg-blue-50 text-blue-700", rechnung: "bg-slate-100 text-slate-700", regie: "bg-violet-50 text-violet-700" };
+  const proVertrag = useMemo(() => {
+    const map = {};
+    d.vertraege.forEach((v) => {
+      const rs = d.rechnungen.filter((r) => r.vertragId === v.id);
+      const nt = d.nachtraege.filter((n) => n.vertragId === v.id && n.status === "genehmigt").reduce((s, n) => s + konditionenNetto(n.betrag, v, false), 0);
+      map[v.id] = { soll: konditionenNetto(v.betrag, v, true) + nt + (Number(v.teuerung) || 0), fakt: rs.reduce((s, r) => s + (Number(r.betrag) || 0), 0) };
+    });
+    return map;
+  }, [d]);
+
+  return (
+    <div className="space-y-4">
+      <div className={`${card} p-4 space-y-3`}>
+        <div className="flex gap-4 text-sm">
+          <label className="inline-flex items-center gap-1.5"><input type="radio" checked={f.buchung === "vertrag"} onChange={() => setF({ ...f, buchung: "vertrag", positionId: "" })} /> auf Vertrag</label>
+          <label className="inline-flex items-center gap-1.5"><input type="radio" checked={f.buchung === "bkp"} onChange={() => setF({ ...f, buchung: "bkp", vertragId: "" })} /> direkt auf BKP (ohne Vertrag)</label>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-[1fr_130px_110px_130px_130px_120px_auto] gap-3 items-end">
+          {f.buchung === "vertrag" ? (
+            <Field label="Vertrag"><select className={inputCls} value={f.vertragId} onChange={(e) => setF({ ...f, vertragId: e.target.value })}><option value="">wählen…</option>{d.vertraege.map((v) => <option key={v.id} value={v.id}>{v.unternehmer} {v.nr && `(${v.nr})`}</option>)}</select></Field>
+          ) : (
+            <Field label="BKP-Position"><select className={inputCls} value={f.positionId} onChange={(e) => setF({ ...f, positionId: e.target.value })}><option value="">wählen…</option>{opts.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</select></Field>
+          )}
+          <Field label="Typ"><select className={inputCls} value={f.typ} onChange={(e) => setF({ ...f, typ: e.target.value })}><option value="akonto">Akonto</option><option value="rechnung">Rechnung</option><option value="regie">Regie</option></select></Field>
+          <Field label="Rg-Nr."><input className={inputCls} value={f.nr} onChange={(e) => setF({ ...f, nr: e.target.value })} /></Field>
+          <Field label="Betrag netto"><input className={inputCls} value={f.betrag} onChange={(e) => setF({ ...f, betrag: e.target.value })} /></Field>
+          <Field label="Datum"><input type="date" className={inputCls} value={f.datum} onChange={(e) => setF({ ...f, datum: e.target.value })} /></Field>
+          <Field label="Status"><select className={inputCls} value={f.status} onChange={(e) => setF({ ...f, status: e.target.value })}><option value="erfasst">erfasst</option><option value="geprueft">geprüft</option><option value="bezahlt">bezahlt</option></select></Field>
+          <button className={btnPrimary} disabled={!(f.buchung === "vertrag" ? f.vertragId : f.positionId) || !f.betrag} onClick={() => {
+            const item = { id: uid(), projektId, typ: f.typ, nr: f.nr, betrag: parseBetrag(f.betrag), datum: f.datum, status: f.status };
+            if (f.buchung === "vertrag") item.vertragId = f.vertragId; else item.positionId = f.positionId;
+            dispatch({ type: "add", coll: "rechnungen", item });
+            setF({ ...f, vertragId: "", positionId: "", nr: "", betrag: "" });
+          }}>Erfassen</button>
+        </div>
+      </div>
+      {!d.rechnungen.length ? <Empty text="Keine Rechnungen erfasst." /> : (
+        <div className={`${card} overflow-x-auto`}><table className="w-full text-sm">
+          <thead className="bg-slate-50 text-slate-500 text-xs"><tr><th className="text-left font-medium px-3 py-2">Datum</th><th className="text-left font-medium px-3 py-2">Buchung</th><th className="text-left font-medium px-3 py-2">Typ</th><th className="text-left font-medium px-3 py-2">Rg-Nr.</th><th className="text-right font-medium px-3 py-2">Betrag</th><th className="text-left font-medium px-3 py-2">Status</th><th className="text-right font-medium px-3 py-2">fakt./soll</th><th className="w-12"></th></tr></thead>
+          <tbody>{d.rechnungen.map((r) => {
+            const pv = r.vertragId ? (proVertrag[r.vertragId] || { soll: 0, fakt: 0 }) : null;
+            const ueber = pv && pv.fakt > pv.soll;
+            return (
+              <tr key={r.id} className="border-t border-slate-100">
+                <td className="px-3 py-2 tabular-nums text-slate-500">{r.datum}</td>
+                <td className="px-3 py-2">{r.vertragId ? vLabel(r.vertragId) : <span>{posLabel(r.positionId)} <span className="text-xs text-slate-400">(ohne Vertrag)</span></span>}</td>
+                <td className="px-3 py-2"><span className={`text-xs rounded px-1.5 py-0.5 ${typCol[r.typ] || typCol.rechnung}`}>{RTYP[r.typ] || r.typ}</span></td>
+                <td className="px-3 py-2 text-slate-500">{r.nr}</td>
+                <td className="px-3 py-2 text-right tabular-nums">{chf(r.betrag)}</td>
+                <td className="px-3 py-2"><select className={`text-xs rounded px-1.5 py-0.5 border-0 ${statusCol[r.status]}`} value={r.status} onChange={(e) => dispatch({ type: "update", coll: "rechnungen", id: r.id, patch: { status: e.target.value } })}><option value="erfasst">erfasst</option><option value="geprueft">geprüft</option><option value="bezahlt">bezahlt</option></select></td>
+                <td className={`px-3 py-2 text-right tabular-nums text-xs ${ueber ? "text-red-600 font-medium" : "text-slate-500"}`}>{pv ? `${chf(pv.fakt)} / ${chf(pv.soll)}` : "–"}</td>
+                <td className="px-3 py-2 text-right"><button className="text-red-600 text-xs hover:underline" onClick={() => dispatch({ type: "remove", coll: "rechnungen", id: r.id })}>Lö.</button></td>
+              </tr>
+            );
+          })}</tbody>
+        </table></div>
+      )}
+    </div>
+  );
+}
+
+function bieterBrutto(b, a) {
+  if (a && a.modus === "lv") return (a.positionen || []).reduce((s, p) => s + (Number(p.menge) || 0) * (parseBetrag((b.preise || {})[p.code]) || 0), 0);
+  return Number(b.brutto) || 0;
+}
+function bieterNetto(b, a) { return konditionenNetto(bieterBrutto(b, a), b, true); }
+function nutzwerte(a, projekt) {
+  const w = a.gewichte || { preis: Number(projekt?.gewichtPreis) || 70, referenzen: Number(projekt?.gewichtReferenzen) || 20, lehrlinge: Number(projekt?.gewichtLehrlinge) || 10 };
+  const rows = (a.bieter || []).map((b) => ({ b, brutto: bieterBrutto(b, a), netto: bieterNetto(b, a) }));
+  const valid = rows.filter((r) => r.netto > 0);
+  const min = valid.length ? Math.min(...valid.map((r) => r.netto)) : 0;
+  return { w, rows: rows.map((r) => {
+    const pP = r.netto > 0 && min > 0 ? 100 * min / r.netto : 0;
+    const nutz = (pP * (Number(w.preis) || 0) + (Number(r.b.referenzPunkte) || 0) * (Number(w.referenzen) || 0) + (Number(r.b.lehrlingPunkte) || 0) * (Number(w.lehrlinge) || 0)) / 100;
+    return { b: r.b, brutto: r.brutto, netto: r.netto, pP, nutz };
+  }).sort((x, y) => y.nutz - x.nutz), min };
+}
+
+function AngeboteView({ d, dispatch, projektId, projekt }) {
+  const [edit, setEdit] = useState(null);
+  const neuBieter = () => ({ name: "", brutto: "", rabattPct: "", pauschalabzug: "", skontoPct: "", bauabzuegePct: "", rundung: "", referenzPunkte: "", lehrlingPunkte: "", bemerkung: "", preise: {} });
+  return (
+    <div className="space-y-4">
+      <button className={btnPrimary} onClick={() => setEdit({ id: null, titel: "", positionId: "", modus: "pauschal", positionen: [], bedingungen: "", gewichte: { preis: Number(projekt?.gewichtPreis) || 70, referenzen: Number(projekt?.gewichtReferenzen) || 20, lehrlinge: Number(projekt?.gewichtLehrlinge) || 10 }, bieter: [neuBieter(), neuBieter()] })}>+ Ausschreibung / Vergleich</button>
+      <p className="text-xs text-slate-400">Tipp: Leistungsverzeichnisse (NPK) importierst du im Reiter «Leistungsverzeichnisse» — dort kannst du auch mehrere NPK-Kataloge zu einer Ausschreibung zusammenführen. Hier bepreisen die Bieter die Positionen und du vergleichst.</p>
+      {!d.angebote.length ? <Empty text="Keine Angebote erstellt." /> : d.angebote.map((a) => <AngebotCard key={a.id} a={a} d={d} dispatch={dispatch} projektId={projektId} projekt={projekt} onEdit={() => setEdit(a)} />)}
+      {edit && <AngebotEditor angebot={edit} positionen={d.positionen} projekt={projekt} neuBieter={neuBieter} onClose={() => setEdit(null)} onSave={(a) => { if (a.id) dispatch({ type: "update", coll: "angebote", id: a.id, patch: a }); else dispatch({ type: "add", coll: "angebote", item: { ...a, id: uid(), projektId } }); setEdit(null); }} />}
+    </div>
+  );
+}
+
+function AngebotCard({ a, d, dispatch, projektId, projekt, onEdit }) {
+  const { w, rows, min } = nutzwerte(a, projekt);
+  const [showPos, setShowPos] = useState(false);
+  const isLv = a.modus === "lv";
+  const posLabel = (() => { const x = d.positionen.find((p) => p.id === a.positionId); return x ? `${x.bkp} ${x.bezeichnung}` : "ohne BKP-Zuordnung"; })();
+  function vergeben(b, brutto, netto) {
+    if (!a.positionId) { alert("Bitte zuerst eine BKP-Position der Ausschreibung zuordnen (Bearbeiten)."); return; }
+    dispatch({ type: "add", coll: "vertraege", item: { id: uid(), projektId, positionId: a.positionId, unternehmer: b.name, nr: a.titel, betrag: brutto, rabattPct: Number(b.rabattPct) || 0, pauschalabzug: Number(b.pauschalabzug) || 0, skontoPct: Number(b.skontoPct) || 0, bauabzuegePct: Number(b.bauabzuegePct) || 0, rundung: Number(b.rundung) || 0, regieBudget: 0, teuerung: 0, datum: today() } });
+    alert(`Vertrag mit ${b.name} erstellt: brutto CHF ${chf(brutto)} → netto CHF ${chf(netto)}. Konditionen übernommen; Regiebudget unter «Verträge» ergänzen.`);
+  }
+  const named = rows.filter((r) => r.b.name);
+  return (
+    <div className={`${card} p-4`}>
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <div className="font-semibold">{a.titel || "Ohne Titel"} {isLv && <span className="text-xs font-normal bg-blue-50 text-blue-700 rounded px-1.5 py-0.5 align-middle">LV · {(a.positionen || []).length} Pos.</span>}</div>
+          <div className="text-sm text-slate-500">{posLabel} · {named.length} Bieter · Gewichtung Preis {w.preis}% / Ref. {w.referenzen}% / Lehrl. {w.lehrlinge}%</div>
+        </div>
+        <button className={btnGhost} onClick={onEdit}>{isLv ? "Bieter bepreisen / bearbeiten" : "Bearbeiten"}</button>
+      </div>
+      {named.length > 0 && (
+        <div className="mt-3 overflow-x-auto"><table className="w-full text-sm">
+          <thead className="text-slate-500 text-xs"><tr><th className="text-left font-medium py-1 pr-2">Rang</th><th className="text-left font-medium py-1 pr-2">Bieter</th><th className="text-right font-medium py-1 px-2">Brutto</th><th className="text-left font-medium py-1 px-2">Konditionen</th><th className="text-right font-medium py-1 px-2">Netto</th><th className="text-right font-medium py-1 px-2">Preis-P.</th><th className="text-right font-medium py-1 px-2">Ref.</th><th className="text-right font-medium py-1 px-2">Lehrl.</th><th className="text-right font-medium py-1 px-2">Nutzwert</th><th></th></tr></thead>
+          <tbody>{rows.map((t, i) => t.b.name && (
+            <tr key={i} className={`border-t border-slate-100 align-top ${i === 0 ? "bg-emerald-50/40" : ""}`}>
+              <td className="py-1.5 pr-2">{i === 0 ? "★ 1" : i + 1}</td>
+              <td className="py-1.5 pr-2"><div className="font-medium">{t.b.name}</div>{t.b.bemerkung && <div className="text-xs text-slate-400 max-w-[220px]">{t.b.bemerkung}</div>}</td>
+              <td className="py-1.5 px-2 text-right tabular-nums">{chf(t.brutto)}</td>
+              <td className="py-1.5 px-2 text-xs text-slate-500">{konditionenText(t.b)}</td>
+              <td className="py-1.5 px-2 text-right tabular-nums font-medium">{chf(t.netto)}{t.netto === min && t.netto > 0 && <span className="text-emerald-600 text-xs"> günstigster</span>}</td>
+              <td className="py-1.5 px-2 text-right tabular-nums">{t.pP.toFixed(1)}</td>
+              <td className="py-1.5 px-2 text-right tabular-nums">{Number(t.b.referenzPunkte) || 0}</td>
+              <td className="py-1.5 px-2 text-right tabular-nums">{Number(t.b.lehrlingPunkte) || 0}</td>
+              <td className="py-1.5 px-2 text-right tabular-nums font-semibold">{t.nutz.toFixed(1)}</td>
+              <td className="py-1.5 text-right"><button className="text-blue-700 text-xs hover:underline" onClick={() => vergeben(t.b, t.brutto, t.netto)}>Vergeben →</button></td>
+            </tr>
+          ))}</tbody>
+        </table></div>
+      )}
+      {isLv && (a.positionen || []).length > 0 && named.length > 0 && (
+        <div className="mt-2">
+          <button className="text-blue-700 text-xs hover:underline print:hidden" onClick={() => setShowPos(!showPos)}>{showPos ? "Positionsvergleich ausblenden" : "Positionsvergleich einblenden"}</button>
+          {showPos && (
+            <div className="mt-2 overflow-x-auto border border-slate-200 rounded-md"><table className="w-full text-xs">
+              <thead className="bg-slate-50 text-slate-500"><tr><th className="px-2 py-1 text-left">NPK</th><th className="px-2 py-1 text-left">Bezeichnung</th><th className="px-2 py-1 text-right">Menge</th><th className="px-2 py-1">Einh.</th>{named.map((t, i) => <th key={i} className="px-2 py-1 text-right min-w-[80px]">{t.b.name}</th>)}</tr></thead>
+              <tbody>{(a.positionen || []).map((p) => {
+                const eps = named.map((t) => parseBetrag((t.b.preise || {})[p.code]) || 0);
+                const minEp = Math.min(...eps.filter((x) => x > 0).concat([Infinity]));
+                return (<tr key={p.code} className="border-t border-slate-100"><td className="px-2 py-1 tabular-nums">{p.npk}</td><td className="px-2 py-1">{p.bezeichnung}</td><td className="px-2 py-1 text-right tabular-nums">{p.menge}</td><td className="px-2 py-1">{p.einheit}</td>{named.map((t, i) => { const ep = parseBetrag((t.b.preise || {})[p.code]) || 0; return <td key={i} className={`px-2 py-1 text-right tabular-nums ${ep === minEp && ep > 0 ? "text-emerald-600 font-medium" : ""}`}>{ep ? chf(ep) : "–"}</td>; })}</tr>);
+              })}</tbody>
+              <tfoot><tr className="border-t-2 border-slate-300 font-semibold bg-slate-50"><td className="px-2 py-1" colSpan={4}>Total Brutto</td>{named.map((t, i) => <td key={i} className="px-2 py-1 text-right tabular-nums">{chf(t.brutto)}</td>)}</tr></tfoot>
+            </table></div>
+          )}
+        </div>
+      )}
+      <p className="text-xs text-slate-400 mt-2">{isLv ? "Brutto = Σ (Menge × Einheitspreis) je Bieter. " : ""}Punkte 1–100. Preispunkte = 100 × günstigstes Netto ÷ Netto. Nutzwert = gewichtete Summe (max. 100).</p>
+    </div>
+  );
+}
+
+function AngebotEditor({ angebot, positionen, projekt, neuBieter, onClose, onSave }) {
+  const [a, setA] = useState(JSON.parse(JSON.stringify({ modus: "pauschal", positionen: [], bedingungen: "", gewichte: { preis: Number(projekt?.gewichtPreis) || 70, referenzen: Number(projekt?.gewichtReferenzen) || 20, lehrlinge: Number(projekt?.gewichtLehrlinge) || 10 }, ...angebot })));
+  const opts = posSelectOptions(positionen);
+  const isLv = a.modus === "lv";
+  const setB = (bi, k, v) => { const b = [...a.bieter]; b[bi] = { ...b[bi], [k]: v }; setA({ ...a, bieter: b }); };
+  const setEp = (bi, code, v) => { const b = [...a.bieter]; b[bi] = { ...b[bi], preise: { ...(b[bi].preise || {}), [code]: v } }; setA({ ...a, bieter: b }); };
+  const delB = (bi) => setA({ ...a, bieter: a.bieter.filter((_, x) => x !== bi) });
+  const setW = (k, v) => setA({ ...a, gewichte: { ...a.gewichte, [k]: v } });
+  const wSum = (Number(a.gewichte.preis) || 0) + (Number(a.gewichte.referenzen) || 0) + (Number(a.gewichte.lehrlinge) || 0);
+  const cell = "w-full text-xs px-1 py-0.5 border border-slate-200 rounded text-right tabular-nums";
+  const bruttoOf = (b) => bieterBrutto({ ...b }, a);
+  return (
+    <Modal title={angebot.id ? "Ausschreibung bearbeiten" : "Neue Ausschreibung / Angebotsvergleich"} onClose={onClose} wide>
+      <div className="space-y-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <Field label="Titel / Arbeitsgattung"><input className={inputCls} value={a.titel} onChange={(e) => setA({ ...a, titel: e.target.value })} placeholder="z.B. Unterlagsböden BKP 281" /></Field>
+          <Field label="BKP-Position (für Vergabe)"><select className={inputCls} value={a.positionId || ""} onChange={(e) => setA({ ...a, positionId: e.target.value })}><option value="">— zuordnen —</option>{opts.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</select></Field>
+        </div>
+        <div className="text-xs text-slate-500">Bepreisung: <span className="font-medium">{isLv ? `Leistungsverzeichnis (${(a.positionen || []).length} Positionen) — Bieter füllen Einheitspreise` : "Pauschale Angebotssumme je Bieter"}</span>{isLv ? "" : " · LV importierst du im Reiter «Leistungsverzeichnisse»"}</div>
+        <div className={`${card} p-3 bg-slate-50/60`}>
+          <div className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-2">Gewichtung % (Vorgabe aus Projekt, hier übersteuerbar) {wSum !== 100 && <span className="text-red-600 normal-case">(Summe {wSum}% — sollte 100% sein)</span>}</div>
+          <div className="grid grid-cols-3 gap-3">
+            <Field label="Preis %"><input className={inputCls} value={a.gewichte.preis} onChange={(e) => setW("preis", e.target.value)} /></Field>
+            <Field label="Referenzen %"><input className={inputCls} value={a.gewichte.referenzen} onChange={(e) => setW("referenzen", e.target.value)} /></Field>
+            <Field label="Lehrlingsausbildung %"><input className={inputCls} value={a.gewichte.lehrlinge} onChange={(e) => setW("lehrlinge", e.target.value)} /></Field>
+          </div>
+        </div>
+        <div>
+          <div className="flex items-center justify-between mb-2"><span className="text-xs font-medium text-slate-500 uppercase tracking-wide">Bieter — Stammdaten, Konditionen & Bewertung</span><button className="text-blue-700 text-xs hover:underline" onClick={() => setA({ ...a, bieter: [...a.bieter, neuBieter()] })}>+ Firma hinzufügen</button></div>
+          <div className="overflow-x-auto border border-slate-200 rounded-md"><table className="w-full text-sm">
+            <thead className="bg-slate-50 text-slate-500 text-xs"><tr>
+              <th className="px-2 py-1.5 text-left min-w-[140px]">Firma</th><th className="px-2 py-1.5 text-right min-w-[90px]">Brutto</th><th className="px-2 py-1.5 text-right w-16">Rabatt %</th><th className="px-2 py-1.5 text-right w-20">Pauschal</th><th className="px-2 py-1.5 text-right w-16">Skonto %</th><th className="px-2 py-1.5 text-right w-16">Bauabz. %</th><th className="px-2 py-1.5 text-right w-20">Rundung</th><th className="px-2 py-1.5 text-right min-w-[90px]">Netto</th><th className="px-2 py-1.5 text-right w-16">Ref.</th><th className="px-2 py-1.5 text-right w-16">Lehrl.</th><th className="px-2 py-1.5 text-left min-w-[140px]">Bemerkung</th><th className="px-1 w-8"></th>
+            </tr></thead>
+            <tbody>
+              {a.bieter.map((b, bi) => (
+                <tr key={bi} className="border-t border-slate-100">
+                  <td className="px-2 py-1"><input className="w-full text-xs px-1 py-0.5 border border-slate-200 rounded" placeholder={`Firma ${bi + 1}`} value={b.name} onChange={(e) => setB(bi, "name", e.target.value)} /></td>
+                  <td className="px-2 py-1 text-right tabular-nums text-xs">{isLv ? <span className="font-medium">{chf(bruttoOf(b))}</span> : <input className={cell} value={b.brutto} onChange={(e) => setB(bi, "brutto", e.target.value)} />}</td>
+                  <td className="px-2 py-1"><input className={cell} value={b.rabattPct} onChange={(e) => setB(bi, "rabattPct", e.target.value)} /></td>
+                  <td className="px-2 py-1"><input className={cell} value={b.pauschalabzug} onChange={(e) => setB(bi, "pauschalabzug", e.target.value)} /></td>
+                  <td className="px-2 py-1"><input className={cell} value={b.skontoPct} onChange={(e) => setB(bi, "skontoPct", e.target.value)} /></td>
+                  <td className="px-2 py-1"><input className={cell} value={b.bauabzuegePct} onChange={(e) => setB(bi, "bauabzuegePct", e.target.value)} /></td>
+                  <td className="px-2 py-1"><input className={cell} value={b.rundung} onChange={(e) => setB(bi, "rundung", e.target.value)} /></td>
+                  <td className="px-2 py-1 text-right tabular-nums text-xs font-medium">{chf(konditionenNetto(bruttoOf(b), { rabattPct: parseBetrag(b.rabattPct), pauschalabzug: parseBetrag(b.pauschalabzug), skontoPct: parseBetrag(b.skontoPct), bauabzuegePct: parseBetrag(b.bauabzuegePct), rundung: parseBetrag(b.rundung) }, true))}</td>
+                  <td className="px-2 py-1"><input className={cell} placeholder="0–100" value={b.referenzPunkte} onChange={(e) => setB(bi, "referenzPunkte", e.target.value)} /></td>
+                  <td className="px-2 py-1"><input className={cell} placeholder="0–100" value={b.lehrlingPunkte} onChange={(e) => setB(bi, "lehrlingPunkte", e.target.value)} /></td>
+                  <td className="px-2 py-1"><input className="w-full text-xs px-1 py-0.5 border border-slate-200 rounded" value={b.bemerkung} onChange={(e) => setB(bi, "bemerkung", e.target.value)} placeholder="optional" /></td>
+                  <td className="px-1 text-center"><button className="text-red-500 text-sm" title="Firma entfernen" onClick={() => delB(bi)}>×</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table></div>
+        </div>
+        {isLv && (a.positionen || []).length > 0 && (
+          <div>
+            <div className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-2">Einheitspreise je Position (CHF/Einheit) — pro Bieter ausfüllen</div>
+            <div className="overflow-auto border border-slate-200 rounded-md max-h-[420px]"><table className="w-full text-xs">
+              <thead className="bg-slate-50 text-slate-500 sticky top-0"><tr><th className="px-2 py-1.5 text-left sticky left-0 bg-slate-50 min-w-[160px]">NPK · Bezeichnung</th><th className="px-2 py-1.5 text-right">Menge</th><th className="px-2 py-1.5">Einh.</th>{a.bieter.map((b, bi) => <th key={bi} className="px-2 py-1.5 text-right min-w-[90px]">{b.name || `Firma ${bi + 1}`}</th>)}</tr></thead>
+              <tbody>{a.positionen.map((p) => (
+                <tr key={p.code} className="border-t border-slate-100">
+                  <td className="px-2 py-1 sticky left-0 bg-white"><span className="tabular-nums text-slate-500">{p.npk}</span> {p.bezeichnung}</td>
+                  <td className="px-2 py-1 text-right tabular-nums">{p.menge}</td>
+                  <td className="px-2 py-1">{p.einheit}</td>
+                  {a.bieter.map((b, bi) => (<td key={bi} className="px-2 py-1"><input className={cell} value={(b.preise || {})[p.code] || ""} onChange={(e) => setEp(bi, p.code, e.target.value)} placeholder="0.00" /></td>))}
+                </tr>
+              ))}</tbody>
+              <tfoot className="bg-slate-50 font-medium"><tr><td className="px-2 py-1.5 sticky left-0 bg-slate-50" colSpan={3}>Total Brutto</td>{a.bieter.map((b, bi) => <td key={bi} className="px-2 py-1.5 text-right tabular-nums">{chf(bruttoOf(b))}</td>)}</tr></tfoot>
+            </table></div>
+          </div>
+        )}
+        {a.bedingungen && (
+          <details className="text-xs"><summary className="cursor-pointer text-slate-500">Importierte Bedingungen / Besondere Bestimmungen anzeigen</summary><div className="mt-2 max-h-48 overflow-y-auto whitespace-pre-wrap text-slate-600 border border-slate-200 rounded p-2">{a.bedingungen}</div></details>
+        )}
+        <div className="flex justify-end gap-2"><button className={btnGhost} onClick={onClose}>Abbrechen</button><button className={btnPrimary} disabled={!a.titel} onClick={() => onSave({ ...a, bieter: a.bieter.map((b) => ({ ...b, brutto: parseBetrag(b.brutto), rabattPct: parseBetrag(b.rabattPct), pauschalabzug: parseBetrag(b.pauschalabzug), skontoPct: parseBetrag(b.skontoPct), bauabzuegePct: parseBetrag(b.bauabzuegePct), rundung: parseBetrag(b.rundung), referenzPunkte: parseBetrag(b.referenzPunkte), lehrlingPunkte: parseBetrag(b.lehrlingPunkte) })) })}>Speichern</button></div>
+      </div>
+    </Modal>
+  );
+}
+
+function LeistungsverzeichnisView({ d, dispatch, projektId, projekt }) {
+  const [selId, setSelId] = useState(d.angebote.find((x) => x.modus === "lv")?.id || d.angebote[0]?.id || "");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [offerFor, setOfferFor] = useState(null);
+  const [vergabeFor, setVergabeFor] = useState(null);
+  const [posForm, setPosForm] = useState({ code: "", bezeichnung: "", einheit: "", menge: "" });
+  const [showKond, setShowKond] = useState(false);
+  const [showAddPos, setShowAddPos] = useState(false);
+  const [detail, setDetail] = useState(null);
+  const fileRef = useRef(null);
+  const a = d.angebote.find((x) => x.id === selId);
+  const opts = posSelectOptions(d.positionen);
+
+  function neueAusschreibung() {
+    const id = uid();
+    dispatch({ type: "add", coll: "angebote", item: { id, projektId, titel: "Neue Ausschreibung", positionId: "", modus: "lv", positionen: [], bedingungen: "", gewichte: { preis: Number(projekt?.gewichtPreis) || 70, referenzen: Number(projekt?.gewichtReferenzen) || 20, lehrlinge: Number(projekt?.gewichtLehrlinge) || 10 }, bieter: [] } });
+    setSelId(id); setMsg("");
+  }
+  function kopieren() {
+    if (!a) return;
+    const id = uid();
+    const copy = JSON.parse(JSON.stringify(a));
+    copy.id = id; copy.projektId = projektId; copy.titel = (a.titel || "Ausschreibung") + " (Kopie)";
+    copy.positionen = (copy.positionen || []).map((p) => ({ ...p, id: uid() }));
+    dispatch({ type: "add", coll: "angebote", item: copy });
+    setSelId(id); setMsg("Ausschreibung kopiert (inkl. Positionen und Offerten).");
+  }
+  function loeschen() {
+    if (!a || !window.confirm("Ausschreibung «" + a.titel + "» löschen?")) return;
+    const rest = d.angebote.filter((x) => x.id !== a.id);
+    dispatch({ type: "remove", coll: "angebote", id: a.id });
+    setSelId(rest[0]?.id || ""); setMsg("");
+  }
+  async function onFileLV(e) {
+    const file = e.target.files?.[0]; if (!file || !a) return;
+    setBusy(true); setMsg("");
+    try {
+      const parsed = parseSia451(await unzipCrbx(await file.arrayBuffer()));
+      if (!parsed.positionen.length) { setMsg("Keine Positionen gefunden. Ist es eine SIA-451/CRBX-Datei?"); setBusy(false); return; }
+      const have = new Set((a.positionen || []).map((p) => p.code));
+      const neu = parsed.positionen.filter((p) => !have.has(p.code)).map((p) => ({ ...p, preis: 0 }));
+      const patch = { modus: "lv", positionen: [...(a.positionen || []), ...neu], bedingungen: [a.bedingungen, parsed.bedingungen.join("\n")].filter(Boolean).join("\n") };
+      if (!a.titel || a.titel === "Neue Ausschreibung") patch.titel = parsed.header.titel || parsed.header.projekt || a.titel;
+      dispatch({ type: "update", coll: "angebote", id: a.id, patch });
+      const kats = [...new Set(parsed.positionen.map((p) => "NPK " + p.catalog))].join(", ");
+      setMsg("✓ " + neu.length + " Positionen importiert (" + kats + "). Jetzt Unternehmer-Offerten einlesen oder Preise direkt in der Matrix eintragen.");
+    } catch (err) { setMsg("Fehler beim Lesen: " + (err?.message || err)); }
+    setBusy(false); if (fileRef.current) fileRef.current.value = "";
+  }
+  function addPosition() {
+    if (!a || !posForm.code) return;
+    const code = posForm.code.replace(/[^0-9]/g, "");
+    if (!code) { setMsg("Bitte eine numerische NPK-Nummer eingeben."); return; }
+    if ((a.positionen || []).some((p) => p.code === code)) { setMsg("Position existiert bereits."); return; }
+    const pos = { id: uid(), catalog: code.slice(0, 3) || "000", code, npk: code.slice(0, 3) + "." + code.slice(3), bezeichnung: posForm.bezeichnung, langtext: [], einheit: posForm.einheit, menge: parseBetrag(posForm.menge), preis: 0 };
+    dispatch({ type: "update", coll: "angebote", id: a.id, patch: { modus: "lv", positionen: [...(a.positionen || []), pos] } });
+    setPosForm({ code: "", bezeichnung: "", einheit: "", menge: "" }); setMsg("");
+  }
+  const setBieter = (arr) => dispatch({ type: "update", coll: "angebote", id: a.id, patch: { bieter: arr } });
+  const addBieter = () => setBieter([...(a.bieter || []), { name: "", preise: {}, bemerkung: "", rabattPct: 0, pauschalabzug: 0, skontoPct: 0, bauabzuegePct: 0, rundung: 0, referenzPunkte: 0, lehrlingPunkte: 0 }]);
+  const patchBieter = (bi, patch) => setBieter(a.bieter.map((b, i) => i === bi ? { ...b, ...patch } : b));
+  const setEp = (bi, code, val) => setBieter(a.bieter.map((b, i) => i === bi ? { ...b, preise: { ...(b.preise || {}), [code]: val } } : b));
+  function exportLeer(fmt) {
+    if (!a) return;
+    const base = (a.titel || "Ausschreibung").replace(/\s+/g, "_");
+    if (fmt === "csv") download(new Blob([buildOfferteCsv(a.titel, a.positionen || [], null)], { type: "text/csv;charset=utf-8" }), base + "_Offerte.csv");
+    else download(makeCrbxBlob(buildSia451(a.titel || "LV", a.positionen || [], null)), base + ".crbx");
+  }
+  function exportBieter(b, fmt) {
+    if (!a || !b) return;
+    const base = (a.titel || "LV").replace(/\s+/g, "_") + "_" + (b.name || "Firma").replace(/\s+/g, "");
+    if (fmt === "csv") download(new Blob([buildOfferteCsv(a.titel, a.positionen || [], b.preise || {})], { type: "text/csv;charset=utf-8" }), base + ".csv");
+    else download(makeCrbxBlob(buildSia451(a.titel || "LV", a.positionen || [], b.preise || {})), base + ".crbx");
+  }
+  function exportVergleich() {
+    if (!a) return;
+    const esc = (s) => '"' + String(s == null ? "" : s).replace(/"/g, '""') + '"';
+    const bs = a.bieter || [];
+    const lines = [["NPK", "Bezeichnung", "Einheit", "Menge"].map(esc).concat(bs.map((b) => esc(b.name || "Firma"))).join(";")];
+    (a.positionen || []).forEach((p) => lines.push([esc(p.npk), esc(p.bezeichnung), esc(p.einheit), p.menge].concat(bs.map((b) => parseBetrag((b.preise || {})[p.code]) || "")).join(";")));
+    lines.push(["", esc("Total Brutto"), "", ""].concat(bs.map((b) => Math.round(bieterBrutto(b, a)))).join(";"));
+    lines.push(["", esc("Total Netto"), "", ""].concat(bs.map((b) => Math.round(bieterNetto(b, a)))).join(";"));
+    download(new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" }), (a.titel || "Vergleich").replace(/\s+/g, "_") + "_Vergleich.csv");
+  }
+
+  const positionen = a ? a.positionen || [] : [];
+  const bieter = a ? a.bieter || [] : [];
+  const nw = a ? nutzwerte(a, projekt) : { rows: [], min: 0, w: {} };
+  const nwByB = new Map(nw.rows.map((r) => [r.b, r]));
+  const rangByB = new Map(nw.rows.map((r, i) => [r.b, i + 1]));
+  const cell = "w-20 text-xs px-1 py-1 border border-slate-200 rounded text-right tabular-nums focus:border-blue-500 focus:outline-none";
+
+  return (
+    <div className="space-y-4">
+      <div className={`${card} p-4`}>
+        <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_auto_auto] gap-3 items-end">
+          <Field label="Ausschreibung">
+            <select className={inputCls} value={selId} onChange={(e) => { setSelId(e.target.value); setMsg(""); }}>
+              <option value="">— wählen —</option>
+              {d.angebote.map((x) => <option key={x.id} value={x.id}>{x.titel || "Ohne Titel"} ({(x.positionen || []).length} Pos. · {(x.bieter || []).filter((b) => b.name).length} Bieter)</option>)}
+            </select>
+          </Field>
+          <button className={btnGhost} onClick={neueAusschreibung}>+ Neu</button>
+          <button className={btnGhost} disabled={!a} onClick={kopieren}>Kopieren</button>
+          <button className={btnGhost} disabled={!a} onClick={loeschen}>Löschen</button>
+        </div>
+        {msg && <div className="mt-3 text-sm bg-blue-50 text-blue-800 rounded-md px-3 py-2">{msg}</div>}
+      </div>
+
+      {!a ? <Empty text="Wähle eine Ausschreibung oder erstelle eine neue." /> : (
+        <>
+          <div className={`${card} p-4 space-y-3`}>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <Field label="Titel / Arbeitsgattung"><input className={inputCls} value={a.titel || ""} onChange={(e) => dispatch({ type: "update", coll: "angebote", id: a.id, patch: { titel: e.target.value } })} /></Field>
+              <Field label="BKP-Position (für Vergabe)"><select className={inputCls} value={a.positionId || ""} onChange={(e) => dispatch({ type: "update", coll: "angebote", id: a.id, patch: { positionId: e.target.value } })}><option value="">— zuordnen —</option>{opts.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</select></Field>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button className={btnPrimary} disabled={busy} onClick={() => fileRef.current?.click()}>{busy ? "Lese…" : "① LV importieren (.crbx)"}</button>
+              <input ref={fileRef} type="file" accept=".crbx,.e1s,.sia,application/zip" className="hidden" onChange={onFileLV} />
+              <button className={btnGhost} onClick={() => setShowAddPos(!showAddPos)}>Position manuell +</button>
+              <span className="text-slate-300">|</span>
+              <span className="text-xs text-slate-500">② An Unternehmer senden:</span>
+              <button className={btnGhost} disabled={!positionen.length} onClick={() => exportLeer("csv")}>CSV</button>
+              <button className={btnGhost} disabled={!positionen.length} onClick={() => exportLeer("crbx")}>.crbx</button>
+              <span className="ml-auto text-xs text-slate-500">{positionen.length} Positionen · {[...new Set(positionen.map((p) => "NPK " + p.catalog))].join(", ") || "—"}</span>
+            </div>
+            {showAddPos && (
+              <div className="grid grid-cols-1 md:grid-cols-[120px_1fr_90px_90px_auto] gap-2 items-end border-t border-slate-100 pt-3">
+                <Field label="NPK/Code"><input className={inputCls} value={posForm.code} onChange={(e) => setPosForm({ ...posForm, code: e.target.value })} placeholder="661.211" /></Field>
+                <Field label="Bezeichnung"><input className={inputCls} value={posForm.bezeichnung} onChange={(e) => setPosForm({ ...posForm, bezeichnung: e.target.value })} /></Field>
+                <Field label="Einheit"><input className={inputCls} value={posForm.einheit} onChange={(e) => setPosForm({ ...posForm, einheit: e.target.value })} placeholder="m2" /></Field>
+                <Field label="Menge"><input className={inputCls} value={posForm.menge} onChange={(e) => setPosForm({ ...posForm, menge: e.target.value })} /></Field>
+                <button className={btnPrimary} disabled={!posForm.code} onClick={addPosition}>+ Position</button>
+              </div>
+            )}
+          </div>
+
+          {positionen.length === 0 ? <Empty text="Noch keine Positionen. Importiere ein LV (.crbx) oder füge Positionen manuell hinzu." /> : (
+            <>
+              <div className={`${card} overflow-auto`} style={{ maxHeight: "70vh" }}>
+                <table className="text-xs border-collapse">
+                  <thead className="sticky top-0 z-20">
+                    <tr className="bg-slate-100">
+                      <th className="sticky left-0 z-30 bg-slate-100 text-left px-2 py-2 border-b border-slate-200 min-w-[70px]">NPK</th>
+                      <th className="text-left px-2 py-2 border-b border-slate-200 min-w-[150px]">Bezeichnung</th>
+                      <th className="text-left px-2 py-2 border-b border-slate-200">Einh.</th>
+                      <th className="text-right px-2 py-2 border-b border-slate-200">Menge</th>
+                      {bieter.map((b, bi) => (
+                        <th key={bi} className="px-2 py-1.5 border-b border-l border-slate-200 align-top min-w-[118px]">
+                          <input className="w-full text-xs px-1 py-0.5 border border-slate-200 rounded font-medium" placeholder={"Firma " + (bi + 1)} value={b.name} onChange={(e) => patchBieter(bi, { name: e.target.value })} />
+                          <div className="flex items-center justify-between mt-1">
+                            <span className="text-[11px] text-slate-500 tabular-nums">{chf(bieterBrutto(b, a))}</span>
+                            <span className="flex gap-1.5 text-sm">
+                              <button className="text-blue-700" title="Offerte importieren" onClick={() => setOfferFor({ aId: a.id, bieterIndex: bi })}>⬇</button>
+                              <button className="text-slate-500" title="Export" onClick={() => exportBieter(b, "csv")}>⬆</button>
+                              <button className="text-red-500" title="Entfernen" onClick={() => setBieter(a.bieter.filter((_, x) => x !== bi))}>✕</button>
+                            </span>
+                          </div>
+                        </th>
+                      ))}
+                      <th className="px-2 border-b border-l border-slate-200 align-top whitespace-nowrap">
+                        <button className="text-blue-700 text-xs hover:underline" onClick={addBieter}>+ Firma</button>
+                        <div className="mt-1"><button className="text-blue-700 text-[11px] hover:underline" onClick={() => setOfferFor({ aId: a.id, bieterIndex: null })}>+ Offerte</button></div>
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {positionen.map((p) => {
+                      const eps = bieter.map((b) => parseBetrag((b.preise || {})[p.code]) || 0);
+                      const valid = eps.filter((x) => x > 0); const minEp = valid.length ? Math.min(...valid) : 0;
+                      return (
+                        <tr key={p.code} className="border-b border-slate-100 hover:bg-slate-50/60">
+                          <td className="sticky left-0 z-10 bg-white px-2 py-1 tabular-nums whitespace-nowrap">{p.npk}</td>
+                          <td className="px-2 py-1">
+                            <span>{p.bezeichnung || <span className="text-slate-300">—</span>}</span>
+                            {p.langtext?.length ? <button className="ml-1 text-blue-600 text-[10px] hover:underline align-top" title="Langtext" onClick={() => setDetail(p)}>ⓘ</button> : null}
+                          </td>
+                          <td className="px-2 py-1 text-slate-500 whitespace-nowrap">{p.einheit}</td>
+                          <td className="px-2 py-1 text-right"><input className="w-16 text-xs text-right tabular-nums bg-transparent border-b border-transparent hover:border-slate-200 focus:border-blue-500 focus:outline-none" value={p.menge} onChange={(e) => dispatch({ type: "update", coll: "angebote", id: a.id, patch: { positionen: a.positionen.map((x) => x.code === p.code ? { ...x, menge: parseBetrag(e.target.value) } : x) } })} /></td>
+                          {bieter.map((b, bi) => { const ep = eps[bi]; return (
+                            <td key={bi} className={"px-1 py-1 border-l border-slate-100 " + (ep === minEp && ep > 0 ? "bg-emerald-50" : "")}>
+                              <input className={cell} value={(b.preise || {})[p.code] ?? ""} onChange={(e) => setEp(bi, p.code, e.target.value)} placeholder="–" />
+                            </td>
+                          ); })}
+                          <td className="border-l border-slate-100"></td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                  <tfoot className="sticky bottom-0 z-20">
+                    <tr className="bg-slate-50 font-semibold border-t-2 border-slate-300">
+                      <td className="sticky left-0 bg-slate-50 px-2 py-1.5">Total Brutto</td><td></td><td></td><td></td>
+                      {bieter.map((b, bi) => <td key={bi} className="px-2 py-1.5 text-right tabular-nums border-l border-slate-200">{chf(bieterBrutto(b, a))}</td>)}<td className="border-l border-slate-200"></td>
+                    </tr>
+                    <tr className="bg-slate-50">
+                      <td className="sticky left-0 bg-slate-50 px-2 py-1">Total Netto</td><td colSpan={3} className="text-[11px] text-slate-400 px-2">nach Konditionen</td>
+                      {bieter.map((b, bi) => { const n = bieterNetto(b, a); return <td key={bi} className={"px-2 py-1 text-right tabular-nums border-l border-slate-200 " + (n === nw.min && n > 0 ? "text-emerald-600 font-semibold" : "")}>{chf(n)}</td>; })}<td className="border-l border-slate-200"></td>
+                    </tr>
+                    <tr className="bg-slate-50">
+                      <td className="sticky left-0 bg-slate-50 px-2 py-1">Nutzwert</td><td colSpan={3} className="text-[11px] text-slate-400 px-2">Preis {nw.w.preis}% · Ref {nw.w.referenzen}% · Lehrl {nw.w.lehrlinge}%</td>
+                      {bieter.map((b, bi) => { const r = nwByB.get(b); const rang = rangByB.get(b); return <td key={bi} className="px-2 py-1 text-right tabular-nums border-l border-slate-200">{r ? r.nutz.toFixed(1) : "–"}{rang === 1 && r && r.nutz > 0 ? <span className="text-emerald-600"> ★</span> : ""}</td>; })}<td className="border-l border-slate-200"></td>
+                    </tr>
+                    <tr className="bg-emerald-50/40 print:hidden">
+                      <td className="sticky left-0 bg-emerald-50/40 px-2 py-1">Vergeben →</td><td></td><td></td><td></td>
+                      {bieter.map((b, bi) => <td key={bi} className="px-2 py-1 text-right border-l border-slate-200">{b.name ? <button className="text-blue-700 hover:underline" onClick={() => setVergabeFor({ a, b, brutto: bieterBrutto(b, a), netto: bieterNetto(b, a) })}>wählen</button> : ""}</td>)}<td className="border-l border-slate-200"></td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+
+              <div className="flex flex-wrap gap-2 items-center">
+                <button className={btnGhost} onClick={() => setShowKond(!showKond)}>{showKond ? "Konditionen & Bewertung ausblenden" : "Konditionen & Bewertung"}</button>
+                <button className={btnGhost} onClick={exportVergleich}>Vergleich als CSV exportieren</button>
+                <button className={btnGhost} onClick={() => setOfferFor({ aId: a.id, bieterIndex: null })}>+ Offerte importieren</button>
+              </div>
+
+              {showKond && bieter.length > 0 && (
+                <div className={`${card} overflow-x-auto`}>
+                  <div className="px-3 py-2 bg-slate-50 text-sm font-medium border-b border-slate-200">Konditionen (Kaskade auf Brutto) & Bewertungspunkte (0–100)</div>
+                  <table className="w-full text-xs">
+                    <thead className="text-slate-500"><tr><th className="text-left px-2 py-1.5">Unternehmer</th><th className="px-2 py-1.5 text-right">Rabatt %</th><th className="px-2 py-1.5 text-right">Pauschal</th><th className="px-2 py-1.5 text-right">Skonto %</th><th className="px-2 py-1.5 text-right">Bauabz. %</th><th className="px-2 py-1.5 text-right">Rundung</th><th className="px-2 py-1.5 text-right">Netto</th><th className="px-2 py-1.5 text-right">Referenz</th><th className="px-2 py-1.5 text-right">Lehrling</th><th className="px-2 py-1.5 text-left">Bemerkung</th></tr></thead>
+                    <tbody>{bieter.map((b, bi) => (
+                      <tr key={bi} className="border-t border-slate-100">
+                        <td className="px-2 py-1 font-medium whitespace-nowrap">{b.name || ("Firma " + (bi + 1))}</td>
+                        <td className="px-2 py-1"><input className={cell} value={b.rabattPct} onChange={(e) => patchBieter(bi, { rabattPct: e.target.value })} /></td>
+                        <td className="px-2 py-1"><input className={cell} value={b.pauschalabzug} onChange={(e) => patchBieter(bi, { pauschalabzug: e.target.value })} /></td>
+                        <td className="px-2 py-1"><input className={cell} value={b.skontoPct} onChange={(e) => patchBieter(bi, { skontoPct: e.target.value })} /></td>
+                        <td className="px-2 py-1"><input className={cell} value={b.bauabzuegePct} onChange={(e) => patchBieter(bi, { bauabzuegePct: e.target.value })} /></td>
+                        <td className="px-2 py-1"><input className={cell} value={b.rundung} onChange={(e) => patchBieter(bi, { rundung: e.target.value })} /></td>
+                        <td className="px-2 py-1 text-right tabular-nums font-medium">{chf(bieterNetto(b, a))}</td>
+                        <td className="px-2 py-1"><input className={cell} value={b.referenzPunkte} onChange={(e) => patchBieter(bi, { referenzPunkte: e.target.value })} /></td>
+                        <td className="px-2 py-1"><input className={cell} value={b.lehrlingPunkte} onChange={(e) => patchBieter(bi, { lehrlingPunkte: e.target.value })} /></td>
+                        <td className="px-2 py-1"><input className="w-full text-xs px-1 py-0.5 border border-slate-200 rounded" value={b.bemerkung} onChange={(e) => patchBieter(bi, { bemerkung: e.target.value })} /></td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              )}
+            </>
+          )}
+
+          {a.bedingungen && (
+            <div className={`${card} p-4`}>
+              <h3 className="text-sm font-semibold mb-2">Besondere Bestimmungen / Bedingungen</h3>
+              <div className="max-h-52 overflow-y-auto whitespace-pre-wrap text-xs text-slate-600">{a.bedingungen}</div>
+            </div>
+          )}
+        </>
+      )}
+
+      {detail && (
+        <Modal title={detail.npk + " " + (detail.bezeichnung || "")} onClose={() => setDetail(null)} wide>
+          <div className="text-sm text-slate-600 whitespace-pre-wrap">{(detail.langtext || []).join("\n") || "Kein Langtext."}</div>
+          <div className="mt-3 text-xs text-slate-500">Einheit {detail.einheit || "—"} · Menge {detail.menge}</div>
+        </Modal>
+      )}
+      {offerFor && <OfferteImportModal a={d.angebote.find((x) => x.id === offerFor.aId)} bieterIndex={offerFor.bieterIndex} dispatch={dispatch} onClose={() => setOfferFor(null)} />}
+      {vergabeFor && <VergabeModal info={vergabeFor} vertraege={d.vertraege} dispatch={dispatch} projektId={projektId} onClose={() => setVergabeFor(null)} />}
+    </div>
+  );
+}
+
+function OfferteImportModal({ a, bieterIndex, dispatch, onClose }) {
+  const [ziel, setZiel] = useState(bieterIndex != null ? String(bieterIndex) : "__new");
+  const [neuName, setNeuName] = useState("");
+  const [text, setText] = useState("");
+  const [fileName, setFileName] = useState("");
+  const fileRef = useRef(null);
+  const result = useMemo(() => (text ? parseOfferteCsv(text, a.positionen || []) : { count: 0, preise: {} }), [text, a]);
+
+  async function onFile(e) {
+    const file = e.target.files?.[0]; if (!file) return;
+    setFileName(file.name);
+    try {
+      if (/\.(crbx|e1s|sia|zip)$/i.test(file.name)) {
+        const buf = await file.arrayBuffer(); const t = await unzipCrbx(buf); const parsed = parseSia451(t);
+        const have = {}; (a.positionen || []).forEach((p) => { have[p.code] = true; });
+        const csv = ["Code;Einheitspreis"];
+        parsed.positionen.forEach((p) => { if (have[p.code] && p.preis) csv.push(p.code + ";" + p.preis); });
+        setText(csv.join("\n"));
+      } else {
+        setText(await file.text());
+      }
+    } catch (err) { alert("Fehler beim Lesen der Datei: " + (err?.message || err)); }
+  }
+  function importieren() {
+    const preise = result.preise; const bieter = [...(a.bieter || [])];
+    if (ziel === "__new") bieter.push({ name: neuName || "Unternehmer", preise, bemerkung: "", rabattPct: 0, pauschalabzug: 0, skontoPct: 0, bauabzuegePct: 0, rundung: 0, referenzPunkte: 0, lehrlingPunkte: 0 });
+    else { const bi = Number(ziel); bieter[bi] = { ...bieter[bi], preise: { ...(bieter[bi].preise || {}), ...preise } }; }
+    dispatch({ type: "update", coll: "angebote", id: a.id, patch: { bieter } });
+    onClose();
+  }
+  return (
+    <Modal title="Offerte eines Unternehmers importieren" onClose={onClose} wide>
+      <div className="space-y-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <Field label="Unternehmer">
+            <select className={inputCls} value={ziel} onChange={(e) => setZiel(e.target.value)}>
+              <option value="__new">— neuer Unternehmer —</option>
+              {(a.bieter || []).map((b, bi) => <option key={bi} value={bi}>{b.name || `Firma ${bi + 1}`}</option>)}
+            </select>
+          </Field>
+          {ziel === "__new" && <Field label="Name neuer Unternehmer"><input className={inputCls} value={neuName} onChange={(e) => setNeuName(e.target.value)} placeholder="z.B. Muster Bau AG" /></Field>}
+        </div>
+        <div className="flex items-center gap-2">
+          <button className={btnGhost} onClick={() => fileRef.current?.click()}>Datei wählen (CSV oder .crbx)</button>
+          <input ref={fileRef} type="file" accept=".csv,.crbx,.e1s,.sia,application/zip,text/csv" className="hidden" onChange={onFile} />
+          {fileName && <span className="text-xs text-slate-500">{fileName}</span>}
+        </div>
+        <Field label="… oder Preise als CSV einfügen (Spalten: Code/NPK ; Einheitspreis)">
+          <textarea className={`${inputCls} font-mono h-32`} value={text} onChange={(e) => setText(e.target.value)} placeholder={"Code;Einheitspreis\n661211;48.50\n661212;52.00"} />
+        </Field>
+        <div className="text-sm text-slate-600">{result.count} von {(a.positionen || []).length} Positionen zugeordnet.</div>
+        <div className="flex justify-end gap-2"><button className={btnGhost} onClick={onClose}>Abbrechen</button><button className={btnPrimary} disabled={!result.count || (ziel === "__new" && !neuName)} onClick={importieren}>Preise übernehmen</button></div>
+      </div>
+    </Modal>
+  );
+}
+
+function VergabeModal({ info, vertraege, dispatch, projektId, onClose }) {
+  const { a, b, brutto, netto } = info;
+  const [modus, setModus] = useState("neu");
+  const [vertragId, setVertragId] = useState("");
+  function vergeben() {
+    if (!a.positionId) { alert("Bitte zuerst eine BKP-Position der Ausschreibung zuordnen."); return; }
+    if (modus === "neu") {
+      dispatch({ type: "add", coll: "vertraege", item: { id: uid(), projektId, positionId: a.positionId, unternehmer: b.name, nr: a.titel, betrag: brutto, rabattPct: Number(b.rabattPct) || 0, pauschalabzug: Number(b.pauschalabzug) || 0, skontoPct: Number(b.skontoPct) || 0, bauabzuegePct: Number(b.bauabzuegePct) || 0, rundung: Number(b.rundung) || 0, regieBudget: 0, teuerung: 0, datum: today(), ausschreibungen: [a.titel] } });
+    } else {
+      const v = vertraege.find((x) => x.id === vertragId); if (!v) return;
+      dispatch({ type: "update", coll: "vertraege", id: v.id, patch: { betrag: (Number(v.betrag) || 0) + brutto, nr: [v.nr, a.titel].filter(Boolean).join(" + "), ausschreibungen: [...(v.ausschreibungen || []), a.titel] } });
+    }
+    onClose();
+  }
+  return (
+    <Modal title={`Vergabe an ${b.name || "Unternehmer"}`} onClose={onClose}>
+      <div className="space-y-3">
+        <p className="text-sm text-slate-600">Ausschreibung «{a.titel}» · Brutto <span className="tabular-nums font-medium">{chf(brutto)}</span> → Netto <span className="tabular-nums font-medium">{chf(netto)}</span></p>
+        <div className="flex gap-4 text-sm">
+          <label className="inline-flex items-center gap-1.5"><input type="radio" checked={modus === "neu"} onChange={() => setModus("neu")} /> neuer Vertrag</label>
+          <label className="inline-flex items-center gap-1.5"><input type="radio" checked={modus === "bestehend"} onChange={() => setModus("bestehend")} /> zu bestehendem Vertrag hinzufügen</label>
+        </div>
+        {modus === "bestehend" && (
+          <Field label="Vertrag (Brutto wird addiert)"><select className={inputCls} value={vertragId} onChange={(e) => setVertragId(e.target.value)}><option value="">wählen…</option>{vertraege.map((v) => <option key={v.id} value={v.id}>{v.unternehmer}{v.nr ? ` · ${v.nr}` : ""} ({chf(v.betrag)})</option>)}</select></Field>
+        )}
+        <p className="text-xs text-slate-400">Bei «neuer Vertrag» werden die %-Konditionen des Bieters übernommen. Bei «bestehend» wird die Brutto-Summe addiert und es gelten die Konditionen des bestehenden Vertrags — so bündelt ein Vertrag mehrere Ausschreibungen. Regiebudget/Teuerung anschliessend unter «Verträge» ergänzen.</p>
+        <div className="flex justify-end gap-2"><button className={btnGhost} onClick={onClose}>Abbrechen</button><button className={btnPrimary} disabled={modus === "bestehend" && !vertragId} onClick={vergeben}>Vergeben</button></div>
+      </div>
+    </Modal>
+  );
+}
+
+function RapporteView({ d, dispatch, projektId }) {
+  const [f, setF] = useState({ vertragId: "", datum: today(), beschrieb: "", stunden: "", ansatz: "", material: "" });
+  const [importOpen, setImportOpen] = useState(false);
+  const vertragOf = (id) => d.vertraege.find((x) => x.id === id);
+  const vLabel = (id) => { const v = vertragOf(id); if (!v) return "— (Vertrag fehlt)"; const p = d.positionen.find((x) => x.id === v.positionId); return `${v.unternehmer}${p ? " · " + p.bkp : ""}`; };
+  const totalNetto = d.rapporte.reduce((s, r) => s + rapportNetto(r, vertragOf(r.vertragId)), 0);
+  const proVertrag = useMemo(() => {
+    return d.vertraege.map((v) => {
+      const rs = d.rapporte.filter((r) => r.vertragId === v.id).reduce((s, r) => s + rapportNetto(r, v), 0);
+      return { v, rs, budget: Number(v.regieBudget) || 0, ueber: Math.max(0, rs - (Number(v.regieBudget) || 0)) };
+    }).filter((x) => x.rs > 0 || x.budget > 0);
+  }, [d]);
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-slate-500">Rapporte werden auf <strong>Verträge</strong> gebucht und mit den <strong>%-Konditionen des Vertrags</strong> verrechnet (netto). Solange die Netto-Summe das Regiebudget nicht übersteigt, erhöht sich die Erwartung nicht — erst der <strong>Überschuss</strong> fliesst automatisch in die Erwartung.</p>
+      <div className={`${card} p-4`}>
+        <div className="grid grid-cols-1 md:grid-cols-[1fr_120px_1fr_80px_80px_90px_auto] gap-2 items-end">
+          <Field label="Vertrag"><select className={inputCls} value={f.vertragId} onChange={(e) => setF({ ...f, vertragId: e.target.value })}><option value="">wählen…</option>{d.vertraege.map((v) => <option key={v.id} value={v.id}>{vLabel(v.id)}</option>)}</select></Field>
+          <Field label="Datum"><input type="date" className={inputCls} value={f.datum} onChange={(e) => setF({ ...f, datum: e.target.value })} /></Field>
+          <Field label="Beschrieb"><input className={inputCls} value={f.beschrieb} onChange={(e) => setF({ ...f, beschrieb: e.target.value })} /></Field>
+          <Field label="Std."><input className={inputCls} value={f.stunden} onChange={(e) => setF({ ...f, stunden: e.target.value })} /></Field>
+          <Field label="Ansatz"><input className={inputCls} value={f.ansatz} onChange={(e) => setF({ ...f, ansatz: e.target.value })} /></Field>
+          <Field label="Material"><input className={inputCls} value={f.material} onChange={(e) => setF({ ...f, material: e.target.value })} /></Field>
+          <button className={btnPrimary} disabled={!f.vertragId} onClick={() => { dispatch({ type: "add", coll: "rapporte", item: { id: uid(), projektId, ...f, stunden: parseBetrag(f.stunden), ansatz: parseBetrag(f.ansatz), material: parseBetrag(f.material) } }); setF({ vertragId: "", datum: today(), beschrieb: "", stunden: "", ansatz: "", material: "" }); }}>+</button>
+        </div>
+        <div className="mt-2"><button className="text-blue-700 text-xs hover:underline" onClick={() => setImportOpen(true)}>Rapporte importieren (CSV)…</button></div>
+      </div>
+
+      {proVertrag.length > 0 && (
+        <div className={`${card} p-4`}>
+          <h3 className="text-sm font-semibold mb-2">Regiebudget pro Vertrag (netto inkl. Konditionen)</h3>
+          <table className="w-full text-sm"><tbody>
+            {proVertrag.map(({ v, rs, budget, ueber }) => (
+              <tr key={v.id} className="border-t border-slate-100 first:border-0">
+                <td className="py-1.5">{vLabel(v.id)}</td>
+                <td className="py-1.5 text-right tabular-nums text-slate-500">{chf(rs)} / {chf(budget)}</td>
+                <td className="py-1.5 text-right w-44">{ueber > 0 ? <span className="text-red-600 font-medium tabular-nums">Überschuss +{chf(ueber)} → Erwartung</span> : <span className="text-emerald-600 text-xs">im Budget</span>}</td>
+              </tr>
+            ))}
+          </tbody></table>
+        </div>
+      )}
+
+      {!d.rapporte.length ? <Empty text="Keine Rapporte erfasst." /> : (
+        <div className={`${card} overflow-x-auto`}><table className="w-full text-sm">
+          <thead className="bg-slate-50 text-slate-500 text-xs"><tr><th className="text-left font-medium px-3 py-2">Datum</th><th className="text-left font-medium px-3 py-2">Vertrag</th><th className="text-left font-medium px-3 py-2">Beschrieb</th><th className="text-right font-medium px-3 py-2">Std.</th><th className="text-right font-medium px-3 py-2">Ansatz</th><th className="text-right font-medium px-3 py-2">Material</th><th className="text-right font-medium px-3 py-2">Betrag</th><th className="text-right font-medium px-3 py-2">netto n. Kond.</th><th className="w-12"></th></tr></thead>
+          <tbody>{d.rapporte.map((r) => { const v = vertragOf(r.vertragId); return (<tr key={r.id} className="border-t border-slate-100"><td className="px-3 py-2 tabular-nums text-slate-500">{r.datum}</td><td className="px-3 py-2">{vLabel(r.vertragId)}</td><td className="px-3 py-2 text-slate-600">{r.beschrieb}</td><td className="px-3 py-2 text-right tabular-nums">{r.stunden || "–"}</td><td className="px-3 py-2 text-right tabular-nums">{r.ansatz ? chf(r.ansatz) : "–"}</td><td className="px-3 py-2 text-right tabular-nums">{r.material ? chf(r.material) : "–"}</td><td className="px-3 py-2 text-right tabular-nums">{chf(rapportBetrag(r))}</td><td className="px-3 py-2 text-right tabular-nums font-medium">{chf(rapportNetto(r, v))}</td><td className="px-3 py-2 text-right"><button className="text-red-600 text-xs hover:underline" onClick={() => dispatch({ type: "remove", coll: "rapporte", id: r.id })}>Lö.</button></td></tr>); })}</tbody>
+          <tfoot><tr className="border-t-2 border-slate-300 font-semibold bg-slate-50"><td className="px-3 py-2" colSpan={7}>Total Regie netto</td><td className="px-3 py-2 text-right tabular-nums">{chf(totalNetto)}</td><td></td></tr></tfoot>
+        </table></div>
+      )}
+      {importOpen && <RapportImport vertraege={d.vertraege} onClose={() => setImportOpen(false)} onImport={(rows) => { dispatch({ type: "addMany", coll: "rapporte", items: rows.map((r) => ({ id: uid(), projektId, ...r })) }); setImportOpen(false); }} />}
+    </div>
+  );
+}
+
+function RapportImport({ vertraege, onClose, onImport }) {
+  const [text, setText] = useState("VertragsNr;Datum;Beschrieb;Stunden;Ansatz;Material\nV-2025-05;2026-05-12;Anpassung Heizung;16;95;2400\nV-2025-05;2026-05-19;Regie Verteiler;8;95;0");
+  const rows = useMemo(() => {
+    const lines = text.trim().split(/\r?\n/).filter((l) => l.trim()); if (!lines.length) return [];
+    const delim = lines[0].includes("\t") ? "\t" : lines[0].includes(";") ? ";" : ",";
+    const first = splitDelimited(lines[0], delim).join(" ").toLowerCase();
+    const hasHeader = /vertrag|datum|stunden|ansatz|material|beschr/.test(first);
+    return (hasHeader ? lines.slice(1) : lines).map((line) => {
+      const c = splitDelimited(line, delim); const key = (c[0] || "").trim();
+      const v = vertraege.find((x) => String(x.nr).trim() === key || x.unternehmer === key);
+      return { vertragId: v ? v.id : "", key, datum: (c[1] || today()).trim(), beschrieb: (c[2] || "").trim(), stunden: parseBetrag(c[3]), ansatz: parseBetrag(c[4]), material: parseBetrag(c[5]), _match: !!v };
+    });
+  }, [text, vertraege]);
+  const ok = rows.filter((r) => r._match);
+  return (
+    <Modal title="Rapporte importieren" onClose={onClose} wide>
+      <p className="text-sm text-slate-500 mb-2">Spalten: Vertrags-Nr. (oder Unternehmer) · Datum · Beschrieb · Stunden · Ansatz · Material.</p>
+      <textarea className={`${inputCls} font-mono h-32`} value={text} onChange={(e) => setText(e.target.value)} />
+      <div className="mt-3 max-h-48 overflow-y-auto border border-slate-200 rounded-md"><table className="w-full text-sm"><tbody>{rows.map((r, i) => (<tr key={i} className="border-b border-slate-100 last:border-0"><td className="px-3 py-1 tabular-nums w-28">{r.key}</td><td className="px-3 py-1">{r.beschrieb}</td><td className="px-3 py-1 text-right tabular-nums">{chf(r.stunden * r.ansatz + r.material)}</td><td className="px-3 py-1 w-24">{r._match ? <span className="text-emerald-600">✓</span> : <span className="text-red-500 text-xs">kein Vertrag</span>}</td></tr>))}</tbody></table></div>
+      <div className="flex justify-end gap-2 pt-4"><button className={btnGhost} onClick={onClose}>Abbrechen</button><button className={btnPrimary} disabled={!ok.length} onClick={() => onImport(ok)}>{ok.length} Rapporte importieren</button></div>
+    </Modal>
+  );
+}
+
+function ErwartungenView({ d, dispatch, projektId, ks }) {
+  const [f, setF] = useState({ positionId: "", bezeichnung: "", betrag: "", datum: today() });
+  const opts = posSelectOptions(d.positionen);
+  const posLabel = (id) => { const x = d.positionen.find((p) => p.id === id); return x ? `${x.bkp} ${x.bezeichnung}` : "—"; };
+  const autoZeilen = useMemo(() => ks.ordered.filter((z) => !z.hasChildren && z.eigen.regieUeber > 0).map((z) => ({ pos: z.pos, betrag: z.eigen.regieUeber })), [ks]);
+  const totalMan = d.erwartungen.reduce((s, e) => s + (Number(e.betrag) || 0), 0);
+  const totalAuto = autoZeilen.reduce((s, z) => s + z.betrag, 0);
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-slate-500">Erwartungen sind <strong>Mehrkosten gegenüber dem Vertrag</strong> (bzw. KV), die noch in keinem Nachtrag stecken — mehrzeilig pro BKP. Prognose = Vertrag (oder KV) + Erwartung. Regie-Überschüsse aus Rapporten erscheinen automatisch. Tipp: In der Bauabrechnung kannst du Erwartung und Prognose pro Position auch per Doppelklick direkt setzen.</p>
+      <div className={`${card} p-4`}>
+        <div className="grid grid-cols-1 md:grid-cols-[1fr_1fr_140px_140px_auto] gap-3 items-end">
+          <Field label="BKP-Position"><select className={inputCls} value={f.positionId} onChange={(e) => setF({ ...f, positionId: e.target.value })}><option value="">wählen…</option>{opts.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</select></Field>
+          <Field label="Bezeichnung"><input className={inputCls} value={f.bezeichnung} onChange={(e) => setF({ ...f, bezeichnung: e.target.value })} placeholder="z.B. Mehrkosten Bewehrung" /></Field>
+          <Field label="Betrag (+/−)"><input className={inputCls} value={f.betrag} onChange={(e) => setF({ ...f, betrag: e.target.value })} /></Field>
+          <Field label="Datum"><input type="date" className={inputCls} value={f.datum} onChange={(e) => setF({ ...f, datum: e.target.value })} /></Field>
+          <button className={btnPrimary} disabled={!f.positionId || !f.betrag} onClick={() => { dispatch({ type: "add", coll: "erwartungen", item: { id: uid(), projektId, ...f, betrag: parseBetrag(f.betrag) } }); setF({ positionId: "", bezeichnung: "", betrag: "", datum: today() }); }}>Erfassen</button>
+        </div>
+      </div>
+
+      {autoZeilen.length > 0 && (
+        <div className={`${card} p-4`}>
+          <h3 className="text-sm font-semibold mb-2">Automatische Erwartungen (Regie-Überschuss)</h3>
+          <table className="w-full text-sm"><tbody>
+            {autoZeilen.map((z, i) => (<tr key={i} className="border-t border-slate-100 first:border-0"><td className="py-1.5">{z.pos.bkp} {z.pos.bezeichnung}</td><td className="py-1.5 text-slate-500 text-xs">Regie über Budget (netto)</td><td className="py-1.5 text-right"><Abw v={z.betrag} /></td></tr>))}
+          </tbody></table>
+        </div>
+      )}
+
+      {!d.erwartungen.length ? <Empty text="Keine manuellen Erwartungen erfasst." /> : (
+        <div className={`${card} overflow-x-auto`}><table className="w-full text-sm">
+          <thead className="bg-slate-50 text-slate-500 text-xs"><tr><th className="text-left font-medium px-3 py-2">Datum</th><th className="text-left font-medium px-3 py-2">Position</th><th className="text-left font-medium px-3 py-2">Bezeichnung</th><th className="text-right font-medium px-3 py-2">Betrag</th><th className="w-12"></th></tr></thead>
+          <tbody>{d.erwartungen.map((e) => (
+            <tr key={e.id} className="border-t border-slate-100">
+              <td className="px-3 py-2 tabular-nums text-slate-500">{e.datum}</td>
+              <td className="px-3 py-2">{posLabel(e.positionId)}</td>
+              <td className="px-3 py-2"><input className="w-full text-sm bg-transparent border-b border-transparent hover:border-slate-200 focus:border-blue-500 focus:outline-none py-0.5" value={e.bezeichnung || ""} onChange={(ev) => dispatch({ type: "update", coll: "erwartungen", id: e.id, patch: { bezeichnung: ev.target.value } })} /></td>
+              <td className="px-3 py-2 text-right"><input className="w-28 text-sm text-right tabular-nums bg-transparent border-b border-transparent hover:border-slate-200 focus:border-blue-500 focus:outline-none py-0.5" value={e.betrag} onChange={(ev) => dispatch({ type: "update", coll: "erwartungen", id: e.id, patch: { betrag: parseBetrag(ev.target.value) } })} /></td>
+              <td className="px-3 py-2 text-right"><button className="text-red-600 text-xs hover:underline" onClick={() => dispatch({ type: "remove", coll: "erwartungen", id: e.id })}>Lö.</button></td>
+            </tr>
+          ))}</tbody>
+          <tfoot><tr className="border-t-2 border-slate-300 font-semibold bg-slate-50"><td className="px-3 py-2" colSpan={3}>Total Erwartungen (manuell {chf(totalMan)} + automatisch {chf(totalAuto)})</td><td className="px-3 py-2 text-right"><Abw v={totalMan + totalAuto} /></td><td></td></tr></tfoot>
+        </table></div>
+      )}
+    </div>
+  );
+}
+
+function AbrechnungView({ ks, projekt, d, dispatch, projektId }) {
+  const [brutto, setBrutto] = useState(false);
+  const [open, setOpen] = useState({});
+  const [allOpen, setAllOpen] = useState(false);
+  const f = brutto ? (1 + ks.satz / 100) : 1;
+  const V = (n) => chf((Number(n) || 0) * f);
+
+  const details = useMemo(() => {
+    const map = {};
+    d.positionen.forEach((pos) => {
+      const vts = d.vertraege.filter((v) => v.positionId === pos.id);
+      const vIds = vts.map((v) => v.id);
+      const items = [];
+      vts.forEach((v) => {
+        items.push({ kind: "vertrag", label: `Vertrag · ${v.unternehmer}${v.nr ? " (" + v.nr + ")" : ""}`, sub: hatKonditionen(v) ? konditionenText(v) : "", col: "vertrag", betrag: konditionenNetto(v.betrag, v, true) });
+        d.nachtraege.filter((n) => n.vertragId === v.id).forEach((n) => {
+          items.push({ kind: "nt", label: `Nachtrag · ${n.bezeichnung}`, sub: n.status, col: n.status === "genehmigt" ? "nt" : "prognose", betrag: n.status === "abgelehnt" ? 0 : konditionenNetto(n.betrag, v, false), muted: n.status !== "genehmigt" });
+        });
+        if (Number(v.teuerung)) items.push({ kind: "teuerung", label: `Teuerung · ${v.unternehmer}`, sub: "", col: "beauftragt", betrag: Number(v.teuerung) });
+      });
+      d.mutationen.filter((m) => m.positionId === pos.id).forEach((m) => items.push({ kind: "mut", label: `Mutation · ${m.grund || ""}`, sub: m.datum, col: "kvrev", betrag: Number(m.betrag) || 0, signed: true }));
+      d.umbuchungen.filter((u) => u.vonPositionId === pos.id).forEach((u) => items.push({ kind: "umb", label: `Umbuchung → ${(d.positionen.find((p) => p.id === u.nachPositionId) || {}).bkp || "?"} · ${u.grund || ""}`, sub: u.datum, col: "kvrev", betrag: -(Number(u.betrag) || 0), signed: true }));
+      d.umbuchungen.filter((u) => u.nachPositionId === pos.id).forEach((u) => items.push({ kind: "umb", label: `Umbuchung ← ${(d.positionen.find((p) => p.id === u.vonPositionId) || {}).bkp || "?"} · ${u.grund || ""}`, sub: u.datum, col: "kvrev", betrag: Number(u.betrag) || 0, signed: true }));
+      d.erwartungen.filter((e) => e.positionId === pos.id).forEach((e) => items.push({ kind: "erw", label: `Erwartung · ${e.bezeichnung || "—"}`, sub: e.datum, col: "erwartung", betrag: Number(e.betrag) || 0, signed: true }));
+      const eig = ks.ordered.find((z) => z.pos.id === pos.id)?.eigen;
+      if (eig && eig.regieUeber > 0) items.push({ kind: "erw", label: "Erwartung · Regieüberschuss (automatisch)", sub: "aus Rapporten", col: "erwartung", betrag: eig.regieUeber, signed: true });
+      d.rechnungen.filter((r) => vIds.includes(r.vertragId) || r.positionId === pos.id).forEach((r) => {
+        const v = d.vertraege.find((x) => x.id === r.vertragId);
+        items.push({ kind: "rg", label: `${RTYP[r.typ] || "Rechnung"} ${r.nr || ""} · ${v ? v.unternehmer : "ohne Vertrag"}`, sub: `${r.datum} · ${r.status}`, col: "bezahlt", betrag: Number(r.betrag) || 0, muted: r.status !== "bezahlt" });
+      });
+      if (items.length) map[pos.id] = items;
+    });
+    return map;
+  }, [d, ks]);
+
+  function setErwartungZiel(z, target) {
+    const auto = z.eigen.regieUeber;
+    const rows = d.erwartungen.filter((e) => e.positionId === z.pos.id);
+    const adj = rows.find((e) => e.anpassung);
+    const otherSum = rows.filter((e) => !e.anpassung).reduce((s, e) => s + (Number(e.betrag) || 0), 0);
+    const neu = target - auto - otherSum;
+    if (adj) {
+      if (Math.abs(neu) < 0.005) dispatch({ type: "remove", coll: "erwartungen", id: adj.id });
+      else dispatch({ type: "update", coll: "erwartungen", id: adj.id, patch: { betrag: neu, datum: today() } });
+    } else if (Math.abs(neu) >= 0.005) {
+      dispatch({ type: "add", coll: "erwartungen", item: { id: uid(), projektId, positionId: z.pos.id, bezeichnung: "Anpassung (Bauabrechnung)", anpassung: true, betrag: neu, datum: today() } });
+    }
+  }
+  function setPrognoseZiel(z, target) { setErwartungZiel(z, target - prognoseBasis(z.eigen)); }
+
+  function exportCsv() {
+    const head = ["BKP", "Ebene", "Bezeichnung", "KV", "Mut./Umb.", "KV revidiert", "Vertrag netto", "NT genehmigt", "Teuerung", "Beauftragt", "Erwartung", "Prognose", "Bezahlt", "Abweichung KV"];
+    const lines = [head.join(";")];
+    ks.ordered.forEach((z) => lines.push([z.pos.bkp, z.depth, '"' + z.pos.bezeichnung + '"', z.roll.kv, z.roll.mutSumme, z.roll.kvRevidiert, Math.round(z.roll.vertragNetto), Math.round(z.roll.ntGen), z.roll.teuerung, Math.round(z.roll.beauftragt), Math.round(z.roll.erwartung), Math.round(z.roll.prognose), z.roll.bezahlt, Math.round(z.roll.abwKv)].join(";")));
+    const t = ks.total;
+    lines.push(["", "", "TOTAL NETTO", t.kv, "", t.kvRevidiert, Math.round(t.vertragNetto), Math.round(t.ntGen), t.teuerung, Math.round(t.beauftragt), Math.round(t.erwartung), Math.round(t.prognose), t.bezahlt, Math.round(t.abwKv)].join(";"));
+    lines.push(["", "", `MwSt ${ks.satz}%`, "", "", "", "", "", "", "", "", Math.round(ks.mwst), "", ""].join(";"));
+    lines.push(["", "", "TOTAL BRUTTO", "", "", "", "", "", "", "", "", Math.round(ks.brutto), "", ""].join(";"));
+    if (ks.reserve) lines.push(["", "", `Teuerungsreserve ${ks.resSatz}%`, "", "", "", "", "", "", "", "", Math.round(ks.reserve), "", ""].join(";"));
+    const blob = new Blob(["﻿" + lines.join("\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = `Bauabrechnung_${(projekt?.name || "Projekt").replace(/\s+/g, "_")}.csv`; a.click(); URL.revokeObjectURL(url);
+  }
+  if (!ks.ordered.length) return <Empty text="Noch keine Daten für die Bauabrechnung." />;
+  const t = ks.total;
+  const byGroup = {}; ks.ordered.forEach((z) => { const g = bkpGroup(z.pos.bkp); (byGroup[g] = byGroup[g] || []).push(z); });
+  const colIdx = { kv: 1, kvrev: 2, vertrag: 3, nt: 4, beauftragt: 5, erwartung: 6, prognose: 7, bezahlt: 8 };
+  const isOpen = (id) => allOpen || open[id];
+
+  return (
+    <div className="space-y-4">
+      <div className="flex gap-2 print:hidden flex-wrap items-center">
+        <button className={btnPrimary} onClick={exportCsv}>CSV exportieren</button>
+        <button className={btnGhost} onClick={() => window.print()}>Drucken / PDF</button>
+        <button className={btnGhost} onClick={() => { setAllOpen(!allOpen); setOpen({}); }}>{allOpen ? "Details zuklappen" : "Alle Details aufklappen"}</button>
+        <div className="ml-auto inline-flex rounded-md border border-slate-200 overflow-hidden text-sm">
+          <button className={`px-3 py-1.5 ${!brutto ? "bg-blue-700 text-white" : "bg-white text-slate-600"}`} onClick={() => setBrutto(false)}>Netto</button>
+          <button className={`px-3 py-1.5 ${brutto ? "bg-blue-700 text-white" : "bg-white text-slate-600"}`} onClick={() => setBrutto(true)}>Brutto (inkl. {ks.satz}%)</button>
+        </div>
+      </div>
+      <p className="text-xs text-slate-400 print:hidden">▸ öffnet Detailzeilen (Verträge, Rechnungen, Mutationen, Erwartungen). Doppelklick auf <strong>Erwartung</strong> oder <strong>Prognose</strong> einer Position (ohne Unterpositionen) setzt den Wert direkt — die Differenz wird als Zeile «Anpassung (Bauabrechnung)» in den Erwartungen geführt. Direkteingabe wirkt auf Nettowerte.</p>
+      <div className={`${card} p-5`}>
+        <div className="mb-4 pb-3 border-b border-slate-200">
+          <h2 className="text-lg font-bold">Bauabrechnung / Kostenzusammenstellung nach BKP</h2>
+          <p className="text-sm text-slate-500">{projekt?.name}{projekt?.strasse ? `, ${projekt.strasse}` : ""} · {projekt?.plzOrt || projekt?.ort} · Bauherr: {projekt?.bauherr} · Stand {today()} · Beträge {brutto ? "brutto" : "netto"}</p>
+        </div>
+        <div className="overflow-x-auto"><table className="w-full text-xs">
+          <thead className="text-slate-500"><tr className="border-b border-slate-300">
+            <th className="text-left font-medium px-2 py-1.5">BKP / Bezeichnung</th><th className="text-right font-medium px-2 py-1.5">KV</th><th className="text-right font-medium px-2 py-1.5">KV rev.</th><th className="text-right font-medium px-2 py-1.5">Vertrag</th><th className="text-right font-medium px-2 py-1.5">NT gen.</th><th className="text-right font-medium px-2 py-1.5">Beauftr.</th><th className="text-right font-medium px-2 py-1.5">Erwartung</th><th className="text-right font-medium px-2 py-1.5">Prognose</th><th className="text-right font-medium px-2 py-1.5">Bezahlt</th><th className="text-right font-medium px-2 py-1.5">Abw. KV</th>
+          </tr></thead>
+          <tbody>
+            {ks.groups.map((g) => (
+              <React.Fragment key={g.g}>
+                <tr className="bg-slate-100 font-medium"><td className="px-2 py-1" colSpan={10}>{g.g} · {g.name}</td></tr>
+                {(byGroup[g.g] || []).map((z) => {
+                  const det = details[z.pos.id] || [];
+                  const editable = !z.hasChildren;
+                  return (
+                    <React.Fragment key={z.pos.id}>
+                      <tr className={`border-b border-slate-50 ${z.hasChildren ? "font-semibold bg-slate-50/40" : ""}`}>
+                        <td className="px-2 py-1" style={{ paddingLeft: 8 + z.depth * 16 }}>
+                          {det.length > 0 && <button className="text-slate-400 hover:text-slate-700 mr-1 print:hidden" onClick={() => setOpen({ ...open, [z.pos.id]: !isOpen(z.pos.id) })}>{isOpen(z.pos.id) ? "▾" : "▸"}</button>}
+                          <span className="tabular-nums">{z.pos.bkp}</span> {z.pos.bezeichnung}
+                        </td>
+                        <td className="px-2 py-1 text-right tabular-nums">{V(z.roll.kv)}</td>
+                        <td className="px-2 py-1 text-right tabular-nums">{V(z.roll.kvRevidiert)}</td>
+                        <td className="px-2 py-1 text-right tabular-nums">{z.roll.vertragNetto ? V(z.roll.vertragNetto) : "–"}</td>
+                        <td className="px-2 py-1 text-right tabular-nums">{z.roll.ntGen ? V(z.roll.ntGen) : "–"}</td>
+                        <td className="px-2 py-1 text-right tabular-nums">{z.roll.beauftragt ? V(z.roll.beauftragt) : "–"}</td>
+                        <td className="px-2 py-1 text-right tabular-nums">
+                          {editable ? <EditCell value={z.eigen.erwartung} display={z.roll.erwartung ? V(z.roll.erwartung) : "–"} onSave={(v) => setErwartungZiel(z, v)} /> : (z.roll.erwartung ? V(z.roll.erwartung) : "–")}
+                        </td>
+                        <td className="px-2 py-1 text-right tabular-nums font-medium">
+                          {editable ? <EditCell value={z.eigen.prognose} display={V(z.roll.prognose)} onSave={(v) => setPrognoseZiel(z, v)} /> : V(z.roll.prognose)}
+                        </td>
+                        <td className="px-2 py-1 text-right tabular-nums">{V(z.roll.bezahlt)}</td>
+                        <td className="px-2 py-1 text-right"><Abw v={z.roll.abwKv * f} /></td>
+                      </tr>
+                      {isOpen(z.pos.id) && det.map((it, i) => {
+                        const cells = Array(8).fill(null);
+                        cells[colIdx[it.col] - 1] = it;
+                        return (
+                          <tr key={i} className="border-b border-slate-50 bg-slate-50/60 text-[11px] text-slate-500">
+                            <td className="px-2 py-0.5" style={{ paddingLeft: 24 + z.depth * 16 }}>↳ {it.label}{it.sub ? <span className="text-slate-400"> · {it.sub}</span> : ""}</td>
+                            {cells.map((c, ci) => (
+                              <td key={ci} className={`px-2 py-0.5 text-right tabular-nums ${c && c.muted ? "italic text-slate-400" : ""}`}>
+                                {c ? (c.signed ? (c.betrag > 0 ? "+" : "") + chf(c.betrag * f) : chf(c.betrag * f)) + (c.muted && c.kind === "rg" ? " (offen)" : "") + (c.muted && c.kind === "nt" ? " (pendent)" : "") : ""}
+                              </td>
+                            ))}
+                            <td></td>
+                          </tr>
+                        );
+                      })}
+                    </React.Fragment>
+                  );
+                })}
+                <tr className="border-b border-slate-200 text-slate-600 font-medium">
+                  <td className="px-2 py-1">Zwischentotal {g.g}</td>
+                  <td className="px-2 py-1 text-right tabular-nums">{V(g.kv)}</td><td className="px-2 py-1 text-right tabular-nums">{V(g.kvRevidiert)}</td><td className="px-2 py-1 text-right tabular-nums">{V(g.vertragNetto)}</td><td className="px-2 py-1 text-right tabular-nums">{V(g.ntGen)}</td><td className="px-2 py-1 text-right tabular-nums">{V(g.beauftragt)}</td><td className="px-2 py-1 text-right tabular-nums">{V(g.erwartung)}</td><td className="px-2 py-1 text-right tabular-nums">{V(g.prognose)}</td><td className="px-2 py-1 text-right tabular-nums">{V(g.bezahlt)}</td><td className="px-2 py-1 text-right"><Abw v={g.abwKv * f} /></td>
+                </tr>
+              </React.Fragment>
+            ))}
+          </tbody>
+          <tfoot><tr className="border-t-2 border-slate-800 font-bold text-sm">
+            <td className="px-2 py-2">TOTAL {brutto ? "BRUTTO" : "NETTO"}</td>
+            <td className="px-2 py-2 text-right tabular-nums">{V(t.kv)}</td><td className="px-2 py-2 text-right tabular-nums">{V(t.kvRevidiert)}</td><td className="px-2 py-2 text-right tabular-nums">{V(t.vertragNetto)}</td><td className="px-2 py-2 text-right tabular-nums">{V(t.ntGen)}</td><td className="px-2 py-2 text-right tabular-nums">{V(t.beauftragt)}</td><td className="px-2 py-2 text-right tabular-nums">{V(t.erwartung)}</td><td className="px-2 py-2 text-right tabular-nums">{V(t.prognose)}</td><td className="px-2 py-2 text-right tabular-nums">{V(t.bezahlt)}</td><td className="px-2 py-2 text-right"><Abw v={t.abwKv * f} /></td>
+          </tr></tfoot>
+        </table></div>
+        <div className="mt-5 max-w-sm ml-auto text-sm space-y-1">
+          <div className="flex justify-between"><span className="text-slate-500">Prognose netto</span><span className="tabular-nums font-medium">{chf(t.prognose)}</span></div>
+          <div className="flex justify-between"><span className="text-slate-500">MwSt {ks.satz}%</span><span className="tabular-nums">{chf(ks.mwst)}</span></div>
+          <div className="flex justify-between border-t border-slate-200 pt-1"><span className="font-semibold">Prognose brutto</span><span className="tabular-nums font-semibold">{chf(ks.brutto)}</span></div>
+          {ks.reserve > 0 && <div className="flex justify-between text-slate-500"><span>+ Teuerungsreserve {ks.resSatz}% (auf KV rev.)</span><span className="tabular-nums">{chf(ks.reserve)}</span></div>}
+          <div className="flex justify-between border-t border-slate-200 pt-1"><span className="text-slate-500">Abweichung zu KV (netto)</span><Abw v={t.abwKv} /></div>
+          <div className="flex justify-between"><span className="text-slate-500">Bezahlt netto / offen</span><span className="tabular-nums">{chf(t.bezahlt)} / {chf(t.offen)}</span></div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function demoDB() {
+  const pid = uid();
+  const P = (bkp, bez, kv, parentBkp) => ({ id: uid(), projektId: pid, bkp, bezeichnung: bez, kv, parentId: null, _pb: parentBkp || null });
+  const positionen = [
+    P("112", "Abbrucharbeiten", 95000),
+    P("211", "Baumeisterarbeiten", 0),
+    P("211.1", "Aushub und Erdarbeiten", 300000, "211"),
+    P("211.4", "Beton- und Stahlbetonarbeiten", 550000, "211"),
+    P("221", "Fenster, Aussentüren", 180000),
+    P("230", "Elektroanlagen", 220000),
+    P("244", "Heizungsanlagen", 160000),
+    P("271", "Gipserarbeiten", 110000),
+    P("281", "Bodenbeläge", 95000),
+    P("421", "Gärtnerarbeiten", 60000),
+  ];
+  const byBkp = (b) => positionen.find((p) => p.bkp === b);
+  positionen.forEach((p) => { if (p._pb) p.parentId = byBkp(p._pb).id; delete p._pb; });
+  const V = (positionId, unternehmer, nr, betrag, extra) => ({ id: uid(), projektId: pid, positionId, unternehmer, nr, betrag, rabattPct: 0, pauschalabzug: 0, skontoPct: 0, bauabzuegePct: 0, rundung: 0, regieBudget: 0, teuerung: 0, datum: "2025-09-01", ...extra });
+  const v1 = V(byBkp("211.4").id, "Steiner Bau AG", "V-2025-01", 540000, { rabattPct: 2, skontoPct: 2, rundung: -616, teuerung: 9000, regieBudget: 20000 });
+  const v1b = V(byBkp("211.1").id, "Steiner Bau AG", "V-2025-01a", 300000, {});
+  const v2 = V(byBkp("221").id, "Glas & Fenster GmbH", "V-2025-02", 175000, { datum: "2025-10-15" });
+  const v3 = V(byBkp("230").id, "Elektro Meier AG", "V-2025-03", 205000, { datum: "2025-11-01" });
+  const v4 = V(byBkp("112").id, "Abbruch Profi AG", "V-2025-04", 98000, { datum: "2025-08-10" });
+  const v5 = V(byBkp("244").id, "Heizung Huber AG", "V-2025-05", 150000, { regieBudget: 3000, datum: "2025-12-01" });
+  return {
+    aktiv: pid,
+    projekte: [{ id: pid, name: "Neubau MFH Seestrasse", strasse: "Seestrasse 12", plzOrt: "8008 Zürich", bauherr: "Seepark Immobilien AG", bauherrAdresse: "Bahnhofstrasse 1, 8001 Zürich", bauleitung: "BauPlan Architekten GmbH", ort: "Zürich", mwstSatz: 8.1, teuerungsReserve: 1.5, gewichtPreis: 70, gewichtReferenzen: 20, gewichtLehrlinge: 10 }],
+    positionen,
+    mutationen: [
+      { id: uid(), projektId: pid, positionId: byBkp("211.1").id, betrag: 50000, grund: "Mehraushub Fels", datum: "2025-09-20" },
+      { id: uid(), projektId: pid, positionId: byBkp("230").id, betrag: -15000, grund: "Einsparung Beleuchtung", datum: "2025-11-10" },
+    ],
+    umbuchungen: [
+      { id: uid(), projektId: pid, vonPositionId: byBkp("281").id, nachPositionId: byBkp("271").id, betrag: 10000, grund: "Budgetverschiebung Ausbau", datum: "2026-01-15" },
+    ],
+    vertraege: [v1, v1b, v2, v3, v4, v5],
+    nachtraege: [
+      { id: uid(), projektId: pid, vertragId: v1.id, bezeichnung: "NT1 Zusatzfundament", betrag: 35000, status: "genehmigt", datum: "2025-10-01" },
+      { id: uid(), projektId: pid, vertragId: v1.id, bezeichnung: "NT2 Anpassung Kellerdecke", betrag: 12000, status: "pendent", datum: "2025-11-15" },
+    ],
+    rechnungen: [
+      { id: uid(), projektId: pid, vertragId: v1.id, typ: "akonto", nr: "R-001", betrag: 250000, datum: "2025-11-30", status: "bezahlt" },
+      { id: uid(), projektId: pid, vertragId: v1b.id, typ: "akonto", nr: "R-014", betrag: 280000, datum: "2026-02-28", status: "bezahlt" },
+      { id: uid(), projektId: pid, vertragId: v4.id, typ: "rechnung", nr: "R-002", betrag: 98000, datum: "2025-09-15", status: "bezahlt" },
+      { id: uid(), projektId: pid, vertragId: v3.id, typ: "akonto", nr: "R-021", betrag: 90000, datum: "2026-03-20", status: "geprueft" },
+      { id: uid(), projektId: pid, vertragId: v2.id, typ: "akonto", nr: "R-030", betrag: 120000, datum: "2026-04-10", status: "bezahlt" },
+      { id: uid(), projektId: pid, vertragId: v5.id, typ: "regie", nr: "R-033", betrag: 4200, datum: "2026-05-25", status: "geprueft" },
+      { id: uid(), projektId: pid, positionId: byBkp("421").id, typ: "rechnung", nr: "R-040", betrag: 5000, datum: "2026-05-30", status: "bezahlt" },
+    ],
+    angebote: [{
+      id: uid(), projektId: pid, titel: "Gipserarbeiten BKP 271", positionId: byBkp("271").id, modus: "pauschal", positionen: [], bedingungen: "",
+      gewichte: { preis: 70, referenzen: 20, lehrlinge: 10 },
+      bieter: [
+        { name: "Gips Rossi AG", brutto: 80100, rabattPct: 2, pauschalabzug: 0, skontoPct: 2, bauabzuegePct: 0, rundung: 0, referenzPunkte: 80, lehrlingPunkte: 40, bemerkung: "Solide Referenzen MFH, 2 Lernende", preise: {} },
+        { name: "Verputz Keller GmbH", brutto: 81600, rabattPct: 0, pauschalabzug: 0, skontoPct: 0, bauabzuegePct: 0, rundung: 0, referenzPunkte: 100, lehrlingPunkte: 100, bemerkung: "Top-Referenzen, eigener Lehrbetrieb", preise: {} },
+        { name: "Stuck & Putz AG", brutto: 78750, rabattPct: 3, pauschalabzug: 0, skontoPct: 0, bauabzuegePct: 0, rundung: 0, referenzPunkte: 60, lehrlingPunkte: 0, bemerkung: "Günstigster, keine Lernenden", preise: {} },
+      ],
+    }, {
+      id: uid(), projektId: pid, titel: "BKP 281.0 Unterlagsböden (NPK 661)", positionId: byBkp("281").id, modus: "lv",
+      bedingungen: "Besondere Bestimmungen GKS Architekten AG\nBauabfälle sind durch den Unternehmer selber zu entsorgen. Die Bauherrschaft stellt keine Mulden; Entsorgung inkl. Gebühren ist in den Einheitspreis einzurechnen.\nErkennbare Mängel im bauseitigen Untergrund sind der Bauleitung vor Arbeitsbeginn zu melden.",
+      gewichte: { preis: 80, referenzen: 15, lehrlinge: 5 },
+      positionen: [{"id":"P151111","catalog":"661","code":"151111","npk":"151.111","bezeichnung":"Randdämmstreifen h bis mm 200","langtext":[],"einheit":"m","menge":45},{"id":"P152101","catalog":"661","code":"152101","npk":"152.101","bezeichnung":"Bewegungsfugen h bis mm 300","langtext":[],"einheit":"m","menge":8},{"id":"P161101","catalog":"661","code":"161101","npk":"161.101","bezeichnung":"Probeplatten (3 Stück)","langtext":[],"einheit":"LE","menge":9},{"id":"P181111","catalog":"661","code":"181111","npk":"181.111","bezeichnung":"Regie Aufsichtsperson","langtext":[],"einheit":"h","menge":8},{"id":"P421114","catalog":"661","code":"421114","npk":"421.114","bezeichnung":"Dämmschicht d mm 50","langtext":[],"einheit":"m2","menge":22.3},{"id":"P423111","catalog":"661","code":"423111","npk":"423.111","bezeichnung":"Dämmplatten d mm 20","langtext":["Swisspor EPS 30 oder gleichwertig"],"einheit":"m2","menge":76},{"id":"P423112","catalog":"661","code":"423112","npk":"423.112","bezeichnung":"Dämmplatten d mm 30","langtext":["Swisspor EPS 30 oder gleichwertig"],"einheit":"m2","menge":1213.3},{"id":"P423114","catalog":"661","code":"423114","npk":"423.114","bezeichnung":"Dämmplatten übrige Dicken","langtext":[],"einheit":"m2","menge":214.7},{"id":"P432111","catalog":"661","code":"432111","npk":"432.111","bezeichnung":"Trennlage d mm 12","langtext":[],"einheit":"m2","menge":1797.7},{"id":"P441111","catalog":"661","code":"441111","npk":"441.111","bezeichnung":"Randabschluss h mm 80","langtext":[],"einheit":"m","menge":1964.9},{"id":"P511101","catalog":"661","code":"511101","npk":"511.101","bezeichnung":"Folie Polyethylen PE","langtext":[],"einheit":"m2","menge":1811.3},{"id":"P611114","catalog":"661","code":"611114","npk":"611.114","bezeichnung":"Zementunterlagsboden übrige Dicken","langtext":[],"einheit":"m2","menge":53.2},{"id":"P711121","catalog":"661","code":"711121","npk":"711.121","bezeichnung":"Anhydritunterlagsboden d mm 65","langtext":[],"einheit":"m2","menge":974.2},{"id":"P741111","catalog":"661","code":"741111","npk":"741.111","bezeichnung":"Fliessunterlagsboden d mm 55","langtext":[],"einheit":"m2","menge":866.8},{"id":"P922111","catalog":"661","code":"922111","npk":"922.111","bezeichnung":"Spezifikation Unterlagsboden","langtext":[],"einheit":"St","menge":46}],
+      bieter: [
+        { name: "Estrich Bernasconi AG", bemerkung: "Referenzprojekte vergleichbar, 1 Lernender", rabattPct: 0, pauschalabzug: 300, skontoPct: 0, bauabzuegePct: 1.4, rundung: 0, referenzPunkte: 70, lehrlingPunkte: 50, brutto: 0, preise: {"151111":42,"152101":58,"161101":120,"181111":95,"421114":48,"423111":52,"423112":58,"423114":64,"432111":38,"441111":12,"511101":29,"611114":44,"711121":26,"741111":31,"922111":85} },
+        { name: "Hodel Bodensysteme GmbH", bemerkung: "Teurer, aber sehr gute Referenzen", rabattPct: 2, pauschalabzug: 300, skontoPct: 2, bauabzuegePct: 1.4, rundung: 0, referenzPunkte: 95, lehrlingPunkte: 80, brutto: 0, preise: {"151111":45.36,"152101":62.64,"161101":129.6,"181111":102.6,"421114":51.84,"423111":56.16,"423112":62.64,"423114":69.12,"432111":41.04,"441111":12.96,"511101":31.32,"611114":47.52,"711121":28.08,"741111":33.48,"922111":91.8} },
+        { name: "Frei Estriche AG", bemerkung: "Günstigster, keine Lernenden", rabattPct: 0, pauschalabzug: 300, skontoPct: 0, bauabzuegePct: 1.4, rundung: 0, referenzPunkte: 55, lehrlingPunkte: 0, brutto: 0, preise: {"151111":39.9,"152101":55.1,"161101":114,"181111":90.25,"421114":45.6,"423111":49.4,"423112":55.1,"423114":60.8,"432111":36.1,"441111":11.4,"511101":27.55,"611114":41.8,"711121":24.7,"741111":29.45,"922111":80.75} },
+      ],
+    }],
+    rapporte: [
+      { id: uid(), projektId: pid, vertragId: v1.id, datum: "2026-03-05", beschrieb: "Regie Aussparungen", stunden: 0, ansatz: 0, material: 4680 },
+      { id: uid(), projektId: pid, vertragId: v5.id, datum: "2026-05-12", beschrieb: "Regie Heizungsanpassung", stunden: 16, ansatz: 95, material: 2400 },
+      { id: uid(), projektId: pid, vertragId: v5.id, datum: "2026-05-19", beschrieb: "Verteiler ergänzt", stunden: 8, ansatz: 95, material: 0 },
+    ],
+    erwartungen: [
+      { id: uid(), projektId: pid, positionId: byBkp("211.4").id, bezeichnung: "Mehrkosten Bewehrung (noch kein NT)", betrag: 15000, datum: "2026-04-01" },
+      { id: uid(), projektId: pid, positionId: byBkp("281").id, bezeichnung: "Mehraufwand Parkett", betrag: 20000, datum: "2026-02-20" },
+    ],
+  };
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
