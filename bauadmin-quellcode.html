@@ -250,8 +250,9 @@ async function saveDB(db) {
 function normalize(db) {
   db.projekte = db.projekte.map((p) => ({ mwstSatz: 8.1, teuerungsReserve: 0, strasse: "", plzOrt: "", bauherrAdresse: "", bauleitung: "", gewichtPreis: 70, gewichtReferenzen: 20, gewichtLehrlinge: 10, ...p }));
   db.positionen = (db.positionen || []).map((p) => ({ parentId: null, ...p }));
-  ["mutationen", "umbuchungen", "vertraege", "nachtraege", "rechnungen", "angebote", "rapporte", "erwartungen"].forEach((c) => { if (!db[c]) db[c] = []; });
-  db.vertraege = db.vertraege.map((v) => ({ rabattPct: 0, pauschalabzug: 0, skontoPct: 0, bauabzuegePct: 0, rundung: 0, regieBudget: 0, teuerung: 0, ...v }));
+  ["mutationen", "umbuchungen", "vertraege", "nachtraege", "rechnungen", "angebote", "rapporte", "erwartungen", "snapshots"].forEach((c) => { if (!db[c]) db[c] = []; });
+  if (!db.firmen) db.firmen = [];
+  db.vertraege = db.vertraege.map((v) => ({ rabattPct: 0, pauschalabzug: 0, skontoPct: 0, bauabzuegePct: 0, rundung: 0, regieBudget: 0, teuerung: 0, rueckbehaltPct: 0, abnahme: "", garantieJahre: 2, buergschaft: false, ...v }));
   db.rechnungen = db.rechnungen.map((r) => ({ typ: r.typ || "rechnung", ...r }));
   db.positionen.forEach((p) => {
     if (p.erwartungManuell !== undefined && p.erwartungManuell !== null && p.erwartungManuell !== "") {
@@ -428,6 +429,311 @@ function EditCell({ value, display, onSave }) {
 }
 
 // =========================================================================
+//  GEFÜHRTE HINWEISE
+// =========================================================================
+const HILFE = {
+  projekt: ["Stammdaten pflegen: Adresse, Bauherrschaft, MwSt-Satz und die Standard-Gewichtung für Angebotsbewertungen.", "Diese Angaben erscheinen auf allen Druckdokumenten (Werkvertrag, Bauabrechnung usw.)."],
+  unternehmer: ["Firmen einmal zentral erfassen — sie stehen dann in allen Projekten bei Verträgen und Ausschreibungen als Vorschlag zur Verfügung.", "Beim Speichern eines Vertrags mit neuem Unternehmer wird die Firma automatisch hier angelegt (Adresse danach ergänzen)."],
+  dashboard: ["Hier siehst du den aktuellen Kostenstand: KV revidiert (Budget), beauftragt, Prognose und bezahlt.", "Mit «Kostenstand festhalten» speicherst du den heutigen Stand — so entsteht die Verlaufskurve über die Bauzeit.", "Rot = über Budget, grün = im Budget."],
+  kv: ["① KV importieren (CSV mit BKP; Bezeichnung; Betrag) oder Positionen einzeln erfassen.", "② Unterpositionen (z.B. 211.1) werden automatisch der Hauptposition (211) zugeordnet.", "Das KV ist die Budget-Basis — alle anderen Reiter bauen darauf auf."],
+  mutationen: ["Mutationen ändern das Budget einer Position (+/−), z.B. bei Projektänderungen.", "Für Verschiebungen zwischen zwei BKP nutze «Umbuchungen» — dann bleibt das Gesamtbudget gleich."],
+  umbuchungen: ["Budget von einer BKP-Position in eine andere verschieben.", "Das Gesamtbudget bleibt unverändert."],
+  vertraege: ["① Vertrag erfassen (oder aus einer Ausschreibung vergeben) — mit Konditionen, Rückbehalt und Garantie.", "② Nachträge direkt am Vertrag erfassen; sie erben die %-Konditionen.", "③ Werkvertrag drucken über den Knopf am Vertrag.", "Die Garantie-Übersicht oben zeigt ablaufende Fristen und Rückbehalte."],
+  rechnungen: ["Rechnungen auf einen Vertrag buchen (oder direkt auf eine BKP-Position).", "Status-Ablauf: erfasst → geprüft → bezahlt. Nur «bezahlt» zählt in die Spalte Bezahlt.", "«Druck» erstellt eine Zahlungsfreigabe zum Unterschreiben.", "Rot in fakt./soll = mehr fakturiert als vertraglich vereinbart."],
+  lv: ["① LV importieren (.crbx aus Messerli/CRB) oder Positionen manuell erfassen.", "② Leere Offerte als CSV oder .crbx an die Unternehmer senden.", "③ Zurückerhaltene Offerten je Firma einlesen (⬇) — Preise erscheinen automatisch in der Matrix. Oder Preise direkt eintippen.", "④ Vergleichen (günstigster Preis grün) und unten «vergeben» — als neuer Vertrag oder zu einem bestehenden dazu.", "Vergabeantrag drucken für die Bauherrschaft."],
+  angebote: ["Für pauschale Angebote ohne Positionen: Bruttosummen, Konditionen und Bewertungspunkte je Bieter erfassen.", "Der Nutzwert gewichtet Preis, Referenzen und Lehrlingsausbildung (Gewichtung im Reiter Projekt)."],
+  rapporte: ["Regierapporte auf Verträge buchen (Stunden × Ansatz + Material).", "Solange das Regiebudget des Vertrags nicht überschritten ist, ändert sich die Prognose nicht — erst der Überschuss fliesst als Erwartung ein."],
+  erwartungen: ["Erwartete Mehrkosten erfassen, die noch in keinem Nachtrag stecken.", "Prognose = Vertrag (oder KV) + Erwartung. Regie-Überschüsse erscheinen automatisch."],
+  abrechnung: ["Die Gesamtübersicht nach BKP — netto oder brutto, mit Detailzeilen (▸).", "Doppelklick auf Erwartung/Prognose setzt den Wert direkt.", "CSV-Export für Excel oder Drucken/PDF für die Bauherrschaft."],
+};
+function HilfeBox({ view }) {
+  const steps = HILFE[view];
+  if (!steps) return null;
+  return (
+    <div className="mb-4 bg-blue-50 border border-blue-100 rounded-lg px-4 py-3 print:hidden">
+      <ol className="space-y-0.5">
+        {steps.map((s, i) => <li key={i} className="text-sm text-blue-900 flex gap-2"><span className="text-blue-400 select-none">›</span><span>{s}</span></li>)}
+      </ol>
+    </div>
+  );
+}
+
+// =========================================================================
+//  DRUCKVORLAGEN
+// =========================================================================
+function PrintModal({ onClose, children }) {
+  useEffect(() => { document.body.classList.add("print-doc-open"); return () => document.body.classList.remove("print-doc-open"); }, []);
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-900/40 p-4 overflow-y-auto" onClick={onClose}>
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-3xl my-6" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-end gap-2 px-5 py-3 border-b border-slate-200">
+          <button className={btnPrimary} onClick={() => window.print()}>Drucken / PDF</button>
+          <button className={btnGhost} onClick={onClose}>Schliessen</button>
+        </div>
+        <div className="print-area p-10 text-sm leading-relaxed text-slate-900">{children}</div>
+      </div>
+    </div>
+  );
+}
+function DocKopf({ projekt, typ }) {
+  return (
+    <div className="mb-8 pb-4 border-b-2 border-slate-800">
+      <div className="flex justify-between items-start gap-4">
+        <div>
+          <div className="text-[11px] uppercase tracking-widest text-slate-500">{typ}</div>
+          <div className="text-2xl font-bold mt-1">{projekt?.name}</div>
+          <div className="text-sm text-slate-600">{projekt?.strasse}{projekt?.strasse ? ", " : ""}{projekt?.plzOrt || projekt?.ort}</div>
+        </div>
+        <div className="text-right text-sm text-slate-600 shrink-0">
+          <div className="tabular-nums">{today()}</div>
+          <div className="mt-1">Bauherr: {projekt?.bauherr}</div>
+          {projekt?.bauleitung ? <div>Bauleitung: {projekt.bauleitung}</div> : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+function DocUnterschriften({ links, rechts }) {
+  return (
+    <div className="grid grid-cols-2 gap-12 mt-16">
+      {[links, rechts].map((t, i) => (
+        <div key={i}>
+          <div className="border-t border-slate-800 pt-1 text-sm">{t}</div>
+          <div className="text-xs text-slate-500 mt-4">Ort / Datum: ____________________</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+function garantieBis(v) {
+  if (!v.abnahme) return null;
+  const d = new Date(v.abnahme);
+  if (isNaN(d.getTime())) return null;
+  d.setFullYear(d.getFullYear() + (Number(v.garantieJahre) || 0));
+  return d.toISOString().slice(0, 10);
+}
+function garantieStatus(bis) {
+  if (!bis) return null;
+  const rest = (new Date(bis).getTime() - new Date(today()).getTime()) / 86400000;
+  if (rest < 0) return { label: "abgelaufen", cls: "bg-slate-100 text-slate-500" };
+  if (rest < 180) return { label: "läuft ab", cls: "bg-amber-100 text-amber-700" };
+  return { label: "aktiv", cls: "bg-emerald-100 text-emerald-700" };
+}
+function WerkvertragDoc({ v, pos, projekt, firma }) {
+  const b = Number(v.betrag) || 0;
+  const s1 = b * (1 - (Number(v.rabattPct) || 0) / 100);
+  const s2 = s1 - (Number(v.pauschalabzug) || 0);
+  const s3 = s2 * (1 - (Number(v.skontoPct) || 0) / 100);
+  const s4 = s3 * (1 - (Number(v.bauabzuegePct) || 0) / 100);
+  const netto = s4 + (Number(v.rundung) || 0);
+  const gBis = garantieBis(v);
+  const Row = ({ label, val, strong, neg }) => (
+    <div className={`flex justify-between py-1 ${strong ? "font-bold border-t-2 border-slate-800 mt-1 pt-2" : "border-t border-slate-100"}`}>
+      <span>{label}</span><span className={`tabular-nums ${neg ? "text-slate-500" : ""}`}>{neg ? "− " : ""}{chf(val)}</span>
+    </div>
+  );
+  return (
+    <div>
+      <DocKopf projekt={projekt} typ={`Werkvertrag ${v.nr || ""}`} />
+      <div className="grid grid-cols-2 gap-8 mb-6">
+        <div><div className="text-xs uppercase tracking-wide text-slate-500 mb-1">Bauherrschaft</div><div className="font-medium">{projekt?.bauherr}</div><div className="text-slate-600">{projekt?.bauherrAdresse}</div></div>
+        <div><div className="text-xs uppercase tracking-wide text-slate-500 mb-1">Unternehmer</div><div className="font-medium">{v.unternehmer}</div>{firma && (firma.adresse || firma.plzOrt) ? <div className="text-slate-600">{firma.adresse}{firma.adresse && firma.plzOrt ? ", " : ""}{firma.plzOrt}</div> : null}{firma && firma.kontakt ? <div className="text-slate-600">{firma.kontakt}{firma.telefon ? " · " + firma.telefon : ""}</div> : null}</div>
+      </div>
+      <div className="mb-6"><div className="text-xs uppercase tracking-wide text-slate-500 mb-1">Gegenstand</div><div>Arbeitsgattung <span className="font-medium">{pos ? `BKP ${pos.bkp} ${pos.bezeichnung}` : "—"}</span> gemäss Leistungsverzeichnis und den Bestimmungen der Norm SIA 118.</div></div>
+      <div className="mb-6 max-w-md">
+        <div className="text-xs uppercase tracking-wide text-slate-500 mb-1">Vergütung (exkl. MwSt)</div>
+        <Row label="Vertragssumme brutto" val={b} />
+        {Number(v.rabattPct) ? <Row label={`Rabatt ${v.rabattPct}%`} val={s1 - b} neg /> : null}
+        {Number(v.pauschalabzug) ? <Row label="Pauschalabzug" val={Number(v.pauschalabzug)} neg /> : null}
+        {Number(v.skontoPct) ? <Row label={`Skonto ${v.skontoPct}%`} val={s3 - s2} neg /> : null}
+        {Number(v.bauabzuegePct) ? <Row label={`Allg. Bauabzüge ${v.bauabzuegePct}%`} val={s4 - s3} neg /> : null}
+        {Number(v.rundung) ? <Row label="Rundung" val={Number(v.rundung)} /> : null}
+        <Row label="Werkvertragssumme netto" val={netto} strong />
+      </div>
+      <div className="grid grid-cols-2 gap-8 mb-6 text-sm">
+        <div>
+          <div className="text-xs uppercase tracking-wide text-slate-500 mb-1">Zahlung & Sicherheit</div>
+          <div>Rückbehalt: <span className="font-medium">{Number(v.rueckbehaltPct) ? `${v.rueckbehaltPct}% (${chf(netto * v.rueckbehaltPct / 100)})` : "keiner"}</span></div>
+          <div>Solidarbürgschaft: <span className="font-medium">{v.buergschaft ? "ja, beizubringen" : "keine"}</span></div>
+          {Number(v.regieBudget) ? <div>Regiebudget: <span className="font-medium tabular-nums">{chf(v.regieBudget)}</span></div> : null}
+          {Number(v.teuerung) ? <div>Teuerung: <span className="font-medium tabular-nums">{chf(v.teuerung)}</span></div> : null}
+        </div>
+        <div>
+          <div className="text-xs uppercase tracking-wide text-slate-500 mb-1">Garantie</div>
+          <div>Garantiefrist: <span className="font-medium">{Number(v.garantieJahre) || 0} Jahre ab Abnahme</span></div>
+          <div>Abnahme: <span className="font-medium tabular-nums">{v.abnahme || "offen"}</span></div>
+          {gBis ? <div>Garantie bis: <span className="font-medium tabular-nums">{gBis}</span></div> : null}
+        </div>
+      </div>
+      <DocUnterschriften links={`Die Bauherrschaft: ${projekt?.bauherr || ""}`} rechts={`Der Unternehmer: ${v.unternehmer || ""}`} />
+    </div>
+  );
+}
+function VergabeantragDoc({ a, projekt, nw }) {
+  const named = nw.rows.filter((r) => r.b.name);
+  const sieger = named[0];
+  return (
+    <div>
+      <DocKopf projekt={projekt} typ="Vergabeantrag" />
+      <div className="mb-6"><div className="text-xs uppercase tracking-wide text-slate-500 mb-1">Ausschreibung</div><div className="font-medium">{a.titel}</div><div className="text-slate-600">{(a.positionen || []).length ? `${a.positionen.length} Positionen (Leistungsverzeichnis)` : "Pauschalofferten"} · {named.length} Offerten · Gewichtung: Preis {nw.w.preis}% / Referenzen {nw.w.referenzen}% / Lehrlinge {nw.w.lehrlinge}%</div></div>
+      <table className="w-full text-sm mb-6">
+        <thead><tr className="border-b-2 border-slate-800 text-left"><th className="py-1 pr-2">Rang</th><th className="py-1 pr-2">Unternehmer</th><th className="py-1 px-2 text-right">Brutto</th><th className="py-1 px-2 text-right">Netto</th><th className="py-1 px-2 text-right">Preis-P.</th><th className="py-1 px-2 text-right">Ref.</th><th className="py-1 px-2 text-right">Lehrl.</th><th className="py-1 pl-2 text-right">Nutzwert</th></tr></thead>
+        <tbody>{named.map((r, i) => (
+          <tr key={i} className={`border-b border-slate-200 ${i === 0 ? "font-semibold" : ""}`}>
+            <td className="py-1.5 pr-2">{i + 1}</td><td className="py-1.5 pr-2">{r.b.name}</td>
+            <td className="py-1.5 px-2 text-right tabular-nums">{chf(r.brutto)}</td><td className="py-1.5 px-2 text-right tabular-nums">{chf(r.netto)}</td>
+            <td className="py-1.5 px-2 text-right tabular-nums">{r.pP.toFixed(1)}</td><td className="py-1.5 px-2 text-right tabular-nums">{Number(r.b.referenzPunkte) || 0}</td><td className="py-1.5 px-2 text-right tabular-nums">{Number(r.b.lehrlingPunkte) || 0}</td>
+            <td className="py-1.5 pl-2 text-right tabular-nums">{r.nutz.toFixed(1)}</td>
+          </tr>
+        ))}</tbody>
+      </table>
+      {sieger ? <div className="mb-4 border-2 border-slate-800 rounded p-4"><div className="text-xs uppercase tracking-wide text-slate-500 mb-1">Antrag</div><div>Es wird beantragt, die Arbeiten <span className="font-medium">{a.titel}</span> an <span className="font-bold">{sieger.b.name}</span> zu vergeben — Werkvertragssumme netto <span className="font-bold tabular-nums">CHF {chf(sieger.netto)}</span> (brutto {chf(sieger.brutto)}).{sieger.b.bemerkung ? ` Begründung: ${sieger.b.bemerkung}.` : ""}</div></div> : null}
+      <DocUnterschriften links={`Antrag Bauleitung: ${projekt?.bauleitung || ""}`} rechts={`Genehmigung Bauherrschaft: ${projekt?.bauherr || ""}`} />
+    </div>
+  );
+}
+function ZahlungsfreigabeDoc({ r, v, posLabel, projekt, soll, faktTotal, bezahltTotal }) {
+  return (
+    <div>
+      <DocKopf projekt={projekt} typ="Zahlungsfreigabe" />
+      <div className="grid grid-cols-2 gap-8 mb-6">
+        <div><div className="text-xs uppercase tracking-wide text-slate-500 mb-1">Rechnung</div>
+          <div>{RTYP[r.typ] || "Rechnung"} <span className="font-medium">{r.nr || "—"}</span> vom <span className="tabular-nums">{r.datum}</span></div>
+          <div>Unternehmer: <span className="font-medium">{v ? v.unternehmer : "—"}</span>{v && v.nr ? ` · Vertrag ${v.nr}` : ""}</div>
+          <div>Position: {posLabel}</div>
+        </div>
+        <div><div className="text-xs uppercase tracking-wide text-slate-500 mb-1">Stand Vertrag (netto)</div>
+          <div className="flex justify-between max-w-[240px]"><span>Werkvertrag + NT:</span><span className="tabular-nums">{chf(soll)}</span></div>
+          <div className="flex justify-between max-w-[240px]"><span>Fakturiert (inkl. diese):</span><span className={`tabular-nums ${faktTotal > soll && soll > 0 ? "font-bold" : ""}`}>{chf(faktTotal)}</span></div>
+          <div className="flex justify-between max-w-[240px]"><span>Davon bezahlt:</span><span className="tabular-nums">{chf(bezahltTotal)}</span></div>
+        </div>
+      </div>
+      <div className="border-2 border-slate-800 rounded p-4 mb-4 flex items-baseline justify-between">
+        <span className="font-medium">Zur Zahlung freigegeben (netto, exkl. MwSt)</span>
+        <span className="text-2xl font-bold tabular-nums">CHF {chf(r.betrag)}</span>
+      </div>
+      {faktTotal > soll && soll > 0 ? <div className="text-sm mb-4 border border-slate-800 rounded p-3">⚠ Achtung: Mit dieser Rechnung übersteigt die fakturierte Summe die Vertragssumme um <span className="font-bold tabular-nums">{chf(faktTotal - soll)}</span>. Freigabe nur mit Begründung / Nachtrag.</div> : null}
+      <DocUnterschriften links={`Geprüft Bauleitung: ${projekt?.bauleitung || ""}`} rechts={`Freigabe Bauherrschaft: ${projekt?.bauherr || ""}`} />
+    </div>
+  );
+}
+
+// =========================================================================
+//  KOSTENSTAND-VERLAUF (Chart)
+// =========================================================================
+const VERLAUF_SERIEN = [
+  { key: "prognose", label: "Prognose", col: "#1d4ed8", dash: "" },
+  { key: "bezahlt", label: "Bezahlt", col: "#0d9488", dash: "" },
+  { key: "kvRevidiert", label: "KV revidiert", col: "#64748b", dash: "6 4" },
+];
+function KostenverlaufChart({ punkte }) {
+  const [hover, setHover] = useState(null);
+  const wrapRef = useRef(null);
+  const W = 760, H = 270, L = 56, R = 104, T = 14, B = 30;
+  const iw = W - L - R, ih = H - T - B;
+  const maxY = Math.max(1, ...punkte.flatMap((s) => VERLAUF_SERIEN.map((k) => Number(s[k.key]) || 0))) * 1.08;
+  const x = (i) => punkte.length === 1 ? L + iw / 2 : L + iw * i / (punkte.length - 1);
+  const y = (v) => T + ih - ih * (Number(v) || 0) / maxY;
+  const fmt = (v) => v >= 1e6 ? (v / 1e6).toLocaleString("de-CH", { maximumFractionDigits: 1 }) + " Mio" : Math.round(v / 1000) + "k";
+  const path = (key) => punkte.map((s, i) => (i ? "L" : "M") + x(i).toFixed(1) + "," + y(s[key]).toFixed(1)).join(" ");
+  function onMove(e) {
+    const rect = wrapRef.current?.getBoundingClientRect(); if (!rect) return;
+    const px = (e.clientX - rect.left) / rect.width * W;
+    let best = 0, bd = Infinity;
+    punkte.forEach((_, i) => { const dd = Math.abs(x(i) - px); if (dd < bd) { bd = dd; best = i; } });
+    setHover(best);
+  }
+  const hp = hover != null ? punkte[hover] : null;
+  return (
+    <div>
+      <div className="flex gap-4 flex-wrap mb-2 text-xs text-slate-600">
+        {VERLAUF_SERIEN.map((s) => (
+          <span key={s.key} className="inline-flex items-center gap-1.5">
+            <svg width="18" height="6"><line x1="0" y1="3" x2="18" y2="3" stroke={s.col} strokeWidth="2" strokeDasharray={s.dash} /></svg>{s.label}
+          </span>
+        ))}
+      </div>
+      <div ref={wrapRef} className="relative" onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
+        <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img" aria-label="Kostenstand-Verlauf">
+          {[0, 0.25, 0.5, 0.75, 1].map((f) => (
+            <g key={f}>
+              <line x1={L} y1={y(f * maxY)} x2={W - R} y2={y(f * maxY)} stroke="#e2e8f0" strokeWidth="1" />
+              <text x={L - 6} y={y(f * maxY) + 3.5} textAnchor="end" fontSize="10" fill="#94a3b8">{fmt(f * maxY)}</text>
+            </g>
+          ))}
+          {hover != null && <line x1={x(hover)} y1={T} x2={x(hover)} y2={T + ih} stroke="#94a3b8" strokeWidth="1" strokeDasharray="3 3" />}
+          {VERLAUF_SERIEN.map((s) => <path key={s.key} d={path(s.key)} fill="none" stroke={s.col} strokeWidth="2" strokeDasharray={s.dash} strokeLinejoin="round" />)}
+          {VERLAUF_SERIEN.map((s) => punkte.map((pt, i) => (
+            <circle key={s.key + i} cx={x(i)} cy={y(pt[s.key])} r={hover === i ? 4.5 : 3} fill={s.col} stroke="#fff" strokeWidth="1.5" />
+          )))}
+          {VERLAUF_SERIEN.map((s) => {
+            const last = punkte[punkte.length - 1];
+            return <text key={s.key} x={W - R + 8} y={y(last[s.key]) + 3.5} fontSize="10" fontWeight="600" fill="#475569">{s.label}</text>;
+          })}
+          {punkte.map((pt, i) => (punkte.length <= 8 || i === 0 || i === punkte.length - 1 || hover === i) && (
+            <text key={i} x={x(i)} y={H - 8} textAnchor="middle" fontSize="10" fill="#94a3b8" className="tabular-nums">{pt.datum}{pt.live ? " (heute)" : ""}</text>
+          ))}
+        </svg>
+        {hp && (
+          <div className="absolute top-2 bg-white border border-slate-200 rounded-md shadow-lg px-3 py-2 text-xs pointer-events-none z-10" style={{ left: `min(max(${x(hover) / W * 100}% - 70px, 4px), calc(100% - 150px))` }}>
+            <div className="font-medium tabular-nums mb-1">{hp.datum}{hp.live ? " (heute, live)" : ""}</div>
+            {VERLAUF_SERIEN.map((s) => (
+              <div key={s.key} className="flex items-center justify-between gap-3">
+                <span className="inline-flex items-center gap-1.5 text-slate-500"><span className="w-2 h-2 rounded-full inline-block" style={{ background: s.col }} />{s.label}</span>
+                <span className="tabular-nums font-medium">{chf(hp[s.key])}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// =========================================================================
+//  UNTERNEHMER-ADRESSSTAMM
+// =========================================================================
+function UnternehmerView({ firmen, db, dispatch }) {
+  const [f, setF] = useState({ name: "", adresse: "", plzOrt: "", kontakt: "", telefon: "", email: "" });
+  const usage = (name) => (db.vertraege || []).filter((v) => v.unternehmer === name).length;
+  const upd = (id, patch) => dispatch({ type: "update", coll: "firmen", id, patch });
+  const cell = "w-full text-sm bg-transparent border-b border-transparent hover:border-slate-200 focus:border-blue-500 focus:outline-none py-0.5";
+  return (
+    <div className="space-y-4">
+      <div className={`${card} p-4`}>
+        <div className="grid grid-cols-2 md:grid-cols-[1fr_1fr_130px_1fr_130px_1fr_auto] gap-2 items-end">
+          <Field label="Firma"><input className={inputCls} value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="Muster Bau AG" /></Field>
+          <Field label="Strasse / Nr."><input className={inputCls} value={f.adresse} onChange={(e) => setF({ ...f, adresse: e.target.value })} /></Field>
+          <Field label="PLZ / Ort"><input className={inputCls} value={f.plzOrt} onChange={(e) => setF({ ...f, plzOrt: e.target.value })} /></Field>
+          <Field label="Kontaktperson"><input className={inputCls} value={f.kontakt} onChange={(e) => setF({ ...f, kontakt: e.target.value })} /></Field>
+          <Field label="Telefon"><input className={inputCls} value={f.telefon} onChange={(e) => setF({ ...f, telefon: e.target.value })} /></Field>
+          <Field label="E-Mail"><input className={inputCls} value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} /></Field>
+          <button className={btnPrimary} disabled={!f.name || firmen.some((x) => x.name === f.name)} onClick={() => { dispatch({ type: "add", coll: "firmen", item: { id: uid(), ...f } }); setF({ name: "", adresse: "", plzOrt: "", kontakt: "", telefon: "", email: "" }); }}>+ Firma</button>
+        </div>
+      </div>
+      {!firmen.length ? <Empty text="Noch keine Unternehmer erfasst. Firmen werden auch automatisch angelegt, wenn du einen Vertrag mit neuem Unternehmer speicherst." /> : (
+        <div className={`${card} overflow-x-auto`}><table className="w-full text-sm">
+          <thead className="bg-slate-50 text-slate-500 text-xs"><tr><th className="text-left font-medium px-3 py-2">Firma</th><th className="text-left font-medium px-3 py-2">Strasse</th><th className="text-left font-medium px-3 py-2">PLZ / Ort</th><th className="text-left font-medium px-3 py-2">Kontakt</th><th className="text-left font-medium px-3 py-2">Telefon</th><th className="text-left font-medium px-3 py-2">E-Mail</th><th className="text-right font-medium px-3 py-2">Verträge</th><th className="w-12"></th></tr></thead>
+          <tbody>{[...firmen].sort((a, b) => a.name.localeCompare(b.name, "de")).map((fa) => (
+            <tr key={fa.id} className="border-t border-slate-100">
+              <td className="px-3 py-1.5 font-medium"><input className={cell} value={fa.name} onChange={(e) => upd(fa.id, { name: e.target.value })} /></td>
+              <td className="px-3 py-1.5"><input className={cell} value={fa.adresse || ""} onChange={(e) => upd(fa.id, { adresse: e.target.value })} /></td>
+              <td className="px-3 py-1.5"><input className={cell} value={fa.plzOrt || ""} onChange={(e) => upd(fa.id, { plzOrt: e.target.value })} /></td>
+              <td className="px-3 py-1.5"><input className={cell} value={fa.kontakt || ""} onChange={(e) => upd(fa.id, { kontakt: e.target.value })} /></td>
+              <td className="px-3 py-1.5"><input className={cell} value={fa.telefon || ""} onChange={(e) => upd(fa.id, { telefon: e.target.value })} /></td>
+              <td className="px-3 py-1.5"><input className={cell} value={fa.email || ""} onChange={(e) => upd(fa.id, { email: e.target.value })} /></td>
+              <td className="px-3 py-1.5 text-right tabular-nums text-slate-500">{usage(fa.name) || "–"}</td>
+              <td className="px-3 py-1.5 text-right"><button className="text-red-600 text-xs hover:underline" onClick={() => { if (usage(fa.name) === 0 || window.confirm(`«${fa.name}» wird in ${usage(fa.name)} Verträgen verwendet. Trotzdem aus dem Adressstamm löschen? (Verträge bleiben bestehen.)`)) dispatch({ type: "remove", coll: "firmen", id: fa.id }); }}>Lö.</button></td>
+            </tr>
+          ))}</tbody>
+        </table></div>
+      )}
+      <p className="text-xs text-slate-400">Der Adressstamm gilt über alle Projekte. Die Adresse erscheint auf Werkverträgen; die Spalte «Verträge» zählt Verwendungen in allen Projekten.</p>
+    </div>
+  );
+}
+
+// =========================================================================
 //  MAIN
 // =========================================================================
 function App() {
@@ -444,16 +750,19 @@ function App() {
   }, []);
   useEffect(() => { if (!loaded) return; if (firstSave.current) { firstSave.current = false; return; } saveDB(db); }, [db, loaded]);
 
+  const [hilfe, setHilfe] = useState(() => { try { return localStorage.getItem("bauadmin:hilfe") !== "0"; } catch (e) { return true; } });
+  function toggleHilfe() { setHilfe((h) => { try { localStorage.setItem("bauadmin:hilfe", h ? "0" : "1"); } catch (e) {} return !h; }); }
   const p = db.aktiv;
   const d = useMemo(() => {
     const f = (coll) => (db[coll] || []).filter((x) => x.projektId === p);
-    return { positionen: f("positionen"), mutationen: f("mutationen"), umbuchungen: f("umbuchungen"), vertraege: f("vertraege"), nachtraege: f("nachtraege"), rechnungen: f("rechnungen"), angebote: f("angebote"), rapporte: f("rapporte"), erwartungen: f("erwartungen") };
+    return { positionen: f("positionen"), mutationen: f("mutationen"), umbuchungen: f("umbuchungen"), vertraege: f("vertraege"), nachtraege: f("nachtraege"), rechnungen: f("rechnungen"), angebote: f("angebote"), rapporte: f("rapporte"), erwartungen: f("erwartungen"), snapshots: f("snapshots") };
   }, [db, p]);
+  const firmen = db.firmen || [];
   const projekt = db.projekte.find((x) => x.id === db.aktiv) || db.projekte[0];
   const ks = useKostenStand(d, projekt);
 
   const nav = [
-    ["projekt", "Projekt"], ["dashboard", "Kostenübersicht"], ["kv", "KV / BKP-Positionen"],
+    ["projekt", "Projekt"], ["unternehmer", "Unternehmer"], ["dashboard", "Kostenübersicht"], ["kv", "KV / BKP-Positionen"],
     ["mutationen", "Mutationen"], ["umbuchungen", "Umbuchungen"], ["vertraege", "Verträge & Nachträge"],
     ["rechnungen", "Rechnungen"], ["lv", "Leistungsverzeichnisse"], ["angebote", "Angebote & Vergleich"], ["rapporte", "Rapporte"],
     ["erwartungen", "Erwartungen"], ["abrechnung", "Bauabrechnung"],
@@ -472,6 +781,7 @@ function App() {
               {db.projekte.map((pr) => <option key={pr.id} value={pr.id}>{pr.name}</option>)}
             </select>
             <ProjektNeu dispatch={dispatch} setView={setView} />
+            <button className={`w-8 h-8 rounded-full text-sm font-bold ${hilfe ? "bg-blue-600 text-white" : "bg-slate-700 text-slate-300 hover:bg-slate-600"}`} title={hilfe ? "Hinweise ausblenden" : "Hinweise einblenden"} onClick={toggleHilfe}>?</button>
           </div>
         </div>
       </header>
@@ -490,20 +800,23 @@ function App() {
             <h1 className="text-xl font-semibold">{nav.find((n) => n[0] === view)?.[1]}</h1>
             <p className="text-sm text-slate-500">{projekt?.name} · {projekt?.bauherr} · {projekt?.plzOrt || projekt?.ort} · MwSt {ks.satz}%</p>
           </div>
+          {hilfe && <HilfeBox view={view} />}
           {view === "projekt" && <ProjektView projekt={projekt} dispatch={dispatch} />}
-          {view === "dashboard" && <Dashboard ks={ks} />}
+          {view === "unternehmer" && <UnternehmerView firmen={firmen} db={db} dispatch={dispatch} />}
+          {view === "dashboard" && <Dashboard ks={ks} d={d} dispatch={dispatch} projektId={db.aktiv} />}
           {view === "kv" && <KvView d={d} dispatch={dispatch} projektId={db.aktiv} ks={ks} />}
           {view === "mutationen" && <MutationenView d={d} dispatch={dispatch} projektId={db.aktiv} />}
           {view === "umbuchungen" && <UmbuchungenView d={d} dispatch={dispatch} projektId={db.aktiv} />}
-          {view === "vertraege" && <VertraegeView d={d} dispatch={dispatch} projektId={db.aktiv} />}
-          {view === "rechnungen" && <RechnungenView d={d} dispatch={dispatch} projektId={db.aktiv} />}
-          {view === "lv" && <LeistungsverzeichnisView d={d} dispatch={dispatch} projektId={db.aktiv} projekt={projekt} />}
+          {view === "vertraege" && <VertraegeView d={d} dispatch={dispatch} projektId={db.aktiv} projekt={projekt} firmen={firmen} />}
+          {view === "rechnungen" && <RechnungenView d={d} dispatch={dispatch} projektId={db.aktiv} projekt={projekt} />}
+          {view === "lv" && <LeistungsverzeichnisView d={d} dispatch={dispatch} projektId={db.aktiv} projekt={projekt} firmen={firmen} />}
           {view === "angebote" && <AngeboteView d={d} dispatch={dispatch} projektId={db.aktiv} projekt={projekt} />}
           {view === "rapporte" && <RapporteView d={d} dispatch={dispatch} projektId={db.aktiv} />}
           {view === "erwartungen" && <ErwartungenView d={d} dispatch={dispatch} projektId={db.aktiv} ks={ks} />}
           {view === "abrechnung" && <AbrechnungView ks={ks} projekt={projekt} d={d} dispatch={dispatch} projektId={db.aktiv} />}
         </main>
       </div>
+      <style>{`@media print{ body.print-doc-open *{visibility:hidden !important} body.print-doc-open .print-area, body.print-doc-open .print-area *{visibility:visible !important} body.print-doc-open .print-area{position:absolute !important;left:0;top:0;width:100%;padding:0 !important} }`}</style>
     </div>
   );
 }
@@ -586,10 +899,19 @@ function ProjektView({ projekt, dispatch }) {
   );
 }
 
-function Dashboard({ ks }) {
+function Dashboard({ ks, d, dispatch, projektId }) {
   const t = ks.total;
   if (!ks.ordered.length) return <Empty text="Noch keine BKP-Positionen erfasst. Importiere zuerst den Kostenvoranschlag." />;
   const over = ks.ordered.filter((z) => !z.hasChildren && z.roll.abwKv > 0).sort((a, b) => b.roll.abwKv - a.roll.abwKv).slice(0, 5);
+  const snaps = [...(d.snapshots || [])].sort((a, b) => String(a.datum).localeCompare(String(b.datum)));
+  const live = { datum: today(), live: true, kv: t.kv, kvRevidiert: t.kvRevidiert, beauftragt: t.beauftragt, erwartung: t.erwartung, prognose: t.prognose, bezahlt: t.bezahlt };
+  const punkte = [...snaps.filter((s) => s.datum !== today()), live];
+  function festhalten() {
+    const heute = (d.snapshots || []).find((s) => s.datum === today());
+    const item = { projektId, datum: today(), kv: t.kv, kvRevidiert: t.kvRevidiert, beauftragt: t.beauftragt, erwartung: t.erwartung, prognose: t.prognose, bezahlt: t.bezahlt };
+    if (heute) dispatch({ type: "update", coll: "snapshots", id: heute.id, patch: item });
+    else dispatch({ type: "add", coll: "snapshots", item: { id: uid(), ...item } });
+  }
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
@@ -602,6 +924,30 @@ function Dashboard({ ks }) {
         <div className="flex items-baseline justify-between mb-2"><h2 className="font-semibold">Prognose vs. Budget (KV)</h2><div>Abweichung: <Abw v={t.abwKv} /></div></div>
         <Ampel kv={t.kv} prognose={t.prognose} />
         <div className="flex justify-between text-xs text-slate-500 mt-1.5 tabular-nums"><span>KV-Budget: {chf(t.kv)}</span><span>Prognose: {chf(t.prognose)} · brutto {chf(ks.brutto)}</span></div>
+      </div>
+      <div className={`${card} p-5`}>
+        <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
+          <h2 className="font-semibold">Kostenstand-Verlauf</h2>
+          <button className={btnGhost} onClick={festhalten} title="Speichert den heutigen Kostenstand als Punkt in der Historie">📌 Kostenstand festhalten</button>
+        </div>
+        <KostenverlaufChart punkte={punkte} />
+        {snaps.length > 0 && (
+          <div className="mt-3 overflow-x-auto"><table className="w-full text-xs">
+            <thead className="text-slate-500"><tr><th className="text-left font-medium py-1 pr-2">Datum</th><th className="text-right font-medium py-1 px-2">KV rev.</th><th className="text-right font-medium py-1 px-2">Beauftragt</th><th className="text-right font-medium py-1 px-2">Erwartung</th><th className="text-right font-medium py-1 px-2">Prognose</th><th className="text-right font-medium py-1 px-2">Bezahlt</th><th className="w-10"></th></tr></thead>
+            <tbody>{snaps.map((s) => (
+              <tr key={s.id} className="border-t border-slate-100">
+                <td className="py-1 pr-2 tabular-nums">{s.datum}</td>
+                <td className="py-1 px-2 text-right tabular-nums">{chf(s.kvRevidiert)}</td>
+                <td className="py-1 px-2 text-right tabular-nums">{chf(s.beauftragt)}</td>
+                <td className="py-1 px-2 text-right tabular-nums">{chf(s.erwartung)}</td>
+                <td className="py-1 px-2 text-right tabular-nums font-medium">{chf(s.prognose)}</td>
+                <td className="py-1 px-2 text-right tabular-nums">{chf(s.bezahlt)}</td>
+                <td className="py-1 text-right"><button className="text-red-600 hover:underline" onClick={() => dispatch({ type: "remove", coll: "snapshots", id: s.id })}>×</button></td>
+              </tr>
+            ))}</tbody>
+          </table></div>
+        )}
+        {!snaps.length && <p className="text-xs text-slate-400 mt-2">Noch keine gespeicherten Kostenstände — die Kurve zeigt nur den heutigen Live-Wert. Halte den Stand z.B. monatlich fest, um den Verlauf über die Bauzeit zu sehen.</p>}
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
         <div className={`${card} p-5`}>
@@ -764,10 +1110,12 @@ function UmbuchungenView({ d, dispatch, projektId }) {
   );
 }
 
-function VertraegeView({ d, dispatch, projektId }) {
+function VertraegeView({ d, dispatch, projektId, projekt, firmen }) {
   const [vForm, setVForm] = useState(null);
   const [ntFor, setNtFor] = useState(null);
+  const [printV, setPrintV] = useState(null);
   const posOrder = useMemo(() => { const m = {}; orderedPositions(d.positionen).forEach((p, i) => { m[p.id] = i; }); return m; }, [d.positionen]);
+  const garantieRows = d.vertraege.filter((v) => v.abnahme || Number(v.rueckbehaltPct) > 0 || v.buergschaft);
   const sorted = useMemo(() => [...d.vertraege].sort((a, b) => { const pa = posOrder[a.positionId] ?? 99999, pb = posOrder[b.positionId] ?? 99999; return pa !== pb ? pa - pb : String(a.unternehmer || "").localeCompare(String(b.unternehmer || ""), "de"); }), [d.vertraege, posOrder]);
   const totalBeauftragt = d.vertraege.reduce((s, v) => { const ntGen = d.nachtraege.filter((n) => n.vertragId === v.id && n.status === "genehmigt").reduce((a, n) => a + konditionenNetto(n.betrag, v, false), 0); return s + konditionenNetto(v.betrag, v, true) + ntGen + (Number(v.teuerung) || 0); }, 0);
 
@@ -807,11 +1155,19 @@ function VertraegeView({ d, dispatch, projektId }) {
             </div>
             {(hatKonditionen(v) || ntPend > 0) && <div className="text-xs text-slate-500 mt-2">{hatKonditionen(v) ? `Konditionen: ${konditionenText(v)}` : ""}{hatKonditionen(v) && ntPend > 0 ? " · " : ""}{ntPend > 0 ? `NT pendent ${chf(ntPend)} netto` : ""}</div>}
             {Number(v.regieBudget) > 0 && <div className="text-xs mt-1"><span className="text-slate-500">Regiebudget {chf(v.regieBudget)} · verbraucht {chf(rapSum)} netto</span>{regieUeber > 0 && <span className="text-red-600 font-medium"> · Überschuss +{chf(regieUeber)} → Erwartung</span>}</div>}
+            {(Number(v.rueckbehaltPct) > 0 || v.abnahme || v.buergschaft) && (() => { const gBis = garantieBis(v); const gs = garantieStatus(gBis); return (
+              <div className="text-xs text-slate-500 mt-1">
+                {Number(v.rueckbehaltPct) > 0 ? `Rückbehalt ${v.rueckbehaltPct}% (${chf(beauftragt * v.rueckbehaltPct / 100)})` : ""}
+                {Number(v.rueckbehaltPct) > 0 && (v.abnahme || v.buergschaft) ? " · " : ""}
+                {v.abnahme ? <>Garantie bis <span className="tabular-nums">{gBis}</span> {gs && <span className={`rounded px-1.5 py-0.5 ${gs.cls}`}>{gs.label}</span>}</> : ""}
+                {v.buergschaft ? (v.abnahme || Number(v.rueckbehaltPct) > 0 ? " · " : "") + "Solidarbürgschaft" : ""}
+              </div>
+            ); })()}
           </div>
         </div>
         <div className="mt-3 border-t border-slate-100 pt-3">
           <div className="flex items-center justify-between mb-2"><span className="text-xs font-medium text-slate-500 uppercase tracking-wide">Nachträge <span className="normal-case font-normal text-slate-400">(erben %-Konditionen)</span></span>
-            <div className="flex gap-3"><button className="text-blue-700 text-xs hover:underline" onClick={() => setNtFor({ vertragId: v.id, _v: v, bezeichnung: "", betrag: "", status: "pendent", datum: today() })}>+ Nachtrag</button><button className="text-blue-700 text-xs hover:underline" onClick={() => setVForm(v)}>Bearbeiten</button><button className="text-red-600 text-xs hover:underline" onClick={() => dispatch({ type: "remove", coll: "vertraege", id: v.id })}>Löschen</button></div>
+            <div className="flex gap-3"><button className="text-slate-600 text-xs hover:underline" onClick={() => setPrintV(v)}>🖨 Werkvertrag</button><button className="text-blue-700 text-xs hover:underline" onClick={() => setNtFor({ vertragId: v.id, _v: v, bezeichnung: "", betrag: "", status: "pendent", datum: today() })}>+ Nachtrag</button><button className="text-blue-700 text-xs hover:underline" onClick={() => setVForm(v)}>Bearbeiten</button><button className="text-red-600 text-xs hover:underline" onClick={() => dispatch({ type: "remove", coll: "vertraege", id: v.id })}>Löschen</button></div>
           </div>
           {!nts.length ? <div className="text-xs text-slate-400">keine Nachträge</div> : (
             <table className="w-full text-sm"><tbody>{nts.map((n) => (
@@ -834,9 +1190,35 @@ function VertraegeView({ d, dispatch, projektId }) {
         <button className={btnPrimary} onClick={() => setVForm({ positionId: "", unternehmer: "", nr: "", betrag: "", rabattPct: "", pauschalabzug: "", skontoPct: "", bauabzuegePct: "", rundung: "", regieBudget: "", teuerung: "", datum: today() })}>+ Vertrag</button>
         {d.vertraege.length > 0 && <div className="text-sm text-slate-500">{d.vertraege.length} Verträge · Total beauftragt <span className="font-semibold tabular-nums text-slate-700">{chf(totalBeauftragt)}</span></div>}
       </div>
+      {garantieRows.length > 0 && (
+        <div className={`${card} overflow-x-auto`}>
+          <div className="px-3 py-2 bg-slate-50 text-sm font-medium border-b border-slate-200">Rückbehalt & Garantien</div>
+          <table className="w-full text-sm"><thead className="text-slate-500 text-xs"><tr><th className="text-left font-medium px-3 py-1.5">Unternehmer</th><th className="text-right font-medium px-3 py-1.5">Rückbehalt</th><th className="text-left font-medium px-3 py-1.5">Abnahme</th><th className="text-left font-medium px-3 py-1.5">Garantie bis</th><th className="text-left font-medium px-3 py-1.5">Status</th><th className="text-left font-medium px-3 py-1.5">Bürgschaft</th></tr></thead>
+          <tbody>{garantieRows.map((v) => {
+            const gBis = garantieBis(v); const gs = garantieStatus(gBis);
+            const ntG = d.nachtraege.filter((n) => n.vertragId === v.id && n.status === "genehmigt").reduce((s, n) => s + konditionenNetto(n.betrag, v, false), 0);
+            const basis = konditionenNetto(v.betrag, v, true) + ntG + (Number(v.teuerung) || 0);
+            return (
+              <tr key={v.id} className="border-t border-slate-100">
+                <td className="px-3 py-1.5">{v.unternehmer}{v.nr ? <span className="text-slate-400 text-xs"> · {v.nr}</span> : ""}</td>
+                <td className="px-3 py-1.5 text-right tabular-nums">{Number(v.rueckbehaltPct) > 0 ? `${v.rueckbehaltPct}% = ${chf(basis * v.rueckbehaltPct / 100)}` : "–"}</td>
+                <td className="px-3 py-1.5 tabular-nums">{v.abnahme || "offen"}</td>
+                <td className="px-3 py-1.5 tabular-nums">{gBis || "–"}</td>
+                <td className="px-3 py-1.5">{gs ? <span className={`text-xs rounded px-1.5 py-0.5 ${gs.cls}`}>{gs.label}</span> : "–"}</td>
+                <td className="px-3 py-1.5">{v.buergschaft ? "ja" : "–"}</td>
+              </tr>
+            );
+          })}</tbody></table>
+        </div>
+      )}
       {!d.vertraege.length ? <Empty text="Keine Verträge erfasst." /> : rows}
 
-      {vForm && <VertragEditor v={vForm} positionen={d.positionen} onClose={() => setVForm(null)} onSave={(v) => { if (v.id) dispatch({ type: "update", coll: "vertraege", id: v.id, patch: v }); else dispatch({ type: "add", coll: "vertraege", item: { id: uid(), projektId, ...v } }); setVForm(null); }} />}
+      {vForm && <VertragEditor v={vForm} positionen={d.positionen} firmen={firmen} onClose={() => setVForm(null)} onSave={(v) => { if (v.unternehmer && !(firmen || []).some((fa) => fa.name === v.unternehmer)) dispatch({ type: "add", coll: "firmen", item: { id: uid(), name: v.unternehmer, adresse: "", plzOrt: "", kontakt: "", telefon: "", email: "" } }); if (v.id) dispatch({ type: "update", coll: "vertraege", id: v.id, patch: v }); else dispatch({ type: "add", coll: "vertraege", item: { id: uid(), projektId, ...v } }); setVForm(null); }} />}
+      {printV && (
+        <PrintModal onClose={() => setPrintV(null)}>
+          <WerkvertragDoc v={printV} pos={d.positionen.find((p) => p.id === printV.positionId)} projekt={projekt} firma={(firmen || []).find((fa) => fa.name === printV.unternehmer)} />
+        </PrintModal>
+      )}
       {ntFor && (
         <Modal title="Nachtrag erfassen" onClose={() => setNtFor(null)}>
           <div className="space-y-3">
@@ -854,8 +1236,8 @@ function VertraegeView({ d, dispatch, projektId }) {
   );
 }
 
-function VertragEditor({ v, positionen, onClose, onSave }) {
-  const [f, setF] = useState({ positionId: v.positionId || "", unternehmer: v.unternehmer || "", nr: v.nr || "", betrag: v.betrag ?? "", rabattPct: v.rabattPct ?? "", pauschalabzug: v.pauschalabzug ?? "", skontoPct: v.skontoPct ?? "", bauabzuegePct: v.bauabzuegePct ?? "", rundung: v.rundung ?? "", regieBudget: v.regieBudget ?? "", teuerung: v.teuerung ?? "", datum: v.datum || today() });
+function VertragEditor({ v, positionen, firmen, onClose, onSave }) {
+  const [f, setF] = useState({ positionId: v.positionId || "", unternehmer: v.unternehmer || "", nr: v.nr || "", betrag: v.betrag ?? "", rabattPct: v.rabattPct ?? "", pauschalabzug: v.pauschalabzug ?? "", skontoPct: v.skontoPct ?? "", bauabzuegePct: v.bauabzuegePct ?? "", rundung: v.rundung ?? "", regieBudget: v.regieBudget ?? "", teuerung: v.teuerung ?? "", rueckbehaltPct: v.rueckbehaltPct ?? "", abnahme: v.abnahme || "", garantieJahre: v.garantieJahre ?? 2, buergschaft: !!v.buergschaft, datum: v.datum || today() });
   const opts = posSelectOptions(positionen);
   const k = { rabattPct: parseBetrag(f.rabattPct), pauschalabzug: parseBetrag(f.pauschalabzug), skontoPct: parseBetrag(f.skontoPct), bauabzuegePct: parseBetrag(f.bauabzuegePct), rundung: parseBetrag(f.rundung) };
   const netto = konditionenNetto(parseBetrag(f.betrag), k, true);
@@ -864,7 +1246,7 @@ function VertragEditor({ v, positionen, onClose, onSave }) {
       <div className="space-y-4">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <Field label="BKP-Position"><select className={inputCls} value={f.positionId} onChange={(e) => setF({ ...f, positionId: e.target.value })}><option value="">wählen…</option>{opts.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</select></Field>
-          <div className="grid grid-cols-2 gap-3"><Field label="Unternehmer"><input className={inputCls} value={f.unternehmer} onChange={(e) => setF({ ...f, unternehmer: e.target.value })} /></Field><Field label="Vertrags-Nr."><input className={inputCls} value={f.nr} onChange={(e) => setF({ ...f, nr: e.target.value })} /></Field></div>
+          <div className="grid grid-cols-2 gap-3"><Field label="Unternehmer"><input className={inputCls} list="firmenliste" value={f.unternehmer} onChange={(e) => setF({ ...f, unternehmer: e.target.value })} placeholder="aus Adressstamm oder neu" /><datalist id="firmenliste">{(firmen || []).map((fa) => <option key={fa.id} value={fa.name} />)}</datalist></Field><Field label="Vertrags-Nr."><input className={inputCls} value={f.nr} onChange={(e) => setF({ ...f, nr: e.target.value })} /></Field></div>
         </div>
         <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
           <Field label="Vertragssumme brutto"><input className={inputCls} value={f.betrag} onChange={(e) => setF({ ...f, betrag: e.target.value })} /></Field>
@@ -885,14 +1267,25 @@ function VertragEditor({ v, positionen, onClose, onSave }) {
         <Field label="Regiebudget im Vertrag (CHF netto) — Rapporte bis zu diesem Betrag erhöhen die Erwartung nicht">
           <input className={inputCls} value={f.regieBudget} onChange={(e) => setF({ ...f, regieBudget: e.target.value })} placeholder="0" />
         </Field>
-        <div className="flex justify-end gap-2"><button className={btnGhost} onClick={onClose}>Abbrechen</button><button className={btnPrimary} disabled={!f.positionId || !f.unternehmer} onClick={() => onSave({ ...v, ...f, betrag: parseBetrag(f.betrag), rabattPct: parseBetrag(f.rabattPct), pauschalabzug: parseBetrag(f.pauschalabzug), skontoPct: parseBetrag(f.skontoPct), bauabzuegePct: parseBetrag(f.bauabzuegePct), rundung: parseBetrag(f.rundung), regieBudget: parseBetrag(f.regieBudget), teuerung: parseBetrag(f.teuerung) })}>Speichern</button></div>
+        <div className={`${card} p-3 bg-slate-50/60`}>
+          <div className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-2">Rückbehalt & Garantie</div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 items-end">
+            <Field label="Rückbehalt %"><input className={inputCls} value={f.rueckbehaltPct} onChange={(e) => setF({ ...f, rueckbehaltPct: e.target.value })} placeholder="z.B. 10" /></Field>
+            <Field label="Abnahmedatum"><input type="date" className={inputCls} value={f.abnahme} onChange={(e) => setF({ ...f, abnahme: e.target.value })} /></Field>
+            <Field label="Garantie (Jahre)"><input className={inputCls} value={f.garantieJahre} onChange={(e) => setF({ ...f, garantieJahre: e.target.value })} /></Field>
+            <label className="inline-flex items-center gap-2 text-sm pb-2"><input type="checkbox" checked={f.buergschaft} onChange={(e) => setF({ ...f, buergschaft: e.target.checked })} /> Solidarbürgschaft</label>
+          </div>
+          {f.abnahme && <div className="text-xs text-slate-500 mt-2">Garantie läuft bis <span className="font-medium tabular-nums">{garantieBis({ abnahme: f.abnahme, garantieJahre: parseBetrag(f.garantieJahre) }) || "—"}</span></div>}
+        </div>
+        <div className="flex justify-end gap-2"><button className={btnGhost} onClick={onClose}>Abbrechen</button><button className={btnPrimary} disabled={!f.positionId || !f.unternehmer} onClick={() => onSave({ ...v, ...f, betrag: parseBetrag(f.betrag), rabattPct: parseBetrag(f.rabattPct), pauschalabzug: parseBetrag(f.pauschalabzug), skontoPct: parseBetrag(f.skontoPct), bauabzuegePct: parseBetrag(f.bauabzuegePct), rundung: parseBetrag(f.rundung), regieBudget: parseBetrag(f.regieBudget), teuerung: parseBetrag(f.teuerung), rueckbehaltPct: parseBetrag(f.rueckbehaltPct), garantieJahre: parseBetrag(f.garantieJahre), buergschaft: !!f.buergschaft })}>Speichern</button></div>
       </div>
     </Modal>
   );
 }
 
-function RechnungenView({ d, dispatch, projektId }) {
+function RechnungenView({ d, dispatch, projektId, projekt }) {
   const [f, setF] = useState({ buchung: "vertrag", vertragId: "", positionId: "", typ: "akonto", nr: "", betrag: "", datum: today(), status: "geprueft" });
+  const [printR, setPrintR] = useState(null);
   const vLabel = (id) => { const v = d.vertraege.find((x) => x.id === id); return v ? v.unternehmer + (v.nr ? ` (${v.nr})` : "") : "—"; };
   const posLabel = (id) => { const x = d.positionen.find((p) => p.id === id); return x ? `${x.bkp} ${x.bezeichnung}` : "—"; };
   const opts = posSelectOptions(d.positionen);
@@ -949,12 +1342,23 @@ function RechnungenView({ d, dispatch, projektId }) {
                 <td className="px-3 py-2 text-right tabular-nums">{chf(r.betrag)}</td>
                 <td className="px-3 py-2"><select className={`text-xs rounded px-1.5 py-0.5 border-0 ${statusCol[r.status]}`} value={r.status} onChange={(e) => dispatch({ type: "update", coll: "rechnungen", id: r.id, patch: { status: e.target.value } })}><option value="erfasst">erfasst</option><option value="geprueft">geprüft</option><option value="bezahlt">bezahlt</option></select></td>
                 <td className={`px-3 py-2 text-right tabular-nums text-xs ${ueber ? "text-red-600 font-medium" : "text-slate-500"}`}>{pv ? `${chf(pv.fakt)} / ${chf(pv.soll)}` : "–"}</td>
-                <td className="px-3 py-2 text-right"><button className="text-red-600 text-xs hover:underline" onClick={() => dispatch({ type: "remove", coll: "rechnungen", id: r.id })}>Lö.</button></td>
+                <td className="px-3 py-2 text-right whitespace-nowrap"><button className="text-slate-600 text-xs hover:underline mr-2" title="Zahlungsfreigabe drucken" onClick={() => setPrintR(r)}>🖨</button><button className="text-red-600 text-xs hover:underline" onClick={() => dispatch({ type: "remove", coll: "rechnungen", id: r.id })}>Lö.</button></td>
               </tr>
             );
           })}</tbody>
         </table></div>
       )}
+      {printR && (() => {
+        const v = d.vertraege.find((x) => x.id === printR.vertragId);
+        const pv = printR.vertragId ? proVertrag[printR.vertragId] : null;
+        const bez = printR.vertragId ? d.rechnungen.filter((x) => x.vertragId === printR.vertragId && x.status === "bezahlt").reduce((s, x) => s + (Number(x.betrag) || 0), 0) : 0;
+        const pl = v ? posLabel(v.positionId) : posLabel(printR.positionId);
+        return (
+          <PrintModal onClose={() => setPrintR(null)}>
+            <ZahlungsfreigabeDoc r={printR} v={v} posLabel={pl} projekt={projekt} soll={pv ? pv.soll : 0} faktTotal={pv ? pv.fakt : Number(printR.betrag) || 0} bezahltTotal={bez} />
+          </PrintModal>
+        );
+      })()}
     </div>
   );
 }
@@ -1128,12 +1532,13 @@ function AngebotEditor({ angebot, positionen, projekt, neuBieter, onClose, onSav
   );
 }
 
-function LeistungsverzeichnisView({ d, dispatch, projektId, projekt }) {
+function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen }) {
   const [selId, setSelId] = useState(d.angebote.find((x) => x.modus === "lv")?.id || d.angebote[0]?.id || "");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const [offerFor, setOfferFor] = useState(null);
   const [vergabeFor, setVergabeFor] = useState(null);
+  const [printAntrag, setPrintAntrag] = useState(false);
   const [posForm, setPosForm] = useState({ code: "", bezeichnung: "", einheit: "", menge: "" });
   const [showKond, setShowKond] = useState(false);
   const [showAddPos, setShowAddPos] = useState(false);
@@ -1278,7 +1683,7 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt }) {
                       <th className="text-right px-2 py-2 border-b border-slate-200">Menge</th>
                       {bieter.map((b, bi) => (
                         <th key={bi} className="px-2 py-1.5 border-b border-l border-slate-200 align-top min-w-[118px]">
-                          <input className="w-full text-xs px-1 py-0.5 border border-slate-200 rounded font-medium" placeholder={"Firma " + (bi + 1)} value={b.name} onChange={(e) => patchBieter(bi, { name: e.target.value })} />
+                          <input className="w-full text-xs px-1 py-0.5 border border-slate-200 rounded font-medium" list="firmenliste-lv" placeholder={"Firma " + (bi + 1)} value={b.name} onChange={(e) => patchBieter(bi, { name: e.target.value })} />
                           <div className="flex items-center justify-between mt-1">
                             <span className="text-[11px] text-slate-500 tabular-nums">{chf(bieterBrutto(b, a))}</span>
                             <span className="flex gap-1.5 text-sm">
@@ -1342,8 +1747,10 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt }) {
               <div className="flex flex-wrap gap-2 items-center">
                 <button className={btnGhost} onClick={() => setShowKond(!showKond)}>{showKond ? "Konditionen & Bewertung ausblenden" : "Konditionen & Bewertung"}</button>
                 <button className={btnGhost} onClick={exportVergleich}>Vergleich als CSV exportieren</button>
+                <button className={btnGhost} disabled={!bieter.some((b) => b.name)} onClick={() => setPrintAntrag(true)}>🖨 Vergabeantrag</button>
                 <button className={btnGhost} onClick={() => setOfferFor({ aId: a.id, bieterIndex: null })}>+ Offerte importieren</button>
               </div>
+              <datalist id="firmenliste-lv">{(firmen || []).map((fa) => <option key={fa.id} value={fa.name} />)}</datalist>
 
               {showKond && bieter.length > 0 && (
                 <div className={`${card} overflow-x-auto`}>
@@ -1387,6 +1794,11 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt }) {
       )}
       {offerFor && <OfferteImportModal a={d.angebote.find((x) => x.id === offerFor.aId)} bieterIndex={offerFor.bieterIndex} dispatch={dispatch} onClose={() => setOfferFor(null)} />}
       {vergabeFor && <VergabeModal info={vergabeFor} vertraege={d.vertraege} dispatch={dispatch} projektId={projektId} onClose={() => setVergabeFor(null)} />}
+      {printAntrag && a && (
+        <PrintModal onClose={() => setPrintAntrag(false)}>
+          <VergabeantragDoc a={a} projekt={projekt} nw={nw} />
+        </PrintModal>
+      )}
     </div>
   );
 }
@@ -1785,14 +2197,27 @@ function demoDB() {
   const byBkp = (b) => positionen.find((p) => p.bkp === b);
   positionen.forEach((p) => { if (p._pb) p.parentId = byBkp(p._pb).id; delete p._pb; });
   const V = (positionId, unternehmer, nr, betrag, extra) => ({ id: uid(), projektId: pid, positionId, unternehmer, nr, betrag, rabattPct: 0, pauschalabzug: 0, skontoPct: 0, bauabzuegePct: 0, rundung: 0, regieBudget: 0, teuerung: 0, datum: "2025-09-01", ...extra });
-  const v1 = V(byBkp("211.4").id, "Steiner Bau AG", "V-2025-01", 540000, { rabattPct: 2, skontoPct: 2, rundung: -616, teuerung: 9000, regieBudget: 20000 });
+  const v1 = V(byBkp("211.4").id, "Steiner Bau AG", "V-2025-01", 540000, { rabattPct: 2, skontoPct: 2, rundung: -616, teuerung: 9000, regieBudget: 20000, rueckbehaltPct: 10, buergschaft: true, garantieJahre: 5 });
   const v1b = V(byBkp("211.1").id, "Steiner Bau AG", "V-2025-01a", 300000, {});
-  const v2 = V(byBkp("221").id, "Glas & Fenster GmbH", "V-2025-02", 175000, { datum: "2025-10-15" });
+  const v2 = V(byBkp("221").id, "Glas & Fenster GmbH", "V-2025-02", 175000, { datum: "2025-10-15", rueckbehaltPct: 5, garantieJahre: 2 });
   const v3 = V(byBkp("230").id, "Elektro Meier AG", "V-2025-03", 205000, { datum: "2025-11-01" });
-  const v4 = V(byBkp("112").id, "Abbruch Profi AG", "V-2025-04", 98000, { datum: "2025-08-10" });
+  const v4 = V(byBkp("112").id, "Abbruch Profi AG", "V-2025-04", 98000, { datum: "2025-08-10", abnahme: "2025-10-30", garantieJahre: 2 });
   const v5 = V(byBkp("244").id, "Heizung Huber AG", "V-2025-05", 150000, { regieBudget: 3000, datum: "2025-12-01" });
+  const SNAP = (datum, kvRevidiert, beauftragt, erwartung, prognose, bezahlt) => ({ id: uid(), projektId: pid, datum, kv: 1770000, kvRevidiert, beauftragt, erwartung, prognose, bezahlt });
   return {
     aktiv: pid,
+    firmen: [
+      { id: uid(), name: "Steiner Bau AG", adresse: "Industriestrasse 44", plzOrt: "8952 Schlieren", kontakt: "M. Steiner", telefon: "044 730 11 22", email: "info@steinerbau.ch" },
+      { id: uid(), name: "Glas & Fenster GmbH", adresse: "Glattalstrasse 7", plzOrt: "8152 Opfikon", kontakt: "P. Vogel", telefon: "044 810 33 44", email: "offerte@glasfenster.ch" },
+      { id: uid(), name: "Elektro Meier AG", adresse: "Badenerstrasse 120", plzOrt: "8004 Zürich", kontakt: "S. Meier", telefon: "044 240 55 66", email: "mail@elektromeier.ch" },
+      { id: uid(), name: "Abbruch Profi AG", adresse: "Werkstrasse 3", plzOrt: "8620 Wetzikon", kontakt: "R. Kunz", telefon: "044 930 77 88", email: "info@abbruchprofi.ch" },
+      { id: uid(), name: "Heizung Huber AG", adresse: "Seefeldstrasse 88", plzOrt: "8008 Zürich", kontakt: "T. Huber", telefon: "044 380 99 00", email: "service@heizunghuber.ch" },
+    ],
+    snapshots: [
+      SNAP("2025-10-01", 1805000, 962384, 0, 1817000, 98000),
+      SNAP("2026-01-01", 1805000, 1408384, 5000, 1825000, 448000),
+      SNAP("2026-04-01", 1805000, 1481384, 20000, 1848000, 738000),
+    ],
     projekte: [{ id: pid, name: "Neubau MFH Seestrasse", strasse: "Seestrasse 12", plzOrt: "8008 Zürich", bauherr: "Seepark Immobilien AG", bauherrAdresse: "Bahnhofstrasse 1, 8001 Zürich", bauleitung: "BauPlan Architekten GmbH", ort: "Zürich", mwstSatz: 8.1, teuerungsReserve: 1.5, gewichtPreis: 70, gewichtReferenzen: 20, gewichtLehrlinge: 10 }],
     positionen,
     mutationen: [
