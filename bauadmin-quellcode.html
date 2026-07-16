@@ -390,9 +390,9 @@ function descendantIds(positionen, id) {
 // ---------- UI atoms ----------
 const card = "bg-white border border-stone-200/80 rounded-xl shadow-sm";
 const btn = "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors";
-const btnPrimary = `${btn} bg-green-800 text-white hover:bg-green-900`;
+const btnPrimary = `${btn} bg-orange-800 text-white hover:bg-orange-900`;
 const btnGhost = `${btn} text-stone-700 hover:bg-stone-100 border border-stone-200`;
-const inputCls = "w-full px-2.5 py-1.5 text-sm border border-stone-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-600/40 focus:border-green-600";
+const inputCls = "w-full px-2.5 py-1.5 text-sm border border-stone-300 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-600/40 focus:border-orange-600";
 const labelCls = "block text-xs font-medium text-stone-500 mb-1";
 
 function Num({ v }) { return <span className="tabular-nums">{chf(v)}</span>; }
@@ -420,12 +420,12 @@ function EditCell({ value, display, onSave }) {
   const [editing, setEditing] = useState(false);
   const [val, setVal] = useState("");
   if (editing) return (
-    <input autoFocus className="w-24 text-xs text-right border border-green-600 rounded px-1 py-0.5 tabular-nums bg-white"
+    <input autoFocus className="w-24 text-xs text-right border border-orange-600 rounded px-1 py-0.5 tabular-nums bg-white"
       value={val} onChange={(e) => setVal(e.target.value)}
       onBlur={() => { onSave(parseBetrag(val)); setEditing(false); }}
       onKeyDown={(e) => { if (e.key === "Enter") { onSave(parseBetrag(val)); setEditing(false); } if (e.key === "Escape") setEditing(false); }} />
   );
-  return <span className="cursor-pointer hover:bg-green-50 rounded px-0.5 -mx-0.5" title="Doppelklick zum Bearbeiten" onDoubleClick={() => { setVal(String(Math.round(Number(value) || 0))); setEditing(true); }}>{display}</span>;
+  return <span className="cursor-pointer hover:bg-orange-50 rounded px-0.5 -mx-0.5" title="Doppelklick zum Bearbeiten" onDoubleClick={() => { setVal(String(Math.round(Number(value) || 0))); setEditing(true); }}>{display}</span>;
 }
 
 // =========================================================================
@@ -699,7 +699,7 @@ function UnternehmerView({ firmen, db, dispatch }) {
   const [f, setF] = useState({ name: "", adresse: "", plzOrt: "", kontakt: "", telefon: "", email: "" });
   const usage = (name) => (db.vertraege || []).filter((v) => v.unternehmer === name).length;
   const upd = (id, patch) => dispatch({ type: "update", coll: "firmen", id, patch });
-  const cell = "w-full text-sm bg-transparent border-b border-transparent hover:border-stone-200 focus:border-green-600 focus:outline-none py-0.5";
+  const cell = "w-full text-sm bg-transparent border-b border-transparent hover:border-stone-200 focus:border-orange-600 focus:outline-none py-0.5";
   return (
     <div className="space-y-4">
       <div className={`${card} p-4`}>
@@ -775,7 +775,7 @@ function App() {
       <header className="bg-stone-900 text-white print:hidden">
         <div className="max-w-[1480px] mx-auto px-5 py-3 flex items-center justify-between flex-wrap gap-3">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded bg-green-700 flex items-center justify-center font-bold text-sm">BA</div>
+            <div className="w-9 h-9 rounded bg-orange-700 flex items-center justify-center font-bold text-sm">BA</div>
             <div><div className="font-semibold leading-tight">BauAdmin</div><div className="text-[11px] text-stone-400 leading-tight">Kostenkontrolle nach BKP</div></div>
           </div>
           <div className="flex items-center gap-2">
@@ -783,7 +783,7 @@ function App() {
               {db.projekte.map((pr) => <option key={pr.id} value={pr.id}>{pr.name}</option>)}
             </select>
             <ProjektNeu dispatch={dispatch} setView={setView} />
-            <button className={`w-8 h-8 rounded-full text-sm font-bold ${hilfe ? "bg-green-700 text-white" : "bg-stone-700 text-stone-300 hover:bg-stone-600"}`} title={hilfe ? "Hinweise ausblenden" : "Hinweise einblenden"} onClick={toggleHilfe}>?</button>
+            <button className={`w-8 h-8 rounded-full text-sm font-bold ${hilfe ? "bg-orange-700 text-white" : "bg-stone-700 text-stone-300 hover:bg-stone-600"}`} title={hilfe ? "Hinweise ausblenden" : "Hinweise einblenden"} onClick={toggleHilfe}>?</button>
           </div>
         </div>
       </header>
@@ -792,7 +792,7 @@ function App() {
         <nav className="lg:sticky lg:top-5 self-start print:hidden">
           <div className="flex lg:flex-col gap-1 overflow-x-auto pb-1">
             {nav.map(([key, label]) => (
-              <button key={key} onClick={() => setView(key)} className={`text-left px-3 py-2 rounded-md text-sm whitespace-nowrap transition-colors ${view === key ? "bg-green-800 text-white font-medium" : "text-stone-600 hover:bg-stone-200/60"}`}>{label}</button>
+              <button key={key} onClick={() => setView(key)} className={`text-left px-3 py-2 rounded-md text-sm whitespace-nowrap transition-colors ${view === key ? "bg-orange-800 text-white font-medium" : "text-stone-600 hover:bg-stone-200/60"}`}>{label}</button>
             ))}
           </div>
         </nav>
@@ -997,7 +997,7 @@ function KvView({ d, dispatch, projektId, ks }) {
                   <td className="px-3 py-2 text-right"><Abw v={z.roll.abwKv} /></td>
                   <td className="px-3 py-2 text-right whitespace-nowrap">
                     <button className="text-stone-500 hover:underline text-xs mr-2" onClick={() => setEdit({ bkp: "", bezeichnung: "", kv: "", parentId: z.pos.id })}>+ Unter</button>
-                    <button className="text-green-800 hover:underline text-xs mr-2" onClick={() => setEdit(z.pos)}>Bearb.</button>
+                    <button className="text-orange-800 hover:underline text-xs mr-2" onClick={() => setEdit(z.pos)}>Bearb.</button>
                     <button className="text-red-600 hover:underline text-xs" onClick={() => dispatch({ type: "remove", coll: "positionen", id: z.pos.id })}>Lö.</button>
                   </td>
                 </tr>
@@ -1137,7 +1137,7 @@ function VertraegeView({ d, dispatch, projektId, projekt, firmen }) {
     rows.push(
       <div key={v.id} className={`${card} p-4`}>
         <div className="flex items-start gap-3">
-          <span className="shrink-0 inline-block bg-green-50 text-green-800 font-semibold tabular-nums text-sm rounded px-2 py-1 mt-0.5">{pos ? pos.bkp : "—"}</span>
+          <span className="shrink-0 inline-block bg-orange-50 text-orange-800 font-semibold tabular-nums text-sm rounded px-2 py-1 mt-0.5">{pos ? pos.bkp : "—"}</span>
           <div className="flex-1 min-w-0">
             <div className="flex items-start justify-between gap-3 flex-wrap">
               <div className="min-w-0">
@@ -1169,7 +1169,7 @@ function VertraegeView({ d, dispatch, projektId, projekt, firmen }) {
         </div>
         <div className="mt-3 border-t border-stone-100 pt-3">
           <div className="flex items-center justify-between mb-2"><span className="text-xs font-medium text-stone-500 uppercase tracking-wide">Nachträge <span className="normal-case font-normal text-stone-400">(erben %-Konditionen)</span></span>
-            <div className="flex gap-3"><button className="text-stone-600 text-xs hover:underline" onClick={() => setPrintV(v)}>🖨 Werkvertrag</button><button className="text-green-800 text-xs hover:underline" onClick={() => setNtFor({ vertragId: v.id, _v: v, bezeichnung: "", betrag: "", status: "pendent", datum: today() })}>+ Nachtrag</button><button className="text-green-800 text-xs hover:underline" onClick={() => setVForm(v)}>Bearbeiten</button><button className="text-red-600 text-xs hover:underline" onClick={() => dispatch({ type: "remove", coll: "vertraege", id: v.id })}>Löschen</button></div>
+            <div className="flex gap-3"><button className="text-stone-600 text-xs hover:underline" onClick={() => setPrintV(v)}>🖨 Werkvertrag</button><button className="text-orange-800 text-xs hover:underline" onClick={() => setNtFor({ vertragId: v.id, _v: v, bezeichnung: "", betrag: "", status: "pendent", datum: today() })}>+ Nachtrag</button><button className="text-orange-800 text-xs hover:underline" onClick={() => setVForm(v)}>Bearbeiten</button><button className="text-red-600 text-xs hover:underline" onClick={() => dispatch({ type: "remove", coll: "vertraege", id: v.id })}>Löschen</button></div>
           </div>
           {!nts.length ? <div className="text-xs text-stone-400">keine Nachträge</div> : (
             <table className="w-full text-sm"><tbody>{nts.map((n) => (
@@ -1410,7 +1410,7 @@ function AngebotCard({ a, d, dispatch, projektId, projekt, onEdit }) {
     <div className={`${card} p-4`}>
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
-          <div className="font-semibold">{a.titel || "Ohne Titel"} {isLv && <span className="text-xs font-normal bg-green-50 text-green-800 rounded px-1.5 py-0.5 align-middle">LV · {(a.positionen || []).length} Pos.</span>}</div>
+          <div className="font-semibold">{a.titel || "Ohne Titel"} {isLv && <span className="text-xs font-normal bg-orange-50 text-orange-800 rounded px-1.5 py-0.5 align-middle">LV · {(a.positionen || []).length} Pos.</span>}</div>
           <div className="text-sm text-stone-500">{posLabel} · {named.length} Bieter · Gewichtung Preis {w.preis}% / Ref. {w.referenzen}% / Lehrl. {w.lehrlinge}%</div>
         </div>
         <button className={btnGhost} onClick={onEdit}>{isLv ? "Bieter bepreisen / bearbeiten" : "Bearbeiten"}</button>
@@ -1429,14 +1429,14 @@ function AngebotCard({ a, d, dispatch, projektId, projekt, onEdit }) {
               <td className="py-1.5 px-2 text-right tabular-nums">{Number(t.b.referenzPunkte) || 0}</td>
               <td className="py-1.5 px-2 text-right tabular-nums">{Number(t.b.lehrlingPunkte) || 0}</td>
               <td className="py-1.5 px-2 text-right tabular-nums font-semibold">{t.nutz.toFixed(1)}</td>
-              <td className="py-1.5 text-right"><button className="text-green-800 text-xs hover:underline" onClick={() => vergeben(t.b, t.brutto, t.netto)}>Vergeben →</button></td>
+              <td className="py-1.5 text-right"><button className="text-orange-800 text-xs hover:underline" onClick={() => vergeben(t.b, t.brutto, t.netto)}>Vergeben →</button></td>
             </tr>
           ))}</tbody>
         </table></div>
       )}
       {isLv && (a.positionen || []).length > 0 && named.length > 0 && (
         <div className="mt-2">
-          <button className="text-green-800 text-xs hover:underline print:hidden" onClick={() => setShowPos(!showPos)}>{showPos ? "Positionsvergleich ausblenden" : "Positionsvergleich einblenden"}</button>
+          <button className="text-orange-800 text-xs hover:underline print:hidden" onClick={() => setShowPos(!showPos)}>{showPos ? "Positionsvergleich ausblenden" : "Positionsvergleich einblenden"}</button>
           {showPos && (
             <div className="mt-2 overflow-x-auto border border-stone-200 rounded-md"><table className="w-full text-xs">
               <thead className="bg-stone-50 text-stone-500"><tr><th className="px-2 py-1 text-left">NPK</th><th className="px-2 py-1 text-left">Bezeichnung</th><th className="px-2 py-1 text-right">Menge</th><th className="px-2 py-1">Einh.</th>{named.map((t, i) => <th key={i} className="px-2 py-1 text-right min-w-[80px]">{t.b.name}</th>)}</tr></thead>
@@ -1483,7 +1483,7 @@ function AngebotEditor({ angebot, positionen, projekt, neuBieter, onClose, onSav
           </div>
         </div>
         <div>
-          <div className="flex items-center justify-between mb-2"><span className="text-xs font-medium text-stone-500 uppercase tracking-wide">Bieter — Stammdaten, Konditionen & Bewertung</span><button className="text-green-800 text-xs hover:underline" onClick={() => setA({ ...a, bieter: [...a.bieter, neuBieter()] })}>+ Firma hinzufügen</button></div>
+          <div className="flex items-center justify-between mb-2"><span className="text-xs font-medium text-stone-500 uppercase tracking-wide">Bieter — Stammdaten, Konditionen & Bewertung</span><button className="text-orange-800 text-xs hover:underline" onClick={() => setA({ ...a, bieter: [...a.bieter, neuBieter()] })}>+ Firma hinzufügen</button></div>
           <div className="overflow-x-auto border border-stone-200 rounded-md"><table className="w-full text-sm">
             <thead className="bg-stone-50 text-stone-500 text-xs"><tr>
               <th className="px-2 py-1.5 text-left min-w-[140px]">Firma</th><th className="px-2 py-1.5 text-right min-w-[90px]">Brutto</th><th className="px-2 py-1.5 text-right w-16">Rabatt %</th><th className="px-2 py-1.5 text-right w-20">Pauschal</th><th className="px-2 py-1.5 text-right w-16">Skonto %</th><th className="px-2 py-1.5 text-right w-16">Bauabz. %</th><th className="px-2 py-1.5 text-right w-20">Rundung</th><th className="px-2 py-1.5 text-right min-w-[90px]">Netto</th><th className="px-2 py-1.5 text-right w-16">Ref.</th><th className="px-2 py-1.5 text-right w-16">Lehrl.</th><th className="px-2 py-1.5 text-left min-w-[140px]">Bemerkung</th><th className="px-1 w-8"></th>
@@ -1626,7 +1626,7 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen }) {
   const nw = a ? nutzwerte(a, projekt) : { rows: [], min: 0, w: {} };
   const nwByB = new Map(nw.rows.map((r) => [r.b, r]));
   const rangByB = new Map(nw.rows.map((r, i) => [r.b, i + 1]));
-  const cell = "w-20 text-xs px-1 py-1 border border-stone-200 rounded text-right tabular-nums focus:border-green-600 focus:outline-none";
+  const cell = "w-20 text-xs px-1 py-1 border border-stone-200 rounded text-right tabular-nums focus:border-orange-600 focus:outline-none";
 
   return (
     <div className="space-y-4">
@@ -1642,7 +1642,7 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen }) {
           <button className={btnGhost} disabled={!a} onClick={kopieren}>Kopieren</button>
           <button className={btnGhost} disabled={!a} onClick={loeschen}>Löschen</button>
         </div>
-        {msg && <div className="mt-3 text-sm bg-green-50 text-green-900 rounded-md px-3 py-2">{msg}</div>}
+        {msg && <div className="mt-3 text-sm bg-orange-50 text-orange-900 rounded-md px-3 py-2">{msg}</div>}
       </div>
 
       {!a ? <Empty text="Wähle eine Ausschreibung oder erstelle eine neue." /> : (
@@ -1689,7 +1689,7 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen }) {
                           <div className="flex items-center justify-between mt-1">
                             <span className="text-[11px] text-stone-500 tabular-nums">{chf(bieterBrutto(b, a))}</span>
                             <span className="flex gap-1.5 text-sm">
-                              <button className="text-green-800" title="Offerte importieren" onClick={() => setOfferFor({ aId: a.id, bieterIndex: bi })}>⬇</button>
+                              <button className="text-orange-800" title="Offerte importieren" onClick={() => setOfferFor({ aId: a.id, bieterIndex: bi })}>⬇</button>
                               <button className="text-stone-500" title="Export" onClick={() => exportBieter(b, "csv")}>⬆</button>
                               <button className="text-red-500" title="Entfernen" onClick={() => setBieter(a.bieter.filter((_, x) => x !== bi))}>✕</button>
                             </span>
@@ -1697,8 +1697,8 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen }) {
                         </th>
                       ))}
                       <th className="px-2 border-b border-l border-stone-200 align-top whitespace-nowrap">
-                        <button className="text-green-800 text-xs hover:underline" onClick={addBieter}>+ Firma</button>
-                        <div className="mt-1"><button className="text-green-800 text-[11px] hover:underline" onClick={() => setOfferFor({ aId: a.id, bieterIndex: null })}>+ Offerte</button></div>
+                        <button className="text-orange-800 text-xs hover:underline" onClick={addBieter}>+ Firma</button>
+                        <div className="mt-1"><button className="text-orange-800 text-[11px] hover:underline" onClick={() => setOfferFor({ aId: a.id, bieterIndex: null })}>+ Offerte</button></div>
                       </th>
                     </tr>
                   </thead>
@@ -1711,10 +1711,10 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen }) {
                           <td className="sticky left-0 z-10 bg-white px-2 py-1 tabular-nums whitespace-nowrap">{p.npk}</td>
                           <td className="px-2 py-1">
                             <span>{p.bezeichnung || <span className="text-stone-300">—</span>}</span>
-                            {p.langtext?.length ? <button className="ml-1 text-green-700 text-[10px] hover:underline align-top" title="Langtext" onClick={() => setDetail(p)}>ⓘ</button> : null}
+                            {p.langtext?.length ? <button className="ml-1 text-orange-700 text-[10px] hover:underline align-top" title="Langtext" onClick={() => setDetail(p)}>ⓘ</button> : null}
                           </td>
                           <td className="px-2 py-1 text-stone-500 whitespace-nowrap">{p.einheit}</td>
-                          <td className="px-2 py-1 text-right"><input className="w-16 text-xs text-right tabular-nums bg-transparent border-b border-transparent hover:border-stone-200 focus:border-green-600 focus:outline-none" value={p.menge} onChange={(e) => dispatch({ type: "update", coll: "angebote", id: a.id, patch: { positionen: a.positionen.map((x) => x.code === p.code ? { ...x, menge: parseBetrag(e.target.value) } : x) } })} /></td>
+                          <td className="px-2 py-1 text-right"><input className="w-16 text-xs text-right tabular-nums bg-transparent border-b border-transparent hover:border-stone-200 focus:border-orange-600 focus:outline-none" value={p.menge} onChange={(e) => dispatch({ type: "update", coll: "angebote", id: a.id, patch: { positionen: a.positionen.map((x) => x.code === p.code ? { ...x, menge: parseBetrag(e.target.value) } : x) } })} /></td>
                           {bieter.map((b, bi) => { const ep = eps[bi]; return (
                             <td key={bi} className={"px-1 py-1 border-l border-stone-100 " + (ep === minEp && ep > 0 ? "bg-emerald-50" : "")}>
                               <input className={cell} value={(b.preise || {})[p.code] ?? ""} onChange={(e) => setEp(bi, p.code, e.target.value)} placeholder="–" />
@@ -1740,7 +1740,7 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen }) {
                     </tr>
                     <tr className="bg-emerald-50/40 print:hidden">
                       <td className="sticky left-0 bg-emerald-50/40 px-2 py-1">Vergeben →</td><td></td><td></td><td></td>
-                      {bieter.map((b, bi) => <td key={bi} className="px-2 py-1 text-right border-l border-stone-200">{b.name ? <button className="text-green-800 hover:underline" onClick={() => setVergabeFor({ a, b, brutto: bieterBrutto(b, a), netto: bieterNetto(b, a) })}>wählen</button> : ""}</td>)}<td className="border-l border-stone-200"></td>
+                      {bieter.map((b, bi) => <td key={bi} className="px-2 py-1 text-right border-l border-stone-200">{b.name ? <button className="text-orange-800 hover:underline" onClick={() => setVergabeFor({ a, b, brutto: bieterBrutto(b, a), netto: bieterNetto(b, a) })}>wählen</button> : ""}</td>)}<td className="border-l border-stone-200"></td>
                     </tr>
                   </tfoot>
                 </table>
@@ -1919,7 +1919,7 @@ function RapporteView({ d, dispatch, projektId }) {
           <Field label="Material"><input className={inputCls} value={f.material} onChange={(e) => setF({ ...f, material: e.target.value })} /></Field>
           <button className={btnPrimary} disabled={!f.vertragId} onClick={() => { dispatch({ type: "add", coll: "rapporte", item: { id: uid(), projektId, ...f, stunden: parseBetrag(f.stunden), ansatz: parseBetrag(f.ansatz), material: parseBetrag(f.material) } }); setF({ vertragId: "", datum: today(), beschrieb: "", stunden: "", ansatz: "", material: "" }); }}>+</button>
         </div>
-        <div className="mt-2"><button className="text-green-800 text-xs hover:underline" onClick={() => setImportOpen(true)}>Rapporte importieren (CSV)…</button></div>
+        <div className="mt-2"><button className="text-orange-800 text-xs hover:underline" onClick={() => setImportOpen(true)}>Rapporte importieren (CSV)…</button></div>
       </div>
 
       {proVertrag.length > 0 && (
@@ -2009,8 +2009,8 @@ function ErwartungenView({ d, dispatch, projektId, ks }) {
             <tr key={e.id} className="border-t border-stone-100">
               <td className="px-3 py-2 tabular-nums text-stone-500">{e.datum}</td>
               <td className="px-3 py-2">{posLabel(e.positionId)}</td>
-              <td className="px-3 py-2"><input className="w-full text-sm bg-transparent border-b border-transparent hover:border-stone-200 focus:border-green-600 focus:outline-none py-0.5" value={e.bezeichnung || ""} onChange={(ev) => dispatch({ type: "update", coll: "erwartungen", id: e.id, patch: { bezeichnung: ev.target.value } })} /></td>
-              <td className="px-3 py-2 text-right"><input className="w-28 text-sm text-right tabular-nums bg-transparent border-b border-transparent hover:border-stone-200 focus:border-green-600 focus:outline-none py-0.5" value={e.betrag} onChange={(ev) => dispatch({ type: "update", coll: "erwartungen", id: e.id, patch: { betrag: parseBetrag(ev.target.value) } })} /></td>
+              <td className="px-3 py-2"><input className="w-full text-sm bg-transparent border-b border-transparent hover:border-stone-200 focus:border-orange-600 focus:outline-none py-0.5" value={e.bezeichnung || ""} onChange={(ev) => dispatch({ type: "update", coll: "erwartungen", id: e.id, patch: { bezeichnung: ev.target.value } })} /></td>
+              <td className="px-3 py-2 text-right"><input className="w-28 text-sm text-right tabular-nums bg-transparent border-b border-transparent hover:border-stone-200 focus:border-orange-600 focus:outline-none py-0.5" value={e.betrag} onChange={(ev) => dispatch({ type: "update", coll: "erwartungen", id: e.id, patch: { betrag: parseBetrag(ev.target.value) } })} /></td>
               <td className="px-3 py-2 text-right"><button className="text-red-600 text-xs hover:underline" onClick={() => dispatch({ type: "remove", coll: "erwartungen", id: e.id })}>Lö.</button></td>
             </tr>
           ))}</tbody>
@@ -2096,8 +2096,8 @@ function AbrechnungView({ ks, projekt, d, dispatch, projektId }) {
         <button className={btnGhost} onClick={() => window.print()}>Drucken / PDF</button>
         <button className={btnGhost} onClick={() => { setAllOpen(!allOpen); setOpen({}); }}>{allOpen ? "Details zuklappen" : "Alle Details aufklappen"}</button>
         <div className="ml-auto inline-flex rounded-md border border-stone-200 overflow-hidden text-sm">
-          <button className={`px-3 py-1.5 ${!brutto ? "bg-green-800 text-white" : "bg-white text-stone-600"}`} onClick={() => setBrutto(false)}>Netto</button>
-          <button className={`px-3 py-1.5 ${brutto ? "bg-green-800 text-white" : "bg-white text-stone-600"}`} onClick={() => setBrutto(true)}>Brutto (inkl. {ks.satz}%)</button>
+          <button className={`px-3 py-1.5 ${!brutto ? "bg-orange-800 text-white" : "bg-white text-stone-600"}`} onClick={() => setBrutto(false)}>Netto</button>
+          <button className={`px-3 py-1.5 ${brutto ? "bg-orange-800 text-white" : "bg-white text-stone-600"}`} onClick={() => setBrutto(true)}>Brutto (inkl. {ks.satz}%)</button>
         </div>
       </div>
       <p className="text-xs text-stone-400 print:hidden">▸ öffnet Detailzeilen (Verträge, Rechnungen, Mutationen, Erwartungen). Doppelklick auf <strong>Erwartung</strong> oder <strong>Prognose</strong> einer Position (ohne Unterpositionen) setzt den Wert direkt — die Differenz wird als Zeile «Anpassung (Bauabrechnung)» in den Erwartungen geführt. Direkteingabe wirkt auf Nettowerte.</p>
