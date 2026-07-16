@@ -388,44 +388,44 @@ function descendantIds(positionen, id) {
 }
 
 // ---------- UI atoms ----------
-const card = "bg-white border border-slate-200 rounded-lg";
+const card = "bg-white border border-stone-200/80 rounded-xl shadow-sm";
 const btn = "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors";
-const btnPrimary = `${btn} bg-blue-700 text-white hover:bg-blue-800`;
-const btnGhost = `${btn} text-slate-700 hover:bg-slate-100 border border-slate-200`;
-const inputCls = "w-full px-2.5 py-1.5 text-sm border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500";
-const labelCls = "block text-xs font-medium text-slate-500 mb-1";
+const btnPrimary = `${btn} bg-green-800 text-white hover:bg-green-900`;
+const btnGhost = `${btn} text-stone-700 hover:bg-stone-100 border border-stone-200`;
+const inputCls = "w-full px-2.5 py-1.5 text-sm border border-stone-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-600/40 focus:border-green-600";
+const labelCls = "block text-xs font-medium text-stone-500 mb-1";
 
 function Num({ v }) { return <span className="tabular-nums">{chf(v)}</span>; }
-function Abw({ v }) { const cls = v > 0 ? "text-red-600" : v < 0 ? "text-emerald-600" : "text-slate-400"; return <span className={`tabular-nums font-medium ${cls}`}>{v > 0 ? "+" : ""}{chf(v)}</span>; }
+function Abw({ v }) { const cls = v > 0 ? "text-red-600" : v < 0 ? "text-emerald-600" : "text-stone-400"; return <span className={`tabular-nums font-medium ${cls}`}>{v > 0 ? "+" : ""}{chf(v)}</span>; }
 function Field({ label, children }) { return <div><label className={labelCls}>{label}</label>{children}</div>; }
 function Stat({ label, value, sub, accent }) {
-  return (<div className={`${card} p-4`}><div className="text-xs uppercase tracking-wide text-slate-500">{label}</div><div className={`mt-1 text-2xl font-semibold tabular-nums ${accent || "text-slate-900"}`}>{value}</div>{sub && <div className="text-xs text-slate-400 mt-0.5">{sub}</div>}</div>);
+  return (<div className={`${card} p-4`}><div className="text-xs uppercase tracking-wide text-stone-500">{label}</div><div className={`mt-1 text-2xl font-semibold tabular-nums ${accent || "text-stone-900"}`}>{value}</div>{sub && <div className="text-xs text-stone-400 mt-0.5">{sub}</div>}</div>);
 }
 function Ampel({ kv, prognose }) {
   const max = Math.max(kv, prognose, 1); const kvPct = (kv / max) * 100; const pPct = (prognose / max) * 100; const over = prognose > kv;
-  return (<div className="relative h-2.5 rounded-full bg-slate-100 overflow-hidden"><div className={`absolute inset-y-0 left-0 ${over ? "bg-red-500" : "bg-emerald-500"}`} style={{ width: pPct + "%" }} /><div className="absolute inset-y-0 w-0.5 bg-slate-800" style={{ left: kvPct + "%" }} /></div>);
+  return (<div className="relative h-2.5 rounded-full bg-stone-100 overflow-hidden"><div className={`absolute inset-y-0 left-0 ${over ? "bg-red-500" : "bg-emerald-500"}`} style={{ width: pPct + "%" }} /><div className="absolute inset-y-0 w-0.5 bg-stone-800" style={{ left: kvPct + "%" }} /></div>);
 }
 function Modal({ title, onClose, children, wide }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-900/40 p-4 overflow-y-auto" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-stone-900/40 p-4 overflow-y-auto" onClick={onClose}>
       <div className={`${card} shadow-xl w-full ${wide ? "max-w-4xl" : "max-w-lg"} mt-10`} onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-200"><h3 className="font-semibold text-slate-900">{title}</h3><button className="text-slate-400 hover:text-slate-700 text-xl leading-none" onClick={onClose}>×</button></div>
+        <div className="flex items-center justify-between px-5 py-3 border-b border-stone-200"><h3 className="font-semibold text-stone-900">{title}</h3><button className="text-stone-400 hover:text-stone-700 text-xl leading-none" onClick={onClose}>×</button></div>
         <div className="p-5">{children}</div>
       </div>
     </div>
   );
 }
-function Empty({ text }) { return <div className="text-center py-12 text-slate-400 text-sm">{text}</div>; }
+function Empty({ text }) { return <div className="text-center py-12 text-stone-400 text-sm">{text}</div>; }
 function EditCell({ value, display, onSave }) {
   const [editing, setEditing] = useState(false);
   const [val, setVal] = useState("");
   if (editing) return (
-    <input autoFocus className="w-24 text-xs text-right border border-blue-500 rounded px-1 py-0.5 tabular-nums bg-white"
+    <input autoFocus className="w-24 text-xs text-right border border-green-600 rounded px-1 py-0.5 tabular-nums bg-white"
       value={val} onChange={(e) => setVal(e.target.value)}
       onBlur={() => { onSave(parseBetrag(val)); setEditing(false); }}
       onKeyDown={(e) => { if (e.key === "Enter") { onSave(parseBetrag(val)); setEditing(false); } if (e.key === "Escape") setEditing(false); }} />
   );
-  return <span className="cursor-pointer hover:bg-blue-50 rounded px-0.5 -mx-0.5" title="Doppelklick zum Bearbeiten" onDoubleClick={() => { setVal(String(Math.round(Number(value) || 0))); setEditing(true); }}>{display}</span>;
+  return <span className="cursor-pointer hover:bg-green-50 rounded px-0.5 -mx-0.5" title="Doppelklick zum Bearbeiten" onDoubleClick={() => { setVal(String(Math.round(Number(value) || 0))); setEditing(true); }}>{display}</span>;
 }
 
 // =========================================================================
@@ -450,9 +450,9 @@ function HilfeBox({ view }) {
   const steps = HILFE[view];
   if (!steps) return null;
   return (
-    <div className="mb-4 bg-blue-50 border border-blue-100 rounded-lg px-4 py-3 print:hidden">
+    <div className="mb-4 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 print:hidden">
       <ol className="space-y-0.5">
-        {steps.map((s, i) => <li key={i} className="text-sm text-blue-900 flex gap-2"><span className="text-blue-400 select-none">›</span><span>{s}</span></li>)}
+        {steps.map((s, i) => <li key={i} className="text-sm text-stone-700 flex gap-2"><span className="text-amber-500 select-none">›</span><span>{s}</span></li>)}
       </ol>
     </div>
   );
@@ -464,27 +464,27 @@ function HilfeBox({ view }) {
 function PrintModal({ onClose, children }) {
   useEffect(() => { document.body.classList.add("print-doc-open"); return () => document.body.classList.remove("print-doc-open"); }, []);
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-900/40 p-4 overflow-y-auto" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-stone-900/40 p-4 overflow-y-auto" onClick={onClose}>
       <div className="bg-white rounded-lg shadow-xl w-full max-w-3xl my-6" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-end gap-2 px-5 py-3 border-b border-slate-200">
+        <div className="flex items-center justify-end gap-2 px-5 py-3 border-b border-stone-200">
           <button className={btnPrimary} onClick={() => window.print()}>Drucken / PDF</button>
           <button className={btnGhost} onClick={onClose}>Schliessen</button>
         </div>
-        <div className="print-area p-10 text-sm leading-relaxed text-slate-900">{children}</div>
+        <div className="print-area p-10 text-sm leading-relaxed text-stone-900">{children}</div>
       </div>
     </div>
   );
 }
 function DocKopf({ projekt, typ }) {
   return (
-    <div className="mb-8 pb-4 border-b-2 border-slate-800">
+    <div className="mb-8 pb-4 border-b-2 border-stone-800">
       <div className="flex justify-between items-start gap-4">
         <div>
-          <div className="text-[11px] uppercase tracking-widest text-slate-500">{typ}</div>
+          <div className="text-[11px] uppercase tracking-widest text-stone-500">{typ}</div>
           <div className="text-2xl font-bold mt-1">{projekt?.name}</div>
-          <div className="text-sm text-slate-600">{projekt?.strasse}{projekt?.strasse ? ", " : ""}{projekt?.plzOrt || projekt?.ort}</div>
+          <div className="text-sm text-stone-600">{projekt?.strasse}{projekt?.strasse ? ", " : ""}{projekt?.plzOrt || projekt?.ort}</div>
         </div>
-        <div className="text-right text-sm text-slate-600 shrink-0">
+        <div className="text-right text-sm text-stone-600 shrink-0">
           <div className="tabular-nums">{today()}</div>
           <div className="mt-1">Bauherr: {projekt?.bauherr}</div>
           {projekt?.bauleitung ? <div>Bauleitung: {projekt.bauleitung}</div> : null}
@@ -498,8 +498,8 @@ function DocUnterschriften({ links, rechts }) {
     <div className="grid grid-cols-2 gap-12 mt-16">
       {[links, rechts].map((t, i) => (
         <div key={i}>
-          <div className="border-t border-slate-800 pt-1 text-sm">{t}</div>
-          <div className="text-xs text-slate-500 mt-4">Ort / Datum: ____________________</div>
+          <div className="border-t border-stone-800 pt-1 text-sm">{t}</div>
+          <div className="text-xs text-stone-500 mt-4">Ort / Datum: ____________________</div>
         </div>
       ))}
     </div>
@@ -515,7 +515,7 @@ function garantieBis(v) {
 function garantieStatus(bis) {
   if (!bis) return null;
   const rest = (new Date(bis).getTime() - new Date(today()).getTime()) / 86400000;
-  if (rest < 0) return { label: "abgelaufen", cls: "bg-slate-100 text-slate-500" };
+  if (rest < 0) return { label: "abgelaufen", cls: "bg-stone-100 text-stone-500" };
   if (rest < 180) return { label: "läuft ab", cls: "bg-amber-100 text-amber-700" };
   return { label: "aktiv", cls: "bg-emerald-100 text-emerald-700" };
 }
@@ -528,20 +528,20 @@ function WerkvertragDoc({ v, pos, projekt, firma }) {
   const netto = s4 + (Number(v.rundung) || 0);
   const gBis = garantieBis(v);
   const Row = ({ label, val, strong, neg }) => (
-    <div className={`flex justify-between py-1 ${strong ? "font-bold border-t-2 border-slate-800 mt-1 pt-2" : "border-t border-slate-100"}`}>
-      <span>{label}</span><span className={`tabular-nums ${neg ? "text-slate-500" : ""}`}>{neg ? "− " : ""}{chf(val)}</span>
+    <div className={`flex justify-between py-1 ${strong ? "font-bold border-t-2 border-stone-800 mt-1 pt-2" : "border-t border-stone-100"}`}>
+      <span>{label}</span><span className={`tabular-nums ${neg ? "text-stone-500" : ""}`}>{neg ? "− " : ""}{chf(val)}</span>
     </div>
   );
   return (
     <div>
       <DocKopf projekt={projekt} typ={`Werkvertrag ${v.nr || ""}`} />
       <div className="grid grid-cols-2 gap-8 mb-6">
-        <div><div className="text-xs uppercase tracking-wide text-slate-500 mb-1">Bauherrschaft</div><div className="font-medium">{projekt?.bauherr}</div><div className="text-slate-600">{projekt?.bauherrAdresse}</div></div>
-        <div><div className="text-xs uppercase tracking-wide text-slate-500 mb-1">Unternehmer</div><div className="font-medium">{v.unternehmer}</div>{firma && (firma.adresse || firma.plzOrt) ? <div className="text-slate-600">{firma.adresse}{firma.adresse && firma.plzOrt ? ", " : ""}{firma.plzOrt}</div> : null}{firma && firma.kontakt ? <div className="text-slate-600">{firma.kontakt}{firma.telefon ? " · " + firma.telefon : ""}</div> : null}</div>
+        <div><div className="text-xs uppercase tracking-wide text-stone-500 mb-1">Bauherrschaft</div><div className="font-medium">{projekt?.bauherr}</div><div className="text-stone-600">{projekt?.bauherrAdresse}</div></div>
+        <div><div className="text-xs uppercase tracking-wide text-stone-500 mb-1">Unternehmer</div><div className="font-medium">{v.unternehmer}</div>{firma && (firma.adresse || firma.plzOrt) ? <div className="text-stone-600">{firma.adresse}{firma.adresse && firma.plzOrt ? ", " : ""}{firma.plzOrt}</div> : null}{firma && firma.kontakt ? <div className="text-stone-600">{firma.kontakt}{firma.telefon ? " · " + firma.telefon : ""}</div> : null}</div>
       </div>
-      <div className="mb-6"><div className="text-xs uppercase tracking-wide text-slate-500 mb-1">Gegenstand</div><div>Arbeitsgattung <span className="font-medium">{pos ? `BKP ${pos.bkp} ${pos.bezeichnung}` : "—"}</span> gemäss Leistungsverzeichnis und den Bestimmungen der Norm SIA 118.</div></div>
+      <div className="mb-6"><div className="text-xs uppercase tracking-wide text-stone-500 mb-1">Gegenstand</div><div>Arbeitsgattung <span className="font-medium">{pos ? `BKP ${pos.bkp} ${pos.bezeichnung}` : "—"}</span> gemäss Leistungsverzeichnis und den Bestimmungen der Norm SIA 118.</div></div>
       <div className="mb-6 max-w-md">
-        <div className="text-xs uppercase tracking-wide text-slate-500 mb-1">Vergütung (exkl. MwSt)</div>
+        <div className="text-xs uppercase tracking-wide text-stone-500 mb-1">Vergütung (exkl. MwSt)</div>
         <Row label="Vertragssumme brutto" val={b} />
         {Number(v.rabattPct) ? <Row label={`Rabatt ${v.rabattPct}%`} val={s1 - b} neg /> : null}
         {Number(v.pauschalabzug) ? <Row label="Pauschalabzug" val={Number(v.pauschalabzug)} neg /> : null}
@@ -552,14 +552,14 @@ function WerkvertragDoc({ v, pos, projekt, firma }) {
       </div>
       <div className="grid grid-cols-2 gap-8 mb-6 text-sm">
         <div>
-          <div className="text-xs uppercase tracking-wide text-slate-500 mb-1">Zahlung & Sicherheit</div>
+          <div className="text-xs uppercase tracking-wide text-stone-500 mb-1">Zahlung & Sicherheit</div>
           <div>Rückbehalt: <span className="font-medium">{Number(v.rueckbehaltPct) ? `${v.rueckbehaltPct}% (${chf(netto * v.rueckbehaltPct / 100)})` : "keiner"}</span></div>
           <div>Solidarbürgschaft: <span className="font-medium">{v.buergschaft ? "ja, beizubringen" : "keine"}</span></div>
           {Number(v.regieBudget) ? <div>Regiebudget: <span className="font-medium tabular-nums">{chf(v.regieBudget)}</span></div> : null}
           {Number(v.teuerung) ? <div>Teuerung: <span className="font-medium tabular-nums">{chf(v.teuerung)}</span></div> : null}
         </div>
         <div>
-          <div className="text-xs uppercase tracking-wide text-slate-500 mb-1">Garantie</div>
+          <div className="text-xs uppercase tracking-wide text-stone-500 mb-1">Garantie</div>
           <div>Garantiefrist: <span className="font-medium">{Number(v.garantieJahre) || 0} Jahre ab Abnahme</span></div>
           <div>Abnahme: <span className="font-medium tabular-nums">{v.abnahme || "offen"}</span></div>
           {gBis ? <div>Garantie bis: <span className="font-medium tabular-nums">{gBis}</span></div> : null}
@@ -575,11 +575,11 @@ function VergabeantragDoc({ a, projekt, nw }) {
   return (
     <div>
       <DocKopf projekt={projekt} typ="Vergabeantrag" />
-      <div className="mb-6"><div className="text-xs uppercase tracking-wide text-slate-500 mb-1">Ausschreibung</div><div className="font-medium">{a.titel}</div><div className="text-slate-600">{(a.positionen || []).length ? `${a.positionen.length} Positionen (Leistungsverzeichnis)` : "Pauschalofferten"} · {named.length} Offerten · Gewichtung: Preis {nw.w.preis}% / Referenzen {nw.w.referenzen}% / Lehrlinge {nw.w.lehrlinge}%</div></div>
+      <div className="mb-6"><div className="text-xs uppercase tracking-wide text-stone-500 mb-1">Ausschreibung</div><div className="font-medium">{a.titel}</div><div className="text-stone-600">{(a.positionen || []).length ? `${a.positionen.length} Positionen (Leistungsverzeichnis)` : "Pauschalofferten"} · {named.length} Offerten · Gewichtung: Preis {nw.w.preis}% / Referenzen {nw.w.referenzen}% / Lehrlinge {nw.w.lehrlinge}%</div></div>
       <table className="w-full text-sm mb-6">
-        <thead><tr className="border-b-2 border-slate-800 text-left"><th className="py-1 pr-2">Rang</th><th className="py-1 pr-2">Unternehmer</th><th className="py-1 px-2 text-right">Brutto</th><th className="py-1 px-2 text-right">Netto</th><th className="py-1 px-2 text-right">Preis-P.</th><th className="py-1 px-2 text-right">Ref.</th><th className="py-1 px-2 text-right">Lehrl.</th><th className="py-1 pl-2 text-right">Nutzwert</th></tr></thead>
+        <thead><tr className="border-b-2 border-stone-800 text-left"><th className="py-1 pr-2">Rang</th><th className="py-1 pr-2">Unternehmer</th><th className="py-1 px-2 text-right">Brutto</th><th className="py-1 px-2 text-right">Netto</th><th className="py-1 px-2 text-right">Preis-P.</th><th className="py-1 px-2 text-right">Ref.</th><th className="py-1 px-2 text-right">Lehrl.</th><th className="py-1 pl-2 text-right">Nutzwert</th></tr></thead>
         <tbody>{named.map((r, i) => (
-          <tr key={i} className={`border-b border-slate-200 ${i === 0 ? "font-semibold" : ""}`}>
+          <tr key={i} className={`border-b border-stone-200 ${i === 0 ? "font-semibold" : ""}`}>
             <td className="py-1.5 pr-2">{i + 1}</td><td className="py-1.5 pr-2">{r.b.name}</td>
             <td className="py-1.5 px-2 text-right tabular-nums">{chf(r.brutto)}</td><td className="py-1.5 px-2 text-right tabular-nums">{chf(r.netto)}</td>
             <td className="py-1.5 px-2 text-right tabular-nums">{r.pP.toFixed(1)}</td><td className="py-1.5 px-2 text-right tabular-nums">{Number(r.b.referenzPunkte) || 0}</td><td className="py-1.5 px-2 text-right tabular-nums">{Number(r.b.lehrlingPunkte) || 0}</td>
@@ -587,7 +587,7 @@ function VergabeantragDoc({ a, projekt, nw }) {
           </tr>
         ))}</tbody>
       </table>
-      {sieger ? <div className="mb-4 border-2 border-slate-800 rounded p-4"><div className="text-xs uppercase tracking-wide text-slate-500 mb-1">Antrag</div><div>Es wird beantragt, die Arbeiten <span className="font-medium">{a.titel}</span> an <span className="font-bold">{sieger.b.name}</span> zu vergeben — Werkvertragssumme netto <span className="font-bold tabular-nums">CHF {chf(sieger.netto)}</span> (brutto {chf(sieger.brutto)}).{sieger.b.bemerkung ? ` Begründung: ${sieger.b.bemerkung}.` : ""}</div></div> : null}
+      {sieger ? <div className="mb-4 border-2 border-stone-800 rounded p-4"><div className="text-xs uppercase tracking-wide text-stone-500 mb-1">Antrag</div><div>Es wird beantragt, die Arbeiten <span className="font-medium">{a.titel}</span> an <span className="font-bold">{sieger.b.name}</span> zu vergeben — Werkvertragssumme netto <span className="font-bold tabular-nums">CHF {chf(sieger.netto)}</span> (brutto {chf(sieger.brutto)}).{sieger.b.bemerkung ? ` Begründung: ${sieger.b.bemerkung}.` : ""}</div></div> : null}
       <DocUnterschriften links={`Antrag Bauleitung: ${projekt?.bauleitung || ""}`} rechts={`Genehmigung Bauherrschaft: ${projekt?.bauherr || ""}`} />
     </div>
   );
@@ -597,22 +597,22 @@ function ZahlungsfreigabeDoc({ r, v, posLabel, projekt, soll, faktTotal, bezahlt
     <div>
       <DocKopf projekt={projekt} typ="Zahlungsfreigabe" />
       <div className="grid grid-cols-2 gap-8 mb-6">
-        <div><div className="text-xs uppercase tracking-wide text-slate-500 mb-1">Rechnung</div>
+        <div><div className="text-xs uppercase tracking-wide text-stone-500 mb-1">Rechnung</div>
           <div>{RTYP[r.typ] || "Rechnung"} <span className="font-medium">{r.nr || "—"}</span> vom <span className="tabular-nums">{r.datum}</span></div>
           <div>Unternehmer: <span className="font-medium">{v ? v.unternehmer : "—"}</span>{v && v.nr ? ` · Vertrag ${v.nr}` : ""}</div>
           <div>Position: {posLabel}</div>
         </div>
-        <div><div className="text-xs uppercase tracking-wide text-slate-500 mb-1">Stand Vertrag (netto)</div>
+        <div><div className="text-xs uppercase tracking-wide text-stone-500 mb-1">Stand Vertrag (netto)</div>
           <div className="flex justify-between max-w-[240px]"><span>Werkvertrag + NT:</span><span className="tabular-nums">{chf(soll)}</span></div>
           <div className="flex justify-between max-w-[240px]"><span>Fakturiert (inkl. diese):</span><span className={`tabular-nums ${faktTotal > soll && soll > 0 ? "font-bold" : ""}`}>{chf(faktTotal)}</span></div>
           <div className="flex justify-between max-w-[240px]"><span>Davon bezahlt:</span><span className="tabular-nums">{chf(bezahltTotal)}</span></div>
         </div>
       </div>
-      <div className="border-2 border-slate-800 rounded p-4 mb-4 flex items-baseline justify-between">
+      <div className="border-2 border-stone-800 rounded p-4 mb-4 flex items-baseline justify-between">
         <span className="font-medium">Zur Zahlung freigegeben (netto, exkl. MwSt)</span>
         <span className="text-2xl font-bold tabular-nums">CHF {chf(r.betrag)}</span>
       </div>
-      {faktTotal > soll && soll > 0 ? <div className="text-sm mb-4 border border-slate-800 rounded p-3">⚠ Achtung: Mit dieser Rechnung übersteigt die fakturierte Summe die Vertragssumme um <span className="font-bold tabular-nums">{chf(faktTotal - soll)}</span>. Freigabe nur mit Begründung / Nachtrag.</div> : null}
+      {faktTotal > soll && soll > 0 ? <div className="text-sm mb-4 border border-stone-800 rounded p-3">⚠ Achtung: Mit dieser Rechnung übersteigt die fakturierte Summe die Vertragssumme um <span className="font-bold tabular-nums">{chf(faktTotal - soll)}</span>. Freigabe nur mit Begründung / Nachtrag.</div> : null}
       <DocUnterschriften links={`Geprüft Bauleitung: ${projekt?.bauleitung || ""}`} rechts={`Freigabe Bauherrschaft: ${projekt?.bauherr || ""}`} />
     </div>
   );
@@ -624,7 +624,7 @@ function ZahlungsfreigabeDoc({ r, v, posLabel, projekt, soll, faktTotal, bezahlt
 const VERLAUF_SERIEN = [
   { key: "prognose", label: "Prognose", col: "#1d4ed8", dash: "" },
   { key: "bezahlt", label: "Bezahlt", col: "#0d9488", dash: "" },
-  { key: "kvRevidiert", label: "KV revidiert", col: "#64748b", dash: "6 4" },
+  { key: "kvRevidiert", label: "KV revidiert", col: "#78716c", dash: "6 4" },
 ];
 function KostenverlaufChart({ punkte }) {
   const [hover, setHover] = useState(null);
@@ -646,7 +646,7 @@ function KostenverlaufChart({ punkte }) {
   const hp = hover != null ? punkte[hover] : null;
   return (
     <div>
-      <div className="flex gap-4 flex-wrap mb-2 text-xs text-slate-600">
+      <div className="flex gap-4 flex-wrap mb-2 text-xs text-stone-600">
         {VERLAUF_SERIEN.map((s) => (
           <span key={s.key} className="inline-flex items-center gap-1.5">
             <svg width="18" height="6"><line x1="0" y1="3" x2="18" y2="3" stroke={s.col} strokeWidth="2" strokeDasharray={s.dash} /></svg>{s.label}
@@ -657,29 +657,31 @@ function KostenverlaufChart({ punkte }) {
         <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img" aria-label="Kostenstand-Verlauf">
           {[0, 0.25, 0.5, 0.75, 1].map((f) => (
             <g key={f}>
-              <line x1={L} y1={y(f * maxY)} x2={W - R} y2={y(f * maxY)} stroke="#e2e8f0" strokeWidth="1" />
-              <text x={L - 6} y={y(f * maxY) + 3.5} textAnchor="end" fontSize="10" fill="#94a3b8">{fmt(f * maxY)}</text>
+              <line x1={L} y1={y(f * maxY)} x2={W - R} y2={y(f * maxY)} stroke="#e7e5e4" strokeWidth="1" />
+              <text x={L - 6} y={y(f * maxY) + 3.5} textAnchor="end" fontSize="10" fill="#a8a29e">{fmt(f * maxY)}</text>
             </g>
           ))}
-          {hover != null && <line x1={x(hover)} y1={T} x2={x(hover)} y2={T + ih} stroke="#94a3b8" strokeWidth="1" strokeDasharray="3 3" />}
+          {hover != null && <line x1={x(hover)} y1={T} x2={x(hover)} y2={T + ih} stroke="#a8a29e" strokeWidth="1" strokeDasharray="3 3" />}
           {VERLAUF_SERIEN.map((s) => <path key={s.key} d={path(s.key)} fill="none" stroke={s.col} strokeWidth="2" strokeDasharray={s.dash} strokeLinejoin="round" />)}
           {VERLAUF_SERIEN.map((s) => punkte.map((pt, i) => (
             <circle key={s.key + i} cx={x(i)} cy={y(pt[s.key])} r={hover === i ? 4.5 : 3} fill={s.col} stroke="#fff" strokeWidth="1.5" />
           )))}
-          {VERLAUF_SERIEN.map((s) => {
+          {(() => {
             const last = punkte[punkte.length - 1];
-            return <text key={s.key} x={W - R + 8} y={y(last[s.key]) + 3.5} fontSize="10" fontWeight="600" fill="#475569">{s.label}</text>;
-          })}
+            const labs = VERLAUF_SERIEN.map((s) => ({ s, ly: y(last[s.key]) })).sort((a, b) => a.ly - b.ly);
+            for (let i = 1; i < labs.length; i++) if (labs[i].ly - labs[i - 1].ly < 12) labs[i].ly = labs[i - 1].ly + 12;
+            return labs.map(({ s, ly }) => <text key={s.key} x={W - R + 8} y={ly + 3.5} fontSize="10" fontWeight="600" fill={s.col}>{s.label}</text>);
+          })()}
           {punkte.map((pt, i) => (punkte.length <= 8 || i === 0 || i === punkte.length - 1 || hover === i) && (
-            <text key={i} x={x(i)} y={H - 8} textAnchor="middle" fontSize="10" fill="#94a3b8" className="tabular-nums">{pt.datum}{pt.live ? " (heute)" : ""}</text>
+            <text key={i} x={x(i)} y={H - 8} textAnchor="middle" fontSize="10" fill="#a8a29e" className="tabular-nums">{pt.datum}{pt.live ? " (heute)" : ""}</text>
           ))}
         </svg>
         {hp && (
-          <div className="absolute top-2 bg-white border border-slate-200 rounded-md shadow-lg px-3 py-2 text-xs pointer-events-none z-10" style={{ left: `min(max(${x(hover) / W * 100}% - 70px, 4px), calc(100% - 150px))` }}>
+          <div className="absolute top-2 bg-white border border-stone-200 rounded-md shadow-lg px-3 py-2 text-xs pointer-events-none z-10" style={{ left: `min(max(${x(hover) / W * 100}% - 70px, 4px), calc(100% - 150px))` }}>
             <div className="font-medium tabular-nums mb-1">{hp.datum}{hp.live ? " (heute, live)" : ""}</div>
             {VERLAUF_SERIEN.map((s) => (
               <div key={s.key} className="flex items-center justify-between gap-3">
-                <span className="inline-flex items-center gap-1.5 text-slate-500"><span className="w-2 h-2 rounded-full inline-block" style={{ background: s.col }} />{s.label}</span>
+                <span className="inline-flex items-center gap-1.5 text-stone-500"><span className="w-2 h-2 rounded-full inline-block" style={{ background: s.col }} />{s.label}</span>
                 <span className="tabular-nums font-medium">{chf(hp[s.key])}</span>
               </div>
             ))}
@@ -697,7 +699,7 @@ function UnternehmerView({ firmen, db, dispatch }) {
   const [f, setF] = useState({ name: "", adresse: "", plzOrt: "", kontakt: "", telefon: "", email: "" });
   const usage = (name) => (db.vertraege || []).filter((v) => v.unternehmer === name).length;
   const upd = (id, patch) => dispatch({ type: "update", coll: "firmen", id, patch });
-  const cell = "w-full text-sm bg-transparent border-b border-transparent hover:border-slate-200 focus:border-blue-500 focus:outline-none py-0.5";
+  const cell = "w-full text-sm bg-transparent border-b border-transparent hover:border-stone-200 focus:border-green-600 focus:outline-none py-0.5";
   return (
     <div className="space-y-4">
       <div className={`${card} p-4`}>
@@ -713,22 +715,22 @@ function UnternehmerView({ firmen, db, dispatch }) {
       </div>
       {!firmen.length ? <Empty text="Noch keine Unternehmer erfasst. Firmen werden auch automatisch angelegt, wenn du einen Vertrag mit neuem Unternehmer speicherst." /> : (
         <div className={`${card} overflow-x-auto`}><table className="w-full text-sm">
-          <thead className="bg-slate-50 text-slate-500 text-xs"><tr><th className="text-left font-medium px-3 py-2">Firma</th><th className="text-left font-medium px-3 py-2">Strasse</th><th className="text-left font-medium px-3 py-2">PLZ / Ort</th><th className="text-left font-medium px-3 py-2">Kontakt</th><th className="text-left font-medium px-3 py-2">Telefon</th><th className="text-left font-medium px-3 py-2">E-Mail</th><th className="text-right font-medium px-3 py-2">Verträge</th><th className="w-12"></th></tr></thead>
+          <thead className="bg-stone-50 text-stone-500 text-xs"><tr><th className="text-left font-medium px-3 py-2">Firma</th><th className="text-left font-medium px-3 py-2">Strasse</th><th className="text-left font-medium px-3 py-2">PLZ / Ort</th><th className="text-left font-medium px-3 py-2">Kontakt</th><th className="text-left font-medium px-3 py-2">Telefon</th><th className="text-left font-medium px-3 py-2">E-Mail</th><th className="text-right font-medium px-3 py-2">Verträge</th><th className="w-12"></th></tr></thead>
           <tbody>{[...firmen].sort((a, b) => a.name.localeCompare(b.name, "de")).map((fa) => (
-            <tr key={fa.id} className="border-t border-slate-100">
+            <tr key={fa.id} className="border-t border-stone-100">
               <td className="px-3 py-1.5 font-medium"><input className={cell} value={fa.name} onChange={(e) => upd(fa.id, { name: e.target.value })} /></td>
               <td className="px-3 py-1.5"><input className={cell} value={fa.adresse || ""} onChange={(e) => upd(fa.id, { adresse: e.target.value })} /></td>
               <td className="px-3 py-1.5"><input className={cell} value={fa.plzOrt || ""} onChange={(e) => upd(fa.id, { plzOrt: e.target.value })} /></td>
               <td className="px-3 py-1.5"><input className={cell} value={fa.kontakt || ""} onChange={(e) => upd(fa.id, { kontakt: e.target.value })} /></td>
               <td className="px-3 py-1.5"><input className={cell} value={fa.telefon || ""} onChange={(e) => upd(fa.id, { telefon: e.target.value })} /></td>
               <td className="px-3 py-1.5"><input className={cell} value={fa.email || ""} onChange={(e) => upd(fa.id, { email: e.target.value })} /></td>
-              <td className="px-3 py-1.5 text-right tabular-nums text-slate-500">{usage(fa.name) || "–"}</td>
+              <td className="px-3 py-1.5 text-right tabular-nums text-stone-500">{usage(fa.name) || "–"}</td>
               <td className="px-3 py-1.5 text-right"><button className="text-red-600 text-xs hover:underline" onClick={() => { if (usage(fa.name) === 0 || window.confirm(`«${fa.name}» wird in ${usage(fa.name)} Verträgen verwendet. Trotzdem aus dem Adressstamm löschen? (Verträge bleiben bestehen.)`)) dispatch({ type: "remove", coll: "firmen", id: fa.id }); }}>Lö.</button></td>
             </tr>
           ))}</tbody>
         </table></div>
       )}
-      <p className="text-xs text-slate-400">Der Adressstamm gilt über alle Projekte. Die Adresse erscheint auf Werkverträgen; die Spalte «Verträge» zählt Verwendungen in allen Projekten.</p>
+      <p className="text-xs text-stone-400">Der Adressstamm gilt über alle Projekte. Die Adresse erscheint auf Werkverträgen; die Spalte «Verträge» zählt Verwendungen in allen Projekten.</p>
     </div>
   );
 }
@@ -769,19 +771,19 @@ function App() {
   ];
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900" style={{ fontFamily: "ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" }}>
-      <header className="bg-slate-900 text-white print:hidden">
+    <div className="min-h-screen bg-[#faf7f2] text-stone-800" style={{ fontFamily: "ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" }}>
+      <header className="bg-stone-900 text-white print:hidden">
         <div className="max-w-[1480px] mx-auto px-5 py-3 flex items-center justify-between flex-wrap gap-3">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded bg-blue-600 flex items-center justify-center font-bold text-sm">BA</div>
-            <div><div className="font-semibold leading-tight">BauAdmin</div><div className="text-[11px] text-slate-400 leading-tight">Kostenkontrolle nach BKP</div></div>
+            <div className="w-9 h-9 rounded bg-green-700 flex items-center justify-center font-bold text-sm">BA</div>
+            <div><div className="font-semibold leading-tight">BauAdmin</div><div className="text-[11px] text-stone-400 leading-tight">Kostenkontrolle nach BKP</div></div>
           </div>
           <div className="flex items-center gap-2">
-            <select className="bg-slate-800 border border-slate-700 rounded-md px-3 py-1.5 text-sm" value={db.aktiv} onChange={(e) => dispatch({ type: "setAktiv", id: e.target.value })}>
+            <select className="bg-stone-800 border border-stone-700 rounded-md px-3 py-1.5 text-sm" value={db.aktiv} onChange={(e) => dispatch({ type: "setAktiv", id: e.target.value })}>
               {db.projekte.map((pr) => <option key={pr.id} value={pr.id}>{pr.name}</option>)}
             </select>
             <ProjektNeu dispatch={dispatch} setView={setView} />
-            <button className={`w-8 h-8 rounded-full text-sm font-bold ${hilfe ? "bg-blue-600 text-white" : "bg-slate-700 text-slate-300 hover:bg-slate-600"}`} title={hilfe ? "Hinweise ausblenden" : "Hinweise einblenden"} onClick={toggleHilfe}>?</button>
+            <button className={`w-8 h-8 rounded-full text-sm font-bold ${hilfe ? "bg-green-700 text-white" : "bg-stone-700 text-stone-300 hover:bg-stone-600"}`} title={hilfe ? "Hinweise ausblenden" : "Hinweise einblenden"} onClick={toggleHilfe}>?</button>
           </div>
         </div>
       </header>
@@ -790,7 +792,7 @@ function App() {
         <nav className="lg:sticky lg:top-5 self-start print:hidden">
           <div className="flex lg:flex-col gap-1 overflow-x-auto pb-1">
             {nav.map(([key, label]) => (
-              <button key={key} onClick={() => setView(key)} className={`text-left px-3 py-2 rounded-md text-sm whitespace-nowrap transition-colors ${view === key ? "bg-blue-700 text-white font-medium" : "text-slate-600 hover:bg-slate-200/60"}`}>{label}</button>
+              <button key={key} onClick={() => setView(key)} className={`text-left px-3 py-2 rounded-md text-sm whitespace-nowrap transition-colors ${view === key ? "bg-green-800 text-white font-medium" : "text-stone-600 hover:bg-stone-200/60"}`}>{label}</button>
             ))}
           </div>
         </nav>
@@ -798,7 +800,7 @@ function App() {
         <main className="min-w-0">
           <div className="mb-4">
             <h1 className="text-xl font-semibold">{nav.find((n) => n[0] === view)?.[1]}</h1>
-            <p className="text-sm text-slate-500">{projekt?.name} · {projekt?.bauherr} · {projekt?.plzOrt || projekt?.ort} · MwSt {ks.satz}%</p>
+            <p className="text-sm text-stone-500">{projekt?.name} · {projekt?.bauherr} · {projekt?.plzOrt || projekt?.ort} · MwSt {ks.satz}%</p>
           </div>
           {hilfe && <HilfeBox view={view} />}
           {view === "projekt" && <ProjektView projekt={projekt} dispatch={dispatch} />}
@@ -826,7 +828,7 @@ function ProjektNeu({ dispatch, setView }) {
   const [f, setF] = useState({ name: "", bauherr: "", ort: "" });
   return (
     <>
-      <button className={`${btn} bg-slate-700 hover:bg-slate-600 text-white`} onClick={() => setOpen(true)}>+ Projekt</button>
+      <button className={`${btn} bg-stone-700 hover:bg-stone-600 text-white`} onClick={() => setOpen(true)}>+ Projekt</button>
       {open && (
         <Modal title="Neues Bauprojekt" onClose={() => setOpen(false)}>
           <div className="space-y-3">
@@ -835,7 +837,7 @@ function ProjektNeu({ dispatch, setView }) {
               <Field label="Bauherrschaft"><input className={inputCls} value={f.bauherr} onChange={(e) => setF({ ...f, bauherr: e.target.value })} /></Field>
               <Field label="Ort"><input className={inputCls} value={f.ort} onChange={(e) => setF({ ...f, ort: e.target.value })} /></Field>
             </div>
-            <p className="text-xs text-slate-400">Adressen, MwSt und Gewichtungen anschliessend im Reiter «Projekt».</p>
+            <p className="text-xs text-stone-400">Adressen, MwSt und Gewichtungen anschliessend im Reiter «Projekt».</p>
             <div className="flex justify-end gap-2 pt-1">
               <button className={btnGhost} onClick={() => setOpen(false)}>Abbrechen</button>
               <button className={btnPrimary} disabled={!f.name} onClick={() => { const id = uid(); dispatch({ type: "add", coll: "projekte", item: { id, ...f, plzOrt: f.ort, strasse: "", bauherrAdresse: "", bauleitung: "", mwstSatz: 8.1, teuerungsReserve: 0, gewichtPreis: 70, gewichtReferenzen: 20, gewichtLehrlinge: 10 } }); dispatch({ type: "setAktiv", id }); setOpen(false); setView("projekt"); }}>Erstellen</button>
@@ -880,7 +882,7 @@ function ProjektView({ projekt, dispatch }) {
           <Field label="MwSt-Satz % (Standard CH 8.1)"><input className={inputCls} value={f.mwstSatz} onChange={(e) => setF({ ...f, mwstSatz: e.target.value })} /></Field>
           <Field label="Teuerungsreserve % (auf KV rev.)"><input className={inputCls} value={f.teuerungsReserve} onChange={(e) => setF({ ...f, teuerungsReserve: e.target.value })} /></Field>
         </div>
-        <p className="text-xs text-slate-400">Alle Beträge im Tool sind netto. MwSt und Teuerungsreserve werden in der Bauabrechnung separat ausgewiesen.</p>
+        <p className="text-xs text-stone-400">Alle Beträge im Tool sind netto. MwSt und Teuerungsreserve werden in der Bauabrechnung separat ausgewiesen.</p>
       </div>
       <div className={`${card} p-5 space-y-3`}>
         <h2 className="font-semibold">Angebotsbewertung — Standard-Gewichtung {wSum !== 100 && <span className="text-red-600 text-sm font-normal">(Summe {wSum}% — sollte 100% sein)</span>}</h2>
@@ -889,7 +891,7 @@ function ProjektView({ projekt, dispatch }) {
           <Field label="Referenzen %"><input className={inputCls} value={f.gewichtReferenzen} onChange={(e) => setF({ ...f, gewichtReferenzen: e.target.value })} /></Field>
           <Field label="Lehrlingsausbildung %"><input className={inputCls} value={f.gewichtLehrlinge} onChange={(e) => setF({ ...f, gewichtLehrlinge: e.target.value })} /></Field>
         </div>
-        <p className="text-xs text-slate-400">Gilt als Vorgabe für neue Ausschreibungen; pro Ausschreibung übersteuerbar. Punkte 1–100, Preispunkte = 100 × günstigste Nettosumme ÷ Nettosumme.</p>
+        <p className="text-xs text-stone-400">Gilt als Vorgabe für neue Ausschreibungen; pro Ausschreibung übersteuerbar. Punkte 1–100, Preispunkte = 100 × günstigste Nettosumme ÷ Nettosumme.</p>
       </div>
       <div className="flex items-center gap-3">
         <button className={btnPrimary} onClick={save}>Speichern</button>
@@ -923,7 +925,7 @@ function Dashboard({ ks, d, dispatch, projektId }) {
       <div className={`${card} p-5`}>
         <div className="flex items-baseline justify-between mb-2"><h2 className="font-semibold">Prognose vs. Budget (KV)</h2><div>Abweichung: <Abw v={t.abwKv} /></div></div>
         <Ampel kv={t.kv} prognose={t.prognose} />
-        <div className="flex justify-between text-xs text-slate-500 mt-1.5 tabular-nums"><span>KV-Budget: {chf(t.kv)}</span><span>Prognose: {chf(t.prognose)} · brutto {chf(ks.brutto)}</span></div>
+        <div className="flex justify-between text-xs text-stone-500 mt-1.5 tabular-nums"><span>KV-Budget: {chf(t.kv)}</span><span>Prognose: {chf(t.prognose)} · brutto {chf(ks.brutto)}</span></div>
       </div>
       <div className={`${card} p-5`}>
         <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
@@ -933,9 +935,9 @@ function Dashboard({ ks, d, dispatch, projektId }) {
         <KostenverlaufChart punkte={punkte} />
         {snaps.length > 0 && (
           <div className="mt-3 overflow-x-auto"><table className="w-full text-xs">
-            <thead className="text-slate-500"><tr><th className="text-left font-medium py-1 pr-2">Datum</th><th className="text-right font-medium py-1 px-2">KV rev.</th><th className="text-right font-medium py-1 px-2">Beauftragt</th><th className="text-right font-medium py-1 px-2">Erwartung</th><th className="text-right font-medium py-1 px-2">Prognose</th><th className="text-right font-medium py-1 px-2">Bezahlt</th><th className="w-10"></th></tr></thead>
+            <thead className="text-stone-500"><tr><th className="text-left font-medium py-1 pr-2">Datum</th><th className="text-right font-medium py-1 px-2">KV rev.</th><th className="text-right font-medium py-1 px-2">Beauftragt</th><th className="text-right font-medium py-1 px-2">Erwartung</th><th className="text-right font-medium py-1 px-2">Prognose</th><th className="text-right font-medium py-1 px-2">Bezahlt</th><th className="w-10"></th></tr></thead>
             <tbody>{snaps.map((s) => (
-              <tr key={s.id} className="border-t border-slate-100">
+              <tr key={s.id} className="border-t border-stone-100">
                 <td className="py-1 pr-2 tabular-nums">{s.datum}</td>
                 <td className="py-1 px-2 text-right tabular-nums">{chf(s.kvRevidiert)}</td>
                 <td className="py-1 px-2 text-right tabular-nums">{chf(s.beauftragt)}</td>
@@ -947,19 +949,19 @@ function Dashboard({ ks, d, dispatch, projektId }) {
             ))}</tbody>
           </table></div>
         )}
-        {!snaps.length && <p className="text-xs text-slate-400 mt-2">Noch keine gespeicherten Kostenstände — die Kurve zeigt nur den heutigen Live-Wert. Halte den Stand z.B. monatlich fest, um den Verlauf über die Bauzeit zu sehen.</p>}
+        {!snaps.length && <p className="text-xs text-stone-400 mt-2">Noch keine gespeicherten Kostenstände — die Kurve zeigt nur den heutigen Live-Wert. Halte den Stand z.B. monatlich fest, um den Verlauf über die Bauzeit zu sehen.</p>}
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
         <div className={`${card} p-5`}>
           <h2 className="font-semibold mb-3">Kostengruppen (BKP)</h2>
           <table className="w-full text-sm">
-            <thead><tr className="text-slate-500 text-xs"><th className="text-left font-medium pb-2">Gruppe</th><th className="text-right font-medium pb-2">KV rev.</th><th className="text-right font-medium pb-2">Prognose</th><th className="text-right font-medium pb-2">Abw.</th></tr></thead>
-            <tbody>{ks.groups.map((g) => (<tr key={g.g} className="border-t border-slate-100"><td className="py-1.5"><span className="font-medium">{g.g}</span> <span className="text-slate-500">{g.name}</span></td><td className="text-right py-1.5"><Num v={g.kvRevidiert} /></td><td className="text-right py-1.5"><Num v={g.prognose} /></td><td className="text-right py-1.5"><Abw v={g.abwKv} /></td></tr>))}</tbody>
+            <thead><tr className="text-stone-500 text-xs"><th className="text-left font-medium pb-2">Gruppe</th><th className="text-right font-medium pb-2">KV rev.</th><th className="text-right font-medium pb-2">Prognose</th><th className="text-right font-medium pb-2">Abw.</th></tr></thead>
+            <tbody>{ks.groups.map((g) => (<tr key={g.g} className="border-t border-stone-100"><td className="py-1.5"><span className="font-medium">{g.g}</span> <span className="text-stone-500">{g.name}</span></td><td className="text-right py-1.5"><Num v={g.kvRevidiert} /></td><td className="text-right py-1.5"><Num v={g.prognose} /></td><td className="text-right py-1.5"><Abw v={g.abwKv} /></td></tr>))}</tbody>
           </table>
         </div>
         <div className={`${card} p-5`}>
           <h2 className="font-semibold mb-3">Grösste Mehrkosten (Prognose vs. KV)</h2>
-          {over.length === 0 ? <p className="text-sm text-slate-400">Keine Position über Budget.</p> : (
+          {over.length === 0 ? <p className="text-sm text-stone-400">Keine Position über Budget.</p> : (
             <ul className="space-y-2">{over.map((z) => (<li key={z.pos.id} className="flex items-center justify-between text-sm"><span className="truncate pr-2"><span className="font-medium tabular-nums">{z.pos.bkp}</span> {z.pos.bezeichnung}</span><Abw v={z.roll.abwKv} /></li>))}</ul>
           )}
         </div>
@@ -980,28 +982,28 @@ function KvView({ d, dispatch, projektId, ks }) {
       {!ks.ordered.length ? <Empty text="Noch keine BKP-Positionen. Importiere den KV oder erfasse Positionen einzeln." /> : (
         <div className={`${card} overflow-x-auto`}>
           <table className="w-full text-sm">
-            <thead className="bg-slate-50 text-slate-500 text-xs"><tr>
+            <thead className="bg-stone-50 text-stone-500 text-xs"><tr>
               <th className="text-left font-medium px-3 py-2">BKP / Bezeichnung</th><th className="text-right font-medium px-3 py-2">KV</th><th className="text-right font-medium px-3 py-2">KV rev.</th><th className="text-right font-medium px-3 py-2">Beauftragt</th><th className="text-right font-medium px-3 py-2">Erwartung</th><th className="text-right font-medium px-3 py-2">Prognose</th><th className="text-right font-medium px-3 py-2">Abw. KV</th><th className="px-3 py-2 w-28"></th>
             </tr></thead>
             <tbody>
               {ks.ordered.map((z) => (
-                <tr key={z.pos.id} className={`border-t border-slate-100 hover:bg-slate-50/60 ${z.hasChildren ? "bg-slate-50/40" : ""}`}>
+                <tr key={z.pos.id} className={`border-t border-stone-100 hover:bg-stone-50/60 ${z.hasChildren ? "bg-stone-50/40" : ""}`}>
                   <td className="px-3 py-2" style={{ paddingLeft: 12 + z.depth * 18 }}><span className={`tabular-nums ${z.hasChildren ? "font-semibold" : "font-medium"}`}>{z.pos.bkp}</span> <span className={z.hasChildren ? "font-semibold" : ""}>{z.pos.bezeichnung}</span></td>
                   <td className="px-3 py-2 text-right"><Num v={z.roll.kv} /></td>
                   <td className="px-3 py-2 text-right"><Num v={z.roll.kvRevidiert} /></td>
-                  <td className="px-3 py-2 text-right text-slate-600"><Num v={z.roll.beauftragt} /></td>
-                  <td className="px-3 py-2 text-right text-slate-600">{z.roll.erwartung ? <Abw v={z.roll.erwartung} /> : "–"}</td>
+                  <td className="px-3 py-2 text-right text-stone-600"><Num v={z.roll.beauftragt} /></td>
+                  <td className="px-3 py-2 text-right text-stone-600">{z.roll.erwartung ? <Abw v={z.roll.erwartung} /> : "–"}</td>
                   <td className="px-3 py-2 text-right font-medium"><Num v={z.roll.prognose} /></td>
                   <td className="px-3 py-2 text-right"><Abw v={z.roll.abwKv} /></td>
                   <td className="px-3 py-2 text-right whitespace-nowrap">
-                    <button className="text-slate-500 hover:underline text-xs mr-2" onClick={() => setEdit({ bkp: "", bezeichnung: "", kv: "", parentId: z.pos.id })}>+ Unter</button>
-                    <button className="text-blue-700 hover:underline text-xs mr-2" onClick={() => setEdit(z.pos)}>Bearb.</button>
+                    <button className="text-stone-500 hover:underline text-xs mr-2" onClick={() => setEdit({ bkp: "", bezeichnung: "", kv: "", parentId: z.pos.id })}>+ Unter</button>
+                    <button className="text-green-800 hover:underline text-xs mr-2" onClick={() => setEdit(z.pos)}>Bearb.</button>
                     <button className="text-red-600 hover:underline text-xs" onClick={() => dispatch({ type: "remove", coll: "positionen", id: z.pos.id })}>Lö.</button>
                   </td>
                 </tr>
               ))}
             </tbody>
-            <tfoot><tr className="border-t-2 border-slate-300 font-semibold bg-slate-50">
+            <tfoot><tr className="border-t-2 border-stone-300 font-semibold bg-stone-50">
               <td className="px-3 py-2">Total netto</td><td className="px-3 py-2 text-right"><Num v={ks.total.kv} /></td><td className="px-3 py-2 text-right"><Num v={ks.total.kvRevidiert} /></td><td className="px-3 py-2 text-right"><Num v={ks.total.beauftragt} /></td><td className="px-3 py-2 text-right"><Abw v={ks.total.erwartung} /></td><td className="px-3 py-2 text-right"><Num v={ks.total.prognose} /></td><td className="px-3 py-2 text-right"><Abw v={ks.total.abwKv} /></td><td></td>
             </tr></tfoot>
           </table>
@@ -1045,11 +1047,11 @@ function KvImport({ onClose, onImport }) {
   const preview = useMemo(() => parseKvText(text), [text]);
   return (
     <Modal title="Kostenvoranschlag importieren" onClose={onClose} wide>
-      <p className="text-sm text-slate-500 mb-2">Spalten: BKP · Bezeichnung · Betrag netto. Unterpositionen (211.1) werden automatisch unter ihre Hauptposition (211) gehängt.</p>
+      <p className="text-sm text-stone-500 mb-2">Spalten: BKP · Bezeichnung · Betrag netto. Unterpositionen (211.1) werden automatisch unter ihre Hauptposition (211) gehängt.</p>
       <textarea className={`${inputCls} font-mono h-40`} value={text} onChange={(e) => setText(e.target.value)} />
-      <div className="mt-3"><div className="text-xs font-medium text-slate-500 mb-1">Vorschau ({preview.length} Positionen)</div>
-        <div className="max-h-48 overflow-y-auto border border-slate-200 rounded-md"><table className="w-full text-sm"><tbody>
-          {preview.map((r, i) => (<tr key={i} className="border-b border-slate-100 last:border-0"><td className="px-3 py-1 font-medium tabular-nums w-20">{r.bkp}</td><td className="px-3 py-1">{r.bezeichnung}</td><td className="px-3 py-1 text-right tabular-nums">{chf(r.kv)}</td></tr>))}
+      <div className="mt-3"><div className="text-xs font-medium text-stone-500 mb-1">Vorschau ({preview.length} Positionen)</div>
+        <div className="max-h-48 overflow-y-auto border border-stone-200 rounded-md"><table className="w-full text-sm"><tbody>
+          {preview.map((r, i) => (<tr key={i} className="border-b border-stone-100 last:border-0"><td className="px-3 py-1 font-medium tabular-nums w-20">{r.bkp}</td><td className="px-3 py-1">{r.bezeichnung}</td><td className="px-3 py-1 text-right tabular-nums">{chf(r.kv)}</td></tr>))}
         </tbody></table></div>
       </div>
       <div className="flex justify-end gap-2 pt-4"><button className={btnGhost} onClick={onClose}>Abbrechen</button><button className={btnPrimary} disabled={!preview.length} onClick={() => onImport(preview)}>{preview.length} Positionen importieren</button></div>
@@ -1063,7 +1065,7 @@ function MutationenView({ d, dispatch, projektId }) {
   const posLabel = (id) => { const x = d.positionen.find((p) => p.id === id); return x ? `${x.bkp} ${x.bezeichnung}` : "—"; };
   return (
     <div className="space-y-4">
-      <p className="text-sm text-slate-500">Mutationen ändern das KV-Budget einer Position (+/−), z.B. Projektänderungen. Für Verschiebungen zwischen zwei BKP nutze «Umbuchungen».</p>
+      <p className="text-sm text-stone-500">Mutationen ändern das KV-Budget einer Position (+/−), z.B. Projektänderungen. Für Verschiebungen zwischen zwei BKP nutze «Umbuchungen».</p>
       <div className={`${card} p-4`}>
         <div className="grid grid-cols-1 md:grid-cols-[1fr_140px_1fr_140px_auto] gap-3 items-end">
           <Field label="BKP-Position"><select className={inputCls} value={f.positionId} onChange={(e) => setF({ ...f, positionId: e.target.value })}><option value="">wählen…</option>{opts.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</select></Field>
@@ -1075,8 +1077,8 @@ function MutationenView({ d, dispatch, projektId }) {
       </div>
       {!d.mutationen.length ? <Empty text="Keine Mutationen erfasst." /> : (
         <div className={`${card} overflow-x-auto`}><table className="w-full text-sm">
-          <thead className="bg-slate-50 text-slate-500 text-xs"><tr><th className="text-left font-medium px-3 py-2">Datum</th><th className="text-left font-medium px-3 py-2">Position</th><th className="text-left font-medium px-3 py-2">Grund</th><th className="text-right font-medium px-3 py-2">Betrag</th><th className="w-12"></th></tr></thead>
-          <tbody>{d.mutationen.map((m) => (<tr key={m.id} className="border-t border-slate-100"><td className="px-3 py-2 tabular-nums text-slate-500">{m.datum}</td><td className="px-3 py-2">{posLabel(m.positionId)}</td><td className="px-3 py-2 text-slate-600">{m.grund}</td><td className="px-3 py-2 text-right"><Abw v={m.betrag} /></td><td className="px-3 py-2 text-right"><button className="text-red-600 text-xs hover:underline" onClick={() => dispatch({ type: "remove", coll: "mutationen", id: m.id })}>Lö.</button></td></tr>))}</tbody>
+          <thead className="bg-stone-50 text-stone-500 text-xs"><tr><th className="text-left font-medium px-3 py-2">Datum</th><th className="text-left font-medium px-3 py-2">Position</th><th className="text-left font-medium px-3 py-2">Grund</th><th className="text-right font-medium px-3 py-2">Betrag</th><th className="w-12"></th></tr></thead>
+          <tbody>{d.mutationen.map((m) => (<tr key={m.id} className="border-t border-stone-100"><td className="px-3 py-2 tabular-nums text-stone-500">{m.datum}</td><td className="px-3 py-2">{posLabel(m.positionId)}</td><td className="px-3 py-2 text-stone-600">{m.grund}</td><td className="px-3 py-2 text-right"><Abw v={m.betrag} /></td><td className="px-3 py-2 text-right"><button className="text-red-600 text-xs hover:underline" onClick={() => dispatch({ type: "remove", coll: "mutationen", id: m.id })}>Lö.</button></td></tr>))}</tbody>
         </table></div>
       )}
     </div>
@@ -1089,7 +1091,7 @@ function UmbuchungenView({ d, dispatch, projektId }) {
   const posLabel = (id) => { const x = d.positionen.find((p) => p.id === id); return x ? `${x.bkp} ${x.bezeichnung}` : "—"; };
   return (
     <div className="space-y-4">
-      <p className="text-sm text-slate-500">Umbuchungen verschieben KV-Budget von einem BKP in einen anderen. Das Gesamtbudget bleibt unverändert (Abgang bei «von», Zugang bei «nach»).</p>
+      <p className="text-sm text-stone-500">Umbuchungen verschieben KV-Budget von einem BKP in einen anderen. Das Gesamtbudget bleibt unverändert (Abgang bei «von», Zugang bei «nach»).</p>
       <div className={`${card} p-4`}>
         <div className="grid grid-cols-1 md:grid-cols-[1fr_1fr_130px_1fr_130px_auto] gap-3 items-end">
           <Field label="Von BKP"><select className={inputCls} value={f.vonPositionId} onChange={(e) => setF({ ...f, vonPositionId: e.target.value })}><option value="">wählen…</option>{opts.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</select></Field>
@@ -1102,8 +1104,8 @@ function UmbuchungenView({ d, dispatch, projektId }) {
       </div>
       {!d.umbuchungen.length ? <Empty text="Keine Umbuchungen erfasst." /> : (
         <div className={`${card} overflow-x-auto`}><table className="w-full text-sm">
-          <thead className="bg-slate-50 text-slate-500 text-xs"><tr><th className="text-left font-medium px-3 py-2">Datum</th><th className="text-left font-medium px-3 py-2">Von</th><th className="text-left font-medium px-3 py-2">Nach</th><th className="text-left font-medium px-3 py-2">Grund</th><th className="text-right font-medium px-3 py-2">Betrag</th><th className="w-12"></th></tr></thead>
-          <tbody>{d.umbuchungen.map((u) => (<tr key={u.id} className="border-t border-slate-100"><td className="px-3 py-2 tabular-nums text-slate-500">{u.datum}</td><td className="px-3 py-2">{posLabel(u.vonPositionId)}</td><td className="px-3 py-2">{posLabel(u.nachPositionId)}</td><td className="px-3 py-2 text-slate-600">{u.grund}</td><td className="px-3 py-2 text-right tabular-nums">{chf(u.betrag)}</td><td className="px-3 py-2 text-right"><button className="text-red-600 text-xs hover:underline" onClick={() => dispatch({ type: "remove", coll: "umbuchungen", id: u.id })}>Lö.</button></td></tr>))}</tbody>
+          <thead className="bg-stone-50 text-stone-500 text-xs"><tr><th className="text-left font-medium px-3 py-2">Datum</th><th className="text-left font-medium px-3 py-2">Von</th><th className="text-left font-medium px-3 py-2">Nach</th><th className="text-left font-medium px-3 py-2">Grund</th><th className="text-right font-medium px-3 py-2">Betrag</th><th className="w-12"></th></tr></thead>
+          <tbody>{d.umbuchungen.map((u) => (<tr key={u.id} className="border-t border-stone-100"><td className="px-3 py-2 tabular-nums text-stone-500">{u.datum}</td><td className="px-3 py-2">{posLabel(u.vonPositionId)}</td><td className="px-3 py-2">{posLabel(u.nachPositionId)}</td><td className="px-3 py-2 text-stone-600">{u.grund}</td><td className="px-3 py-2 text-right tabular-nums">{chf(u.betrag)}</td><td className="px-3 py-2 text-right"><button className="text-red-600 text-xs hover:underline" onClick={() => dispatch({ type: "remove", coll: "umbuchungen", id: u.id })}>Lö.</button></td></tr>))}</tbody>
         </table></div>
       )}
     </div>
@@ -1124,7 +1126,7 @@ function VertraegeView({ d, dispatch, projektId, projekt, firmen }) {
   sorted.forEach((v) => {
     const pos = d.positionen.find((p) => p.id === v.positionId);
     const g = pos ? bkpGroup(pos.bkp) : "?";
-    if (g !== lastGroup) { lastGroup = g; rows.push(<div key={"g" + g} className="flex items-center gap-2 pt-3 first:pt-0"><span className="text-xs font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap">BKP {g} · {BKP_GROUPS[g] || "—"}</span><div className="flex-1 h-px bg-slate-200" /></div>); }
+    if (g !== lastGroup) { lastGroup = g; rows.push(<div key={"g" + g} className="flex items-center gap-2 pt-3 first:pt-0"><span className="text-xs font-semibold text-stone-500 uppercase tracking-wide whitespace-nowrap">BKP {g} · {BKP_GROUPS[g] || "—"}</span><div className="flex-1 h-px bg-stone-200" /></div>); }
     const netto = konditionenNetto(v.betrag, v, true);
     const nts = d.nachtraege.filter((n) => n.vertragId === v.id);
     const ntGen = nts.filter((n) => n.status === "genehmigt").reduce((s, n) => s + konditionenNetto(n.betrag, v, false), 0);
@@ -1135,28 +1137,28 @@ function VertraegeView({ d, dispatch, projektId, projekt, firmen }) {
     rows.push(
       <div key={v.id} className={`${card} p-4`}>
         <div className="flex items-start gap-3">
-          <span className="shrink-0 inline-block bg-blue-50 text-blue-700 font-semibold tabular-nums text-sm rounded px-2 py-1 mt-0.5">{pos ? pos.bkp : "—"}</span>
+          <span className="shrink-0 inline-block bg-green-50 text-green-800 font-semibold tabular-nums text-sm rounded px-2 py-1 mt-0.5">{pos ? pos.bkp : "—"}</span>
           <div className="flex-1 min-w-0">
             <div className="flex items-start justify-between gap-3 flex-wrap">
               <div className="min-w-0">
-                <div className="font-semibold">{v.unternehmer}{v.nr && <span className="text-slate-400 font-normal text-sm"> · {v.nr}</span>}</div>
-                <div className="text-sm text-slate-500">{pos ? pos.bezeichnung : "—"} · {v.datum}</div>
+                <div className="font-semibold">{v.unternehmer}{v.nr && <span className="text-stone-400 font-normal text-sm"> · {v.nr}</span>}</div>
+                <div className="text-sm text-stone-500">{pos ? pos.bezeichnung : "—"} · {v.datum}</div>
               </div>
               <div className="text-right shrink-0">
-                <div className="text-[10px] text-slate-400 uppercase tracking-wide">Beauftragt netto</div>
+                <div className="text-[10px] text-stone-400 uppercase tracking-wide">Beauftragt netto</div>
                 <div className="tabular-nums font-semibold text-base">{chf(beauftragt)}</div>
               </div>
             </div>
             <div className="mt-2 grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-1 text-xs">
-              <div className="flex justify-between sm:block"><span className="text-slate-400">Brutto</span><span className="tabular-nums">{chf(v.betrag)}</span></div>
-              <div className="flex justify-between sm:block"><span className="text-slate-400">Netto</span><span className="tabular-nums">{chf(netto)}</span></div>
-              <div className="flex justify-between sm:block"><span className="text-slate-400">NT genehmigt</span><span className="tabular-nums">{ntGen ? chf(ntGen) : "–"}</span></div>
-              <div className="flex justify-between sm:block"><span className="text-slate-400">Teuerung</span><span className="tabular-nums">{Number(v.teuerung) ? chf(v.teuerung) : "–"}</span></div>
+              <div className="flex justify-between sm:block"><span className="text-stone-400 sm:block">Brutto</span><span className="tabular-nums">{chf(v.betrag)}</span></div>
+              <div className="flex justify-between sm:block"><span className="text-stone-400 sm:block">Netto</span><span className="tabular-nums">{chf(netto)}</span></div>
+              <div className="flex justify-between sm:block"><span className="text-stone-400 sm:block">NT genehmigt</span><span className="tabular-nums">{ntGen ? chf(ntGen) : "–"}</span></div>
+              <div className="flex justify-between sm:block"><span className="text-stone-400 sm:block">Teuerung</span><span className="tabular-nums">{Number(v.teuerung) ? chf(v.teuerung) : "–"}</span></div>
             </div>
-            {(hatKonditionen(v) || ntPend > 0) && <div className="text-xs text-slate-500 mt-2">{hatKonditionen(v) ? `Konditionen: ${konditionenText(v)}` : ""}{hatKonditionen(v) && ntPend > 0 ? " · " : ""}{ntPend > 0 ? `NT pendent ${chf(ntPend)} netto` : ""}</div>}
-            {Number(v.regieBudget) > 0 && <div className="text-xs mt-1"><span className="text-slate-500">Regiebudget {chf(v.regieBudget)} · verbraucht {chf(rapSum)} netto</span>{regieUeber > 0 && <span className="text-red-600 font-medium"> · Überschuss +{chf(regieUeber)} → Erwartung</span>}</div>}
+            {(hatKonditionen(v) || ntPend > 0) && <div className="text-xs text-stone-500 mt-2">{hatKonditionen(v) ? `Konditionen: ${konditionenText(v)}` : ""}{hatKonditionen(v) && ntPend > 0 ? " · " : ""}{ntPend > 0 ? `NT pendent ${chf(ntPend)} netto` : ""}</div>}
+            {Number(v.regieBudget) > 0 && <div className="text-xs mt-1"><span className="text-stone-500">Regiebudget {chf(v.regieBudget)} · verbraucht {chf(rapSum)} netto</span>{regieUeber > 0 && <span className="text-red-600 font-medium"> · Überschuss +{chf(regieUeber)} → Erwartung</span>}</div>}
             {(Number(v.rueckbehaltPct) > 0 || v.abnahme || v.buergschaft) && (() => { const gBis = garantieBis(v); const gs = garantieStatus(gBis); return (
-              <div className="text-xs text-slate-500 mt-1">
+              <div className="text-xs text-stone-500 mt-1">
                 {Number(v.rueckbehaltPct) > 0 ? `Rückbehalt ${v.rueckbehaltPct}% (${chf(beauftragt * v.rueckbehaltPct / 100)})` : ""}
                 {Number(v.rueckbehaltPct) > 0 && (v.abnahme || v.buergschaft) ? " · " : ""}
                 {v.abnahme ? <>Garantie bis <span className="tabular-nums">{gBis}</span> {gs && <span className={`rounded px-1.5 py-0.5 ${gs.cls}`}>{gs.label}</span>}</> : ""}
@@ -1165,16 +1167,16 @@ function VertraegeView({ d, dispatch, projektId, projekt, firmen }) {
             ); })()}
           </div>
         </div>
-        <div className="mt-3 border-t border-slate-100 pt-3">
-          <div className="flex items-center justify-between mb-2"><span className="text-xs font-medium text-slate-500 uppercase tracking-wide">Nachträge <span className="normal-case font-normal text-slate-400">(erben %-Konditionen)</span></span>
-            <div className="flex gap-3"><button className="text-slate-600 text-xs hover:underline" onClick={() => setPrintV(v)}>🖨 Werkvertrag</button><button className="text-blue-700 text-xs hover:underline" onClick={() => setNtFor({ vertragId: v.id, _v: v, bezeichnung: "", betrag: "", status: "pendent", datum: today() })}>+ Nachtrag</button><button className="text-blue-700 text-xs hover:underline" onClick={() => setVForm(v)}>Bearbeiten</button><button className="text-red-600 text-xs hover:underline" onClick={() => dispatch({ type: "remove", coll: "vertraege", id: v.id })}>Löschen</button></div>
+        <div className="mt-3 border-t border-stone-100 pt-3">
+          <div className="flex items-center justify-between mb-2"><span className="text-xs font-medium text-stone-500 uppercase tracking-wide">Nachträge <span className="normal-case font-normal text-stone-400">(erben %-Konditionen)</span></span>
+            <div className="flex gap-3"><button className="text-stone-600 text-xs hover:underline" onClick={() => setPrintV(v)}>🖨 Werkvertrag</button><button className="text-green-800 text-xs hover:underline" onClick={() => setNtFor({ vertragId: v.id, _v: v, bezeichnung: "", betrag: "", status: "pendent", datum: today() })}>+ Nachtrag</button><button className="text-green-800 text-xs hover:underline" onClick={() => setVForm(v)}>Bearbeiten</button><button className="text-red-600 text-xs hover:underline" onClick={() => dispatch({ type: "remove", coll: "vertraege", id: v.id })}>Löschen</button></div>
           </div>
-          {!nts.length ? <div className="text-xs text-slate-400">keine Nachträge</div> : (
+          {!nts.length ? <div className="text-xs text-stone-400">keine Nachträge</div> : (
             <table className="w-full text-sm"><tbody>{nts.map((n) => (
-              <tr key={n.id} className="border-t border-slate-50">
-                <td className="py-1.5">{n.bezeichnung}</td><td className="py-1.5 text-slate-500 tabular-nums">{n.datum}</td>
-                <td className="py-1.5"><select className="text-xs border border-slate-200 rounded px-1.5 py-0.5" value={n.status} onChange={(e) => dispatch({ type: "update", coll: "nachtraege", id: n.id, patch: { status: e.target.value } })}><option value="pendent">pendent</option><option value="genehmigt">genehmigt</option><option value="abgelehnt">abgelehnt</option></select></td>
-                <td className="py-1.5 text-right tabular-nums text-slate-500">{chf(n.betrag)} brutto</td>
+              <tr key={n.id} className="border-t border-stone-50">
+                <td className="py-1.5">{n.bezeichnung}</td><td className="py-1.5 text-stone-500 tabular-nums">{n.datum}</td>
+                <td className="py-1.5"><select className="text-xs border border-stone-200 rounded px-1.5 py-0.5" value={n.status} onChange={(e) => dispatch({ type: "update", coll: "nachtraege", id: n.id, patch: { status: e.target.value } })}><option value="pendent">pendent</option><option value="genehmigt">genehmigt</option><option value="abgelehnt">abgelehnt</option></select></td>
+                <td className="py-1.5 text-right tabular-nums text-stone-500">{chf(n.betrag)} brutto</td>
                 <td className="py-1.5 text-right tabular-nums font-medium">{chf(konditionenNetto(n.betrag, v, false))} netto</td>
                 <td className="py-1.5 text-right w-8"><button className="text-red-600 text-xs" onClick={() => dispatch({ type: "remove", coll: "nachtraege", id: n.id })}>×</button></td>
               </tr>))}</tbody></table>
@@ -1188,19 +1190,19 @@ function VertraegeView({ d, dispatch, projektId, projekt, firmen }) {
     <div className="space-y-3">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <button className={btnPrimary} onClick={() => setVForm({ positionId: "", unternehmer: "", nr: "", betrag: "", rabattPct: "", pauschalabzug: "", skontoPct: "", bauabzuegePct: "", rundung: "", regieBudget: "", teuerung: "", datum: today() })}>+ Vertrag</button>
-        {d.vertraege.length > 0 && <div className="text-sm text-slate-500">{d.vertraege.length} Verträge · Total beauftragt <span className="font-semibold tabular-nums text-slate-700">{chf(totalBeauftragt)}</span></div>}
+        {d.vertraege.length > 0 && <div className="text-sm text-stone-500">{d.vertraege.length} Verträge · Total beauftragt <span className="font-semibold tabular-nums text-stone-700">{chf(totalBeauftragt)}</span></div>}
       </div>
       {garantieRows.length > 0 && (
         <div className={`${card} overflow-x-auto`}>
-          <div className="px-3 py-2 bg-slate-50 text-sm font-medium border-b border-slate-200">Rückbehalt & Garantien</div>
-          <table className="w-full text-sm"><thead className="text-slate-500 text-xs"><tr><th className="text-left font-medium px-3 py-1.5">Unternehmer</th><th className="text-right font-medium px-3 py-1.5">Rückbehalt</th><th className="text-left font-medium px-3 py-1.5">Abnahme</th><th className="text-left font-medium px-3 py-1.5">Garantie bis</th><th className="text-left font-medium px-3 py-1.5">Status</th><th className="text-left font-medium px-3 py-1.5">Bürgschaft</th></tr></thead>
+          <div className="px-3 py-2 bg-stone-50 text-sm font-medium border-b border-stone-200">Rückbehalt & Garantien</div>
+          <table className="w-full text-sm"><thead className="text-stone-500 text-xs"><tr><th className="text-left font-medium px-3 py-1.5">Unternehmer</th><th className="text-right font-medium px-3 py-1.5">Rückbehalt</th><th className="text-left font-medium px-3 py-1.5">Abnahme</th><th className="text-left font-medium px-3 py-1.5">Garantie bis</th><th className="text-left font-medium px-3 py-1.5">Status</th><th className="text-left font-medium px-3 py-1.5">Bürgschaft</th></tr></thead>
           <tbody>{garantieRows.map((v) => {
             const gBis = garantieBis(v); const gs = garantieStatus(gBis);
             const ntG = d.nachtraege.filter((n) => n.vertragId === v.id && n.status === "genehmigt").reduce((s, n) => s + konditionenNetto(n.betrag, v, false), 0);
             const basis = konditionenNetto(v.betrag, v, true) + ntG + (Number(v.teuerung) || 0);
             return (
-              <tr key={v.id} className="border-t border-slate-100">
-                <td className="px-3 py-1.5">{v.unternehmer}{v.nr ? <span className="text-slate-400 text-xs"> · {v.nr}</span> : ""}</td>
+              <tr key={v.id} className="border-t border-stone-100">
+                <td className="px-3 py-1.5">{v.unternehmer}{v.nr ? <span className="text-stone-400 text-xs"> · {v.nr}</span> : ""}</td>
                 <td className="px-3 py-1.5 text-right tabular-nums">{Number(v.rueckbehaltPct) > 0 ? `${v.rueckbehaltPct}% = ${chf(basis * v.rueckbehaltPct / 100)}` : "–"}</td>
                 <td className="px-3 py-1.5 tabular-nums">{v.abnahme || "offen"}</td>
                 <td className="px-3 py-1.5 tabular-nums">{gBis || "–"}</td>
@@ -1227,7 +1229,7 @@ function VertraegeView({ d, dispatch, projektId, projekt, firmen }) {
               <Field label="Betrag brutto (CHF)"><input className={inputCls} value={ntFor.betrag} onChange={(e) => setNtFor({ ...ntFor, betrag: e.target.value })} /></Field>
               <Field label="Status"><select className={inputCls} value={ntFor.status} onChange={(e) => setNtFor({ ...ntFor, status: e.target.value })}><option value="pendent">pendent</option><option value="genehmigt">genehmigt</option><option value="abgelehnt">abgelehnt</option></select></Field>
             </div>
-            {ntFor._v && hatKonditionen(ntFor._v) && <p className="text-xs text-slate-500">Netto nach Vertragskonditionen: <span className="font-medium tabular-nums">{chf(konditionenNetto(parseBetrag(ntFor.betrag), ntFor._v, false))}</span></p>}
+            {ntFor._v && hatKonditionen(ntFor._v) && <p className="text-xs text-stone-500">Netto nach Vertragskonditionen: <span className="font-medium tabular-nums">{chf(konditionenNetto(parseBetrag(ntFor.betrag), ntFor._v, false))}</span></p>}
             <div className="flex justify-end gap-2 pt-1"><button className={btnGhost} onClick={() => setNtFor(null)}>Abbrechen</button><button className={btnPrimary} disabled={!ntFor.bezeichnung} onClick={() => { const { _v, ...rest } = ntFor; dispatch({ type: "add", coll: "nachtraege", item: { id: uid(), projektId, ...rest, betrag: parseBetrag(ntFor.betrag) } }); setNtFor(null); }}>Speichern</button></div>
           </div>
         </Modal>
@@ -1253,8 +1255,8 @@ function VertragEditor({ v, positionen, firmen, onClose, onSave }) {
           <Field label="Datum"><input type="date" className={inputCls} value={f.datum} onChange={(e) => setF({ ...f, datum: e.target.value })} /></Field>
           <Field label="Teuerung (CHF)"><input className={inputCls} value={f.teuerung} onChange={(e) => setF({ ...f, teuerung: e.target.value })} placeholder="0" /></Field>
         </div>
-        <div className={`${card} p-3 bg-slate-50/60`}>
-          <div className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-2">Konditionen (Kaskade in dieser Reihenfolge — gelten auch für Nachträge und Rapporte, Fixbeträge nur auf Hauptvertrag)</div>
+        <div className={`${card} p-3 bg-stone-50/60`}>
+          <div className="text-xs font-medium text-stone-500 uppercase tracking-wide mb-2">Konditionen (Kaskade in dieser Reihenfolge — gelten auch für Nachträge und Rapporte, Fixbeträge nur auf Hauptvertrag)</div>
           <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
             <Field label="Rabatt %"><input className={inputCls} value={f.rabattPct} onChange={(e) => setF({ ...f, rabattPct: e.target.value })} placeholder="0" /></Field>
             <Field label="Pauschalabzug CHF"><input className={inputCls} value={f.pauschalabzug} onChange={(e) => setF({ ...f, pauschalabzug: e.target.value })} placeholder="0" /></Field>
@@ -1267,15 +1269,15 @@ function VertragEditor({ v, positionen, firmen, onClose, onSave }) {
         <Field label="Regiebudget im Vertrag (CHF netto) — Rapporte bis zu diesem Betrag erhöhen die Erwartung nicht">
           <input className={inputCls} value={f.regieBudget} onChange={(e) => setF({ ...f, regieBudget: e.target.value })} placeholder="0" />
         </Field>
-        <div className={`${card} p-3 bg-slate-50/60`}>
-          <div className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-2">Rückbehalt & Garantie</div>
+        <div className={`${card} p-3 bg-stone-50/60`}>
+          <div className="text-xs font-medium text-stone-500 uppercase tracking-wide mb-2">Rückbehalt & Garantie</div>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3 items-end">
             <Field label="Rückbehalt %"><input className={inputCls} value={f.rueckbehaltPct} onChange={(e) => setF({ ...f, rueckbehaltPct: e.target.value })} placeholder="z.B. 10" /></Field>
             <Field label="Abnahmedatum"><input type="date" className={inputCls} value={f.abnahme} onChange={(e) => setF({ ...f, abnahme: e.target.value })} /></Field>
             <Field label="Garantie (Jahre)"><input className={inputCls} value={f.garantieJahre} onChange={(e) => setF({ ...f, garantieJahre: e.target.value })} /></Field>
             <label className="inline-flex items-center gap-2 text-sm pb-2"><input type="checkbox" checked={f.buergschaft} onChange={(e) => setF({ ...f, buergschaft: e.target.checked })} /> Solidarbürgschaft</label>
           </div>
-          {f.abnahme && <div className="text-xs text-slate-500 mt-2">Garantie läuft bis <span className="font-medium tabular-nums">{garantieBis({ abnahme: f.abnahme, garantieJahre: parseBetrag(f.garantieJahre) }) || "—"}</span></div>}
+          {f.abnahme && <div className="text-xs text-stone-500 mt-2">Garantie läuft bis <span className="font-medium tabular-nums">{garantieBis({ abnahme: f.abnahme, garantieJahre: parseBetrag(f.garantieJahre) }) || "—"}</span></div>}
         </div>
         <div className="flex justify-end gap-2"><button className={btnGhost} onClick={onClose}>Abbrechen</button><button className={btnPrimary} disabled={!f.positionId || !f.unternehmer} onClick={() => onSave({ ...v, ...f, betrag: parseBetrag(f.betrag), rabattPct: parseBetrag(f.rabattPct), pauschalabzug: parseBetrag(f.pauschalabzug), skontoPct: parseBetrag(f.skontoPct), bauabzuegePct: parseBetrag(f.bauabzuegePct), rundung: parseBetrag(f.rundung), regieBudget: parseBetrag(f.regieBudget), teuerung: parseBetrag(f.teuerung), rueckbehaltPct: parseBetrag(f.rueckbehaltPct), garantieJahre: parseBetrag(f.garantieJahre), buergschaft: !!f.buergschaft })}>Speichern</button></div>
       </div>
@@ -1289,8 +1291,8 @@ function RechnungenView({ d, dispatch, projektId, projekt }) {
   const vLabel = (id) => { const v = d.vertraege.find((x) => x.id === id); return v ? v.unternehmer + (v.nr ? ` (${v.nr})` : "") : "—"; };
   const posLabel = (id) => { const x = d.positionen.find((p) => p.id === id); return x ? `${x.bkp} ${x.bezeichnung}` : "—"; };
   const opts = posSelectOptions(d.positionen);
-  const statusCol = { erfasst: "bg-slate-100 text-slate-600", geprueft: "bg-amber-100 text-amber-700", bezahlt: "bg-emerald-100 text-emerald-700" };
-  const typCol = { akonto: "bg-blue-50 text-blue-700", rechnung: "bg-slate-100 text-slate-700", regie: "bg-violet-50 text-violet-700" };
+  const statusCol = { erfasst: "bg-stone-100 text-stone-600", geprueft: "bg-amber-100 text-amber-700", bezahlt: "bg-emerald-100 text-emerald-700" };
+  const typCol = { akonto: "bg-sky-50 text-sky-700", rechnung: "bg-stone-100 text-stone-700", regie: "bg-violet-50 text-violet-700" };
   const proVertrag = useMemo(() => {
     const map = {};
     d.vertraege.forEach((v) => {
@@ -1329,20 +1331,20 @@ function RechnungenView({ d, dispatch, projektId, projekt }) {
       </div>
       {!d.rechnungen.length ? <Empty text="Keine Rechnungen erfasst." /> : (
         <div className={`${card} overflow-x-auto`}><table className="w-full text-sm">
-          <thead className="bg-slate-50 text-slate-500 text-xs"><tr><th className="text-left font-medium px-3 py-2">Datum</th><th className="text-left font-medium px-3 py-2">Buchung</th><th className="text-left font-medium px-3 py-2">Typ</th><th className="text-left font-medium px-3 py-2">Rg-Nr.</th><th className="text-right font-medium px-3 py-2">Betrag</th><th className="text-left font-medium px-3 py-2">Status</th><th className="text-right font-medium px-3 py-2">fakt./soll</th><th className="w-12"></th></tr></thead>
+          <thead className="bg-stone-50 text-stone-500 text-xs"><tr><th className="text-left font-medium px-3 py-2">Datum</th><th className="text-left font-medium px-3 py-2">Buchung</th><th className="text-left font-medium px-3 py-2">Typ</th><th className="text-left font-medium px-3 py-2">Rg-Nr.</th><th className="text-right font-medium px-3 py-2">Betrag</th><th className="text-left font-medium px-3 py-2">Status</th><th className="text-right font-medium px-3 py-2">fakt./soll</th><th className="w-12"></th></tr></thead>
           <tbody>{d.rechnungen.map((r) => {
             const pv = r.vertragId ? (proVertrag[r.vertragId] || { soll: 0, fakt: 0 }) : null;
             const ueber = pv && pv.fakt > pv.soll;
             return (
-              <tr key={r.id} className="border-t border-slate-100">
-                <td className="px-3 py-2 tabular-nums text-slate-500">{r.datum}</td>
-                <td className="px-3 py-2">{r.vertragId ? vLabel(r.vertragId) : <span>{posLabel(r.positionId)} <span className="text-xs text-slate-400">(ohne Vertrag)</span></span>}</td>
+              <tr key={r.id} className="border-t border-stone-100">
+                <td className="px-3 py-2 tabular-nums text-stone-500">{r.datum}</td>
+                <td className="px-3 py-2">{r.vertragId ? vLabel(r.vertragId) : <span>{posLabel(r.positionId)} <span className="text-xs text-stone-400">(ohne Vertrag)</span></span>}</td>
                 <td className="px-3 py-2"><span className={`text-xs rounded px-1.5 py-0.5 ${typCol[r.typ] || typCol.rechnung}`}>{RTYP[r.typ] || r.typ}</span></td>
-                <td className="px-3 py-2 text-slate-500">{r.nr}</td>
+                <td className="px-3 py-2 text-stone-500">{r.nr}</td>
                 <td className="px-3 py-2 text-right tabular-nums">{chf(r.betrag)}</td>
                 <td className="px-3 py-2"><select className={`text-xs rounded px-1.5 py-0.5 border-0 ${statusCol[r.status]}`} value={r.status} onChange={(e) => dispatch({ type: "update", coll: "rechnungen", id: r.id, patch: { status: e.target.value } })}><option value="erfasst">erfasst</option><option value="geprueft">geprüft</option><option value="bezahlt">bezahlt</option></select></td>
-                <td className={`px-3 py-2 text-right tabular-nums text-xs ${ueber ? "text-red-600 font-medium" : "text-slate-500"}`}>{pv ? `${chf(pv.fakt)} / ${chf(pv.soll)}` : "–"}</td>
-                <td className="px-3 py-2 text-right whitespace-nowrap"><button className="text-slate-600 text-xs hover:underline mr-2" title="Zahlungsfreigabe drucken" onClick={() => setPrintR(r)}>🖨</button><button className="text-red-600 text-xs hover:underline" onClick={() => dispatch({ type: "remove", coll: "rechnungen", id: r.id })}>Lö.</button></td>
+                <td className={`px-3 py-2 text-right tabular-nums text-xs ${ueber ? "text-red-600 font-medium" : "text-stone-500"}`}>{pv ? `${chf(pv.fakt)} / ${chf(pv.soll)}` : "–"}</td>
+                <td className="px-3 py-2 text-right whitespace-nowrap"><button className="text-stone-600 text-xs hover:underline mr-2" title="Zahlungsfreigabe drucken" onClick={() => setPrintR(r)}>🖨</button><button className="text-red-600 text-xs hover:underline" onClick={() => dispatch({ type: "remove", coll: "rechnungen", id: r.id })}>Lö.</button></td>
               </tr>
             );
           })}</tbody>
@@ -1386,7 +1388,7 @@ function AngeboteView({ d, dispatch, projektId, projekt }) {
   return (
     <div className="space-y-4">
       <button className={btnPrimary} onClick={() => setEdit({ id: null, titel: "", positionId: "", modus: "pauschal", positionen: [], bedingungen: "", gewichte: { preis: Number(projekt?.gewichtPreis) || 70, referenzen: Number(projekt?.gewichtReferenzen) || 20, lehrlinge: Number(projekt?.gewichtLehrlinge) || 10 }, bieter: [neuBieter(), neuBieter()] })}>+ Ausschreibung / Vergleich</button>
-      <p className="text-xs text-slate-400">Tipp: Leistungsverzeichnisse (NPK) importierst du im Reiter «Leistungsverzeichnisse» — dort kannst du auch mehrere NPK-Kataloge zu einer Ausschreibung zusammenführen. Hier bepreisen die Bieter die Positionen und du vergleichst.</p>
+      <p className="text-xs text-stone-400">Tipp: Leistungsverzeichnisse (NPK) importierst du im Reiter «Leistungsverzeichnisse» — dort kannst du auch mehrere NPK-Kataloge zu einer Ausschreibung zusammenführen. Hier bepreisen die Bieter die Positionen und du vergleichst.</p>
       {!d.angebote.length ? <Empty text="Keine Angebote erstellt." /> : d.angebote.map((a) => <AngebotCard key={a.id} a={a} d={d} dispatch={dispatch} projektId={projektId} projekt={projekt} onEdit={() => setEdit(a)} />)}
       {edit && <AngebotEditor angebot={edit} positionen={d.positionen} projekt={projekt} neuBieter={neuBieter} onClose={() => setEdit(null)} onSave={(a) => { if (a.id) dispatch({ type: "update", coll: "angebote", id: a.id, patch: a }); else dispatch({ type: "add", coll: "angebote", item: { ...a, id: uid(), projektId } }); setEdit(null); }} />}
     </div>
@@ -1408,47 +1410,47 @@ function AngebotCard({ a, d, dispatch, projektId, projekt, onEdit }) {
     <div className={`${card} p-4`}>
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
-          <div className="font-semibold">{a.titel || "Ohne Titel"} {isLv && <span className="text-xs font-normal bg-blue-50 text-blue-700 rounded px-1.5 py-0.5 align-middle">LV · {(a.positionen || []).length} Pos.</span>}</div>
-          <div className="text-sm text-slate-500">{posLabel} · {named.length} Bieter · Gewichtung Preis {w.preis}% / Ref. {w.referenzen}% / Lehrl. {w.lehrlinge}%</div>
+          <div className="font-semibold">{a.titel || "Ohne Titel"} {isLv && <span className="text-xs font-normal bg-green-50 text-green-800 rounded px-1.5 py-0.5 align-middle">LV · {(a.positionen || []).length} Pos.</span>}</div>
+          <div className="text-sm text-stone-500">{posLabel} · {named.length} Bieter · Gewichtung Preis {w.preis}% / Ref. {w.referenzen}% / Lehrl. {w.lehrlinge}%</div>
         </div>
         <button className={btnGhost} onClick={onEdit}>{isLv ? "Bieter bepreisen / bearbeiten" : "Bearbeiten"}</button>
       </div>
       {named.length > 0 && (
         <div className="mt-3 overflow-x-auto"><table className="w-full text-sm">
-          <thead className="text-slate-500 text-xs"><tr><th className="text-left font-medium py-1 pr-2">Rang</th><th className="text-left font-medium py-1 pr-2">Bieter</th><th className="text-right font-medium py-1 px-2">Brutto</th><th className="text-left font-medium py-1 px-2">Konditionen</th><th className="text-right font-medium py-1 px-2">Netto</th><th className="text-right font-medium py-1 px-2">Preis-P.</th><th className="text-right font-medium py-1 px-2">Ref.</th><th className="text-right font-medium py-1 px-2">Lehrl.</th><th className="text-right font-medium py-1 px-2">Nutzwert</th><th></th></tr></thead>
+          <thead className="text-stone-500 text-xs"><tr><th className="text-left font-medium py-1 pr-2">Rang</th><th className="text-left font-medium py-1 pr-2">Bieter</th><th className="text-right font-medium py-1 px-2">Brutto</th><th className="text-left font-medium py-1 px-2">Konditionen</th><th className="text-right font-medium py-1 px-2">Netto</th><th className="text-right font-medium py-1 px-2">Preis-P.</th><th className="text-right font-medium py-1 px-2">Ref.</th><th className="text-right font-medium py-1 px-2">Lehrl.</th><th className="text-right font-medium py-1 px-2">Nutzwert</th><th></th></tr></thead>
           <tbody>{rows.map((t, i) => t.b.name && (
-            <tr key={i} className={`border-t border-slate-100 align-top ${i === 0 ? "bg-emerald-50/40" : ""}`}>
+            <tr key={i} className={`border-t border-stone-100 align-top ${i === 0 ? "bg-emerald-50/40" : ""}`}>
               <td className="py-1.5 pr-2">{i === 0 ? "★ 1" : i + 1}</td>
-              <td className="py-1.5 pr-2"><div className="font-medium">{t.b.name}</div>{t.b.bemerkung && <div className="text-xs text-slate-400 max-w-[220px]">{t.b.bemerkung}</div>}</td>
+              <td className="py-1.5 pr-2"><div className="font-medium">{t.b.name}</div>{t.b.bemerkung && <div className="text-xs text-stone-400 max-w-[220px]">{t.b.bemerkung}</div>}</td>
               <td className="py-1.5 px-2 text-right tabular-nums">{chf(t.brutto)}</td>
-              <td className="py-1.5 px-2 text-xs text-slate-500">{konditionenText(t.b)}</td>
+              <td className="py-1.5 px-2 text-xs text-stone-500">{konditionenText(t.b)}</td>
               <td className="py-1.5 px-2 text-right tabular-nums font-medium">{chf(t.netto)}{t.netto === min && t.netto > 0 && <span className="text-emerald-600 text-xs"> günstigster</span>}</td>
               <td className="py-1.5 px-2 text-right tabular-nums">{t.pP.toFixed(1)}</td>
               <td className="py-1.5 px-2 text-right tabular-nums">{Number(t.b.referenzPunkte) || 0}</td>
               <td className="py-1.5 px-2 text-right tabular-nums">{Number(t.b.lehrlingPunkte) || 0}</td>
               <td className="py-1.5 px-2 text-right tabular-nums font-semibold">{t.nutz.toFixed(1)}</td>
-              <td className="py-1.5 text-right"><button className="text-blue-700 text-xs hover:underline" onClick={() => vergeben(t.b, t.brutto, t.netto)}>Vergeben →</button></td>
+              <td className="py-1.5 text-right"><button className="text-green-800 text-xs hover:underline" onClick={() => vergeben(t.b, t.brutto, t.netto)}>Vergeben →</button></td>
             </tr>
           ))}</tbody>
         </table></div>
       )}
       {isLv && (a.positionen || []).length > 0 && named.length > 0 && (
         <div className="mt-2">
-          <button className="text-blue-700 text-xs hover:underline print:hidden" onClick={() => setShowPos(!showPos)}>{showPos ? "Positionsvergleich ausblenden" : "Positionsvergleich einblenden"}</button>
+          <button className="text-green-800 text-xs hover:underline print:hidden" onClick={() => setShowPos(!showPos)}>{showPos ? "Positionsvergleich ausblenden" : "Positionsvergleich einblenden"}</button>
           {showPos && (
-            <div className="mt-2 overflow-x-auto border border-slate-200 rounded-md"><table className="w-full text-xs">
-              <thead className="bg-slate-50 text-slate-500"><tr><th className="px-2 py-1 text-left">NPK</th><th className="px-2 py-1 text-left">Bezeichnung</th><th className="px-2 py-1 text-right">Menge</th><th className="px-2 py-1">Einh.</th>{named.map((t, i) => <th key={i} className="px-2 py-1 text-right min-w-[80px]">{t.b.name}</th>)}</tr></thead>
+            <div className="mt-2 overflow-x-auto border border-stone-200 rounded-md"><table className="w-full text-xs">
+              <thead className="bg-stone-50 text-stone-500"><tr><th className="px-2 py-1 text-left">NPK</th><th className="px-2 py-1 text-left">Bezeichnung</th><th className="px-2 py-1 text-right">Menge</th><th className="px-2 py-1">Einh.</th>{named.map((t, i) => <th key={i} className="px-2 py-1 text-right min-w-[80px]">{t.b.name}</th>)}</tr></thead>
               <tbody>{(a.positionen || []).map((p) => {
                 const eps = named.map((t) => parseBetrag((t.b.preise || {})[p.code]) || 0);
                 const minEp = Math.min(...eps.filter((x) => x > 0).concat([Infinity]));
-                return (<tr key={p.code} className="border-t border-slate-100"><td className="px-2 py-1 tabular-nums">{p.npk}</td><td className="px-2 py-1">{p.bezeichnung}</td><td className="px-2 py-1 text-right tabular-nums">{p.menge}</td><td className="px-2 py-1">{p.einheit}</td>{named.map((t, i) => { const ep = parseBetrag((t.b.preise || {})[p.code]) || 0; return <td key={i} className={`px-2 py-1 text-right tabular-nums ${ep === minEp && ep > 0 ? "text-emerald-600 font-medium" : ""}`}>{ep ? chf(ep) : "–"}</td>; })}</tr>);
+                return (<tr key={p.code} className="border-t border-stone-100"><td className="px-2 py-1 tabular-nums">{p.npk}</td><td className="px-2 py-1">{p.bezeichnung}</td><td className="px-2 py-1 text-right tabular-nums">{p.menge}</td><td className="px-2 py-1">{p.einheit}</td>{named.map((t, i) => { const ep = parseBetrag((t.b.preise || {})[p.code]) || 0; return <td key={i} className={`px-2 py-1 text-right tabular-nums ${ep === minEp && ep > 0 ? "text-emerald-600 font-medium" : ""}`}>{ep ? chf(ep) : "–"}</td>; })}</tr>);
               })}</tbody>
-              <tfoot><tr className="border-t-2 border-slate-300 font-semibold bg-slate-50"><td className="px-2 py-1" colSpan={4}>Total Brutto</td>{named.map((t, i) => <td key={i} className="px-2 py-1 text-right tabular-nums">{chf(t.brutto)}</td>)}</tr></tfoot>
+              <tfoot><tr className="border-t-2 border-stone-300 font-semibold bg-stone-50"><td className="px-2 py-1" colSpan={4}>Total Brutto</td>{named.map((t, i) => <td key={i} className="px-2 py-1 text-right tabular-nums">{chf(t.brutto)}</td>)}</tr></tfoot>
             </table></div>
           )}
         </div>
       )}
-      <p className="text-xs text-slate-400 mt-2">{isLv ? "Brutto = Σ (Menge × Einheitspreis) je Bieter. " : ""}Punkte 1–100. Preispunkte = 100 × günstigstes Netto ÷ Netto. Nutzwert = gewichtete Summe (max. 100).</p>
+      <p className="text-xs text-stone-400 mt-2">{isLv ? "Brutto = Σ (Menge × Einheitspreis) je Bieter. " : ""}Punkte 1–100. Preispunkte = 100 × günstigstes Netto ÷ Netto. Nutzwert = gewichtete Summe (max. 100).</p>
     </div>
   );
 }
@@ -1462,7 +1464,7 @@ function AngebotEditor({ angebot, positionen, projekt, neuBieter, onClose, onSav
   const delB = (bi) => setA({ ...a, bieter: a.bieter.filter((_, x) => x !== bi) });
   const setW = (k, v) => setA({ ...a, gewichte: { ...a.gewichte, [k]: v } });
   const wSum = (Number(a.gewichte.preis) || 0) + (Number(a.gewichte.referenzen) || 0) + (Number(a.gewichte.lehrlinge) || 0);
-  const cell = "w-full text-xs px-1 py-0.5 border border-slate-200 rounded text-right tabular-nums";
+  const cell = "w-full text-xs px-1 py-0.5 border border-stone-200 rounded text-right tabular-nums";
   const bruttoOf = (b) => bieterBrutto({ ...b }, a);
   return (
     <Modal title={angebot.id ? "Ausschreibung bearbeiten" : "Neue Ausschreibung / Angebotsvergleich"} onClose={onClose} wide>
@@ -1471,9 +1473,9 @@ function AngebotEditor({ angebot, positionen, projekt, neuBieter, onClose, onSav
           <Field label="Titel / Arbeitsgattung"><input className={inputCls} value={a.titel} onChange={(e) => setA({ ...a, titel: e.target.value })} placeholder="z.B. Unterlagsböden BKP 281" /></Field>
           <Field label="BKP-Position (für Vergabe)"><select className={inputCls} value={a.positionId || ""} onChange={(e) => setA({ ...a, positionId: e.target.value })}><option value="">— zuordnen —</option>{opts.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</select></Field>
         </div>
-        <div className="text-xs text-slate-500">Bepreisung: <span className="font-medium">{isLv ? `Leistungsverzeichnis (${(a.positionen || []).length} Positionen) — Bieter füllen Einheitspreise` : "Pauschale Angebotssumme je Bieter"}</span>{isLv ? "" : " · LV importierst du im Reiter «Leistungsverzeichnisse»"}</div>
-        <div className={`${card} p-3 bg-slate-50/60`}>
-          <div className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-2">Gewichtung % (Vorgabe aus Projekt, hier übersteuerbar) {wSum !== 100 && <span className="text-red-600 normal-case">(Summe {wSum}% — sollte 100% sein)</span>}</div>
+        <div className="text-xs text-stone-500">Bepreisung: <span className="font-medium">{isLv ? `Leistungsverzeichnis (${(a.positionen || []).length} Positionen) — Bieter füllen Einheitspreise` : "Pauschale Angebotssumme je Bieter"}</span>{isLv ? "" : " · LV importierst du im Reiter «Leistungsverzeichnisse»"}</div>
+        <div className={`${card} p-3 bg-stone-50/60`}>
+          <div className="text-xs font-medium text-stone-500 uppercase tracking-wide mb-2">Gewichtung % (Vorgabe aus Projekt, hier übersteuerbar) {wSum !== 100 && <span className="text-red-600 normal-case">(Summe {wSum}% — sollte 100% sein)</span>}</div>
           <div className="grid grid-cols-3 gap-3">
             <Field label="Preis %"><input className={inputCls} value={a.gewichte.preis} onChange={(e) => setW("preis", e.target.value)} /></Field>
             <Field label="Referenzen %"><input className={inputCls} value={a.gewichte.referenzen} onChange={(e) => setW("referenzen", e.target.value)} /></Field>
@@ -1481,15 +1483,15 @@ function AngebotEditor({ angebot, positionen, projekt, neuBieter, onClose, onSav
           </div>
         </div>
         <div>
-          <div className="flex items-center justify-between mb-2"><span className="text-xs font-medium text-slate-500 uppercase tracking-wide">Bieter — Stammdaten, Konditionen & Bewertung</span><button className="text-blue-700 text-xs hover:underline" onClick={() => setA({ ...a, bieter: [...a.bieter, neuBieter()] })}>+ Firma hinzufügen</button></div>
-          <div className="overflow-x-auto border border-slate-200 rounded-md"><table className="w-full text-sm">
-            <thead className="bg-slate-50 text-slate-500 text-xs"><tr>
+          <div className="flex items-center justify-between mb-2"><span className="text-xs font-medium text-stone-500 uppercase tracking-wide">Bieter — Stammdaten, Konditionen & Bewertung</span><button className="text-green-800 text-xs hover:underline" onClick={() => setA({ ...a, bieter: [...a.bieter, neuBieter()] })}>+ Firma hinzufügen</button></div>
+          <div className="overflow-x-auto border border-stone-200 rounded-md"><table className="w-full text-sm">
+            <thead className="bg-stone-50 text-stone-500 text-xs"><tr>
               <th className="px-2 py-1.5 text-left min-w-[140px]">Firma</th><th className="px-2 py-1.5 text-right min-w-[90px]">Brutto</th><th className="px-2 py-1.5 text-right w-16">Rabatt %</th><th className="px-2 py-1.5 text-right w-20">Pauschal</th><th className="px-2 py-1.5 text-right w-16">Skonto %</th><th className="px-2 py-1.5 text-right w-16">Bauabz. %</th><th className="px-2 py-1.5 text-right w-20">Rundung</th><th className="px-2 py-1.5 text-right min-w-[90px]">Netto</th><th className="px-2 py-1.5 text-right w-16">Ref.</th><th className="px-2 py-1.5 text-right w-16">Lehrl.</th><th className="px-2 py-1.5 text-left min-w-[140px]">Bemerkung</th><th className="px-1 w-8"></th>
             </tr></thead>
             <tbody>
               {a.bieter.map((b, bi) => (
-                <tr key={bi} className="border-t border-slate-100">
-                  <td className="px-2 py-1"><input className="w-full text-xs px-1 py-0.5 border border-slate-200 rounded" placeholder={`Firma ${bi + 1}`} value={b.name} onChange={(e) => setB(bi, "name", e.target.value)} /></td>
+                <tr key={bi} className="border-t border-stone-100">
+                  <td className="px-2 py-1"><input className="w-full text-xs px-1 py-0.5 border border-stone-200 rounded" placeholder={`Firma ${bi + 1}`} value={b.name} onChange={(e) => setB(bi, "name", e.target.value)} /></td>
                   <td className="px-2 py-1 text-right tabular-nums text-xs">{isLv ? <span className="font-medium">{chf(bruttoOf(b))}</span> : <input className={cell} value={b.brutto} onChange={(e) => setB(bi, "brutto", e.target.value)} />}</td>
                   <td className="px-2 py-1"><input className={cell} value={b.rabattPct} onChange={(e) => setB(bi, "rabattPct", e.target.value)} /></td>
                   <td className="px-2 py-1"><input className={cell} value={b.pauschalabzug} onChange={(e) => setB(bi, "pauschalabzug", e.target.value)} /></td>
@@ -1499,7 +1501,7 @@ function AngebotEditor({ angebot, positionen, projekt, neuBieter, onClose, onSav
                   <td className="px-2 py-1 text-right tabular-nums text-xs font-medium">{chf(konditionenNetto(bruttoOf(b), { rabattPct: parseBetrag(b.rabattPct), pauschalabzug: parseBetrag(b.pauschalabzug), skontoPct: parseBetrag(b.skontoPct), bauabzuegePct: parseBetrag(b.bauabzuegePct), rundung: parseBetrag(b.rundung) }, true))}</td>
                   <td className="px-2 py-1"><input className={cell} placeholder="0–100" value={b.referenzPunkte} onChange={(e) => setB(bi, "referenzPunkte", e.target.value)} /></td>
                   <td className="px-2 py-1"><input className={cell} placeholder="0–100" value={b.lehrlingPunkte} onChange={(e) => setB(bi, "lehrlingPunkte", e.target.value)} /></td>
-                  <td className="px-2 py-1"><input className="w-full text-xs px-1 py-0.5 border border-slate-200 rounded" value={b.bemerkung} onChange={(e) => setB(bi, "bemerkung", e.target.value)} placeholder="optional" /></td>
+                  <td className="px-2 py-1"><input className="w-full text-xs px-1 py-0.5 border border-stone-200 rounded" value={b.bemerkung} onChange={(e) => setB(bi, "bemerkung", e.target.value)} placeholder="optional" /></td>
                   <td className="px-1 text-center"><button className="text-red-500 text-sm" title="Firma entfernen" onClick={() => delB(bi)}>×</button></td>
                 </tr>
               ))}
@@ -1508,23 +1510,23 @@ function AngebotEditor({ angebot, positionen, projekt, neuBieter, onClose, onSav
         </div>
         {isLv && (a.positionen || []).length > 0 && (
           <div>
-            <div className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-2">Einheitspreise je Position (CHF/Einheit) — pro Bieter ausfüllen</div>
-            <div className="overflow-auto border border-slate-200 rounded-md max-h-[420px]"><table className="w-full text-xs">
-              <thead className="bg-slate-50 text-slate-500 sticky top-0"><tr><th className="px-2 py-1.5 text-left sticky left-0 bg-slate-50 min-w-[160px]">NPK · Bezeichnung</th><th className="px-2 py-1.5 text-right">Menge</th><th className="px-2 py-1.5">Einh.</th>{a.bieter.map((b, bi) => <th key={bi} className="px-2 py-1.5 text-right min-w-[90px]">{b.name || `Firma ${bi + 1}`}</th>)}</tr></thead>
+            <div className="text-xs font-medium text-stone-500 uppercase tracking-wide mb-2">Einheitspreise je Position (CHF/Einheit) — pro Bieter ausfüllen</div>
+            <div className="overflow-auto border border-stone-200 rounded-md max-h-[420px]"><table className="w-full text-xs">
+              <thead className="bg-stone-50 text-stone-500 sticky top-0"><tr><th className="px-2 py-1.5 text-left sticky left-0 bg-stone-50 min-w-[160px]">NPK · Bezeichnung</th><th className="px-2 py-1.5 text-right">Menge</th><th className="px-2 py-1.5">Einh.</th>{a.bieter.map((b, bi) => <th key={bi} className="px-2 py-1.5 text-right min-w-[90px]">{b.name || `Firma ${bi + 1}`}</th>)}</tr></thead>
               <tbody>{a.positionen.map((p) => (
-                <tr key={p.code} className="border-t border-slate-100">
-                  <td className="px-2 py-1 sticky left-0 bg-white"><span className="tabular-nums text-slate-500">{p.npk}</span> {p.bezeichnung}</td>
+                <tr key={p.code} className="border-t border-stone-100">
+                  <td className="px-2 py-1 sticky left-0 bg-white"><span className="tabular-nums text-stone-500">{p.npk}</span> {p.bezeichnung}</td>
                   <td className="px-2 py-1 text-right tabular-nums">{p.menge}</td>
                   <td className="px-2 py-1">{p.einheit}</td>
                   {a.bieter.map((b, bi) => (<td key={bi} className="px-2 py-1"><input className={cell} value={(b.preise || {})[p.code] || ""} onChange={(e) => setEp(bi, p.code, e.target.value)} placeholder="0.00" /></td>))}
                 </tr>
               ))}</tbody>
-              <tfoot className="bg-slate-50 font-medium"><tr><td className="px-2 py-1.5 sticky left-0 bg-slate-50" colSpan={3}>Total Brutto</td>{a.bieter.map((b, bi) => <td key={bi} className="px-2 py-1.5 text-right tabular-nums">{chf(bruttoOf(b))}</td>)}</tr></tfoot>
+              <tfoot className="bg-stone-50 font-medium"><tr><td className="px-2 py-1.5 sticky left-0 bg-stone-50" colSpan={3}>Total Brutto</td>{a.bieter.map((b, bi) => <td key={bi} className="px-2 py-1.5 text-right tabular-nums">{chf(bruttoOf(b))}</td>)}</tr></tfoot>
             </table></div>
           </div>
         )}
         {a.bedingungen && (
-          <details className="text-xs"><summary className="cursor-pointer text-slate-500">Importierte Bedingungen / Besondere Bestimmungen anzeigen</summary><div className="mt-2 max-h-48 overflow-y-auto whitespace-pre-wrap text-slate-600 border border-slate-200 rounded p-2">{a.bedingungen}</div></details>
+          <details className="text-xs"><summary className="cursor-pointer text-stone-500">Importierte Bedingungen / Besondere Bestimmungen anzeigen</summary><div className="mt-2 max-h-48 overflow-y-auto whitespace-pre-wrap text-stone-600 border border-stone-200 rounded p-2">{a.bedingungen}</div></details>
         )}
         <div className="flex justify-end gap-2"><button className={btnGhost} onClick={onClose}>Abbrechen</button><button className={btnPrimary} disabled={!a.titel} onClick={() => onSave({ ...a, bieter: a.bieter.map((b) => ({ ...b, brutto: parseBetrag(b.brutto), rabattPct: parseBetrag(b.rabattPct), pauschalabzug: parseBetrag(b.pauschalabzug), skontoPct: parseBetrag(b.skontoPct), bauabzuegePct: parseBetrag(b.bauabzuegePct), rundung: parseBetrag(b.rundung), referenzPunkte: parseBetrag(b.referenzPunkte), lehrlingPunkte: parseBetrag(b.lehrlingPunkte) })) })}>Speichern</button></div>
       </div>
@@ -1624,7 +1626,7 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen }) {
   const nw = a ? nutzwerte(a, projekt) : { rows: [], min: 0, w: {} };
   const nwByB = new Map(nw.rows.map((r) => [r.b, r]));
   const rangByB = new Map(nw.rows.map((r, i) => [r.b, i + 1]));
-  const cell = "w-20 text-xs px-1 py-1 border border-slate-200 rounded text-right tabular-nums focus:border-blue-500 focus:outline-none";
+  const cell = "w-20 text-xs px-1 py-1 border border-stone-200 rounded text-right tabular-nums focus:border-green-600 focus:outline-none";
 
   return (
     <div className="space-y-4">
@@ -1640,7 +1642,7 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen }) {
           <button className={btnGhost} disabled={!a} onClick={kopieren}>Kopieren</button>
           <button className={btnGhost} disabled={!a} onClick={loeschen}>Löschen</button>
         </div>
-        {msg && <div className="mt-3 text-sm bg-blue-50 text-blue-800 rounded-md px-3 py-2">{msg}</div>}
+        {msg && <div className="mt-3 text-sm bg-green-50 text-green-900 rounded-md px-3 py-2">{msg}</div>}
       </div>
 
       {!a ? <Empty text="Wähle eine Ausschreibung oder erstelle eine neue." /> : (
@@ -1654,14 +1656,14 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen }) {
               <button className={btnPrimary} disabled={busy} onClick={() => fileRef.current?.click()}>{busy ? "Lese…" : "① LV importieren (.crbx)"}</button>
               <input ref={fileRef} type="file" accept=".crbx,.e1s,.sia,application/zip" className="hidden" onChange={onFileLV} />
               <button className={btnGhost} onClick={() => setShowAddPos(!showAddPos)}>Position manuell +</button>
-              <span className="text-slate-300">|</span>
-              <span className="text-xs text-slate-500">② An Unternehmer senden:</span>
+              <span className="text-stone-300">|</span>
+              <span className="text-xs text-stone-500">② An Unternehmer senden:</span>
               <button className={btnGhost} disabled={!positionen.length} onClick={() => exportLeer("csv")}>CSV</button>
               <button className={btnGhost} disabled={!positionen.length} onClick={() => exportLeer("crbx")}>.crbx</button>
-              <span className="ml-auto text-xs text-slate-500">{positionen.length} Positionen · {[...new Set(positionen.map((p) => "NPK " + p.catalog))].join(", ") || "—"}</span>
+              <span className="ml-auto text-xs text-stone-500">{positionen.length} Positionen · {[...new Set(positionen.map((p) => "NPK " + p.catalog))].join(", ") || "—"}</span>
             </div>
             {showAddPos && (
-              <div className="grid grid-cols-1 md:grid-cols-[120px_1fr_90px_90px_auto] gap-2 items-end border-t border-slate-100 pt-3">
+              <div className="grid grid-cols-1 md:grid-cols-[120px_1fr_90px_90px_auto] gap-2 items-end border-t border-stone-100 pt-3">
                 <Field label="NPK/Code"><input className={inputCls} value={posForm.code} onChange={(e) => setPosForm({ ...posForm, code: e.target.value })} placeholder="661.211" /></Field>
                 <Field label="Bezeichnung"><input className={inputCls} value={posForm.bezeichnung} onChange={(e) => setPosForm({ ...posForm, bezeichnung: e.target.value })} /></Field>
                 <Field label="Einheit"><input className={inputCls} value={posForm.einheit} onChange={(e) => setPosForm({ ...posForm, einheit: e.target.value })} placeholder="m2" /></Field>
@@ -1676,27 +1678,27 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen }) {
               <div className={`${card} overflow-auto`} style={{ maxHeight: "70vh" }}>
                 <table className="text-xs border-collapse">
                   <thead className="sticky top-0 z-20">
-                    <tr className="bg-slate-100">
-                      <th className="sticky left-0 z-30 bg-slate-100 text-left px-2 py-2 border-b border-slate-200 min-w-[70px]">NPK</th>
-                      <th className="text-left px-2 py-2 border-b border-slate-200 min-w-[150px]">Bezeichnung</th>
-                      <th className="text-left px-2 py-2 border-b border-slate-200">Einh.</th>
-                      <th className="text-right px-2 py-2 border-b border-slate-200">Menge</th>
+                    <tr className="bg-stone-100">
+                      <th className="sticky left-0 z-30 bg-stone-100 text-left px-2 py-2 border-b border-stone-200 min-w-[70px]">NPK</th>
+                      <th className="text-left px-2 py-2 border-b border-stone-200 min-w-[150px]">Bezeichnung</th>
+                      <th className="text-left px-2 py-2 border-b border-stone-200">Einh.</th>
+                      <th className="text-right px-2 py-2 border-b border-stone-200">Menge</th>
                       {bieter.map((b, bi) => (
-                        <th key={bi} className="px-2 py-1.5 border-b border-l border-slate-200 align-top min-w-[118px]">
-                          <input className="w-full text-xs px-1 py-0.5 border border-slate-200 rounded font-medium" list="firmenliste-lv" placeholder={"Firma " + (bi + 1)} value={b.name} onChange={(e) => patchBieter(bi, { name: e.target.value })} />
+                        <th key={bi} className="px-2 py-1.5 border-b border-l border-stone-200 align-top min-w-[118px]">
+                          <input className="w-full text-xs px-1 py-0.5 border border-stone-200 rounded font-medium" list="firmenliste-lv" placeholder={"Firma " + (bi + 1)} value={b.name} onChange={(e) => patchBieter(bi, { name: e.target.value })} />
                           <div className="flex items-center justify-between mt-1">
-                            <span className="text-[11px] text-slate-500 tabular-nums">{chf(bieterBrutto(b, a))}</span>
+                            <span className="text-[11px] text-stone-500 tabular-nums">{chf(bieterBrutto(b, a))}</span>
                             <span className="flex gap-1.5 text-sm">
-                              <button className="text-blue-700" title="Offerte importieren" onClick={() => setOfferFor({ aId: a.id, bieterIndex: bi })}>⬇</button>
-                              <button className="text-slate-500" title="Export" onClick={() => exportBieter(b, "csv")}>⬆</button>
+                              <button className="text-green-800" title="Offerte importieren" onClick={() => setOfferFor({ aId: a.id, bieterIndex: bi })}>⬇</button>
+                              <button className="text-stone-500" title="Export" onClick={() => exportBieter(b, "csv")}>⬆</button>
                               <button className="text-red-500" title="Entfernen" onClick={() => setBieter(a.bieter.filter((_, x) => x !== bi))}>✕</button>
                             </span>
                           </div>
                         </th>
                       ))}
-                      <th className="px-2 border-b border-l border-slate-200 align-top whitespace-nowrap">
-                        <button className="text-blue-700 text-xs hover:underline" onClick={addBieter}>+ Firma</button>
-                        <div className="mt-1"><button className="text-blue-700 text-[11px] hover:underline" onClick={() => setOfferFor({ aId: a.id, bieterIndex: null })}>+ Offerte</button></div>
+                      <th className="px-2 border-b border-l border-stone-200 align-top whitespace-nowrap">
+                        <button className="text-green-800 text-xs hover:underline" onClick={addBieter}>+ Firma</button>
+                        <div className="mt-1"><button className="text-green-800 text-[11px] hover:underline" onClick={() => setOfferFor({ aId: a.id, bieterIndex: null })}>+ Offerte</button></div>
                       </th>
                     </tr>
                   </thead>
@@ -1705,40 +1707,40 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen }) {
                       const eps = bieter.map((b) => parseBetrag((b.preise || {})[p.code]) || 0);
                       const valid = eps.filter((x) => x > 0); const minEp = valid.length ? Math.min(...valid) : 0;
                       return (
-                        <tr key={p.code} className="border-b border-slate-100 hover:bg-slate-50/60">
+                        <tr key={p.code} className="border-b border-stone-100 hover:bg-stone-50/60">
                           <td className="sticky left-0 z-10 bg-white px-2 py-1 tabular-nums whitespace-nowrap">{p.npk}</td>
                           <td className="px-2 py-1">
-                            <span>{p.bezeichnung || <span className="text-slate-300">—</span>}</span>
-                            {p.langtext?.length ? <button className="ml-1 text-blue-600 text-[10px] hover:underline align-top" title="Langtext" onClick={() => setDetail(p)}>ⓘ</button> : null}
+                            <span>{p.bezeichnung || <span className="text-stone-300">—</span>}</span>
+                            {p.langtext?.length ? <button className="ml-1 text-green-700 text-[10px] hover:underline align-top" title="Langtext" onClick={() => setDetail(p)}>ⓘ</button> : null}
                           </td>
-                          <td className="px-2 py-1 text-slate-500 whitespace-nowrap">{p.einheit}</td>
-                          <td className="px-2 py-1 text-right"><input className="w-16 text-xs text-right tabular-nums bg-transparent border-b border-transparent hover:border-slate-200 focus:border-blue-500 focus:outline-none" value={p.menge} onChange={(e) => dispatch({ type: "update", coll: "angebote", id: a.id, patch: { positionen: a.positionen.map((x) => x.code === p.code ? { ...x, menge: parseBetrag(e.target.value) } : x) } })} /></td>
+                          <td className="px-2 py-1 text-stone-500 whitespace-nowrap">{p.einheit}</td>
+                          <td className="px-2 py-1 text-right"><input className="w-16 text-xs text-right tabular-nums bg-transparent border-b border-transparent hover:border-stone-200 focus:border-green-600 focus:outline-none" value={p.menge} onChange={(e) => dispatch({ type: "update", coll: "angebote", id: a.id, patch: { positionen: a.positionen.map((x) => x.code === p.code ? { ...x, menge: parseBetrag(e.target.value) } : x) } })} /></td>
                           {bieter.map((b, bi) => { const ep = eps[bi]; return (
-                            <td key={bi} className={"px-1 py-1 border-l border-slate-100 " + (ep === minEp && ep > 0 ? "bg-emerald-50" : "")}>
+                            <td key={bi} className={"px-1 py-1 border-l border-stone-100 " + (ep === minEp && ep > 0 ? "bg-emerald-50" : "")}>
                               <input className={cell} value={(b.preise || {})[p.code] ?? ""} onChange={(e) => setEp(bi, p.code, e.target.value)} placeholder="–" />
                             </td>
                           ); })}
-                          <td className="border-l border-slate-100"></td>
+                          <td className="border-l border-stone-100"></td>
                         </tr>
                       );
                     })}
                   </tbody>
                   <tfoot className="sticky bottom-0 z-20">
-                    <tr className="bg-slate-50 font-semibold border-t-2 border-slate-300">
-                      <td className="sticky left-0 bg-slate-50 px-2 py-1.5">Total Brutto</td><td></td><td></td><td></td>
-                      {bieter.map((b, bi) => <td key={bi} className="px-2 py-1.5 text-right tabular-nums border-l border-slate-200">{chf(bieterBrutto(b, a))}</td>)}<td className="border-l border-slate-200"></td>
+                    <tr className="bg-stone-50 font-semibold border-t-2 border-stone-300">
+                      <td className="sticky left-0 bg-stone-50 px-2 py-1.5">Total Brutto</td><td></td><td></td><td></td>
+                      {bieter.map((b, bi) => <td key={bi} className="px-2 py-1.5 text-right tabular-nums border-l border-stone-200">{chf(bieterBrutto(b, a))}</td>)}<td className="border-l border-stone-200"></td>
                     </tr>
-                    <tr className="bg-slate-50">
-                      <td className="sticky left-0 bg-slate-50 px-2 py-1">Total Netto</td><td colSpan={3} className="text-[11px] text-slate-400 px-2">nach Konditionen</td>
-                      {bieter.map((b, bi) => { const n = bieterNetto(b, a); return <td key={bi} className={"px-2 py-1 text-right tabular-nums border-l border-slate-200 " + (n === nw.min && n > 0 ? "text-emerald-600 font-semibold" : "")}>{chf(n)}</td>; })}<td className="border-l border-slate-200"></td>
+                    <tr className="bg-stone-50">
+                      <td className="sticky left-0 bg-stone-50 px-2 py-1">Total Netto</td><td colSpan={3} className="text-[11px] text-stone-400 px-2">nach Konditionen</td>
+                      {bieter.map((b, bi) => { const n = bieterNetto(b, a); return <td key={bi} className={"px-2 py-1 text-right tabular-nums border-l border-stone-200 " + (n === nw.min && n > 0 ? "text-emerald-600 font-semibold" : "")}>{chf(n)}</td>; })}<td className="border-l border-stone-200"></td>
                     </tr>
-                    <tr className="bg-slate-50">
-                      <td className="sticky left-0 bg-slate-50 px-2 py-1">Nutzwert</td><td colSpan={3} className="text-[11px] text-slate-400 px-2">Preis {nw.w.preis}% · Ref {nw.w.referenzen}% · Lehrl {nw.w.lehrlinge}%</td>
-                      {bieter.map((b, bi) => { const r = nwByB.get(b); const rang = rangByB.get(b); return <td key={bi} className="px-2 py-1 text-right tabular-nums border-l border-slate-200">{r ? r.nutz.toFixed(1) : "–"}{rang === 1 && r && r.nutz > 0 ? <span className="text-emerald-600"> ★</span> : ""}</td>; })}<td className="border-l border-slate-200"></td>
+                    <tr className="bg-stone-50">
+                      <td className="sticky left-0 bg-stone-50 px-2 py-1">Nutzwert</td><td colSpan={3} className="text-[11px] text-stone-400 px-2">Preis {nw.w.preis}% · Ref {nw.w.referenzen}% · Lehrl {nw.w.lehrlinge}%</td>
+                      {bieter.map((b, bi) => { const r = nwByB.get(b); const rang = rangByB.get(b); return <td key={bi} className="px-2 py-1 text-right tabular-nums border-l border-stone-200">{r ? r.nutz.toFixed(1) : "–"}{rang === 1 && r && r.nutz > 0 ? <span className="text-emerald-600"> ★</span> : ""}</td>; })}<td className="border-l border-stone-200"></td>
                     </tr>
                     <tr className="bg-emerald-50/40 print:hidden">
                       <td className="sticky left-0 bg-emerald-50/40 px-2 py-1">Vergeben →</td><td></td><td></td><td></td>
-                      {bieter.map((b, bi) => <td key={bi} className="px-2 py-1 text-right border-l border-slate-200">{b.name ? <button className="text-blue-700 hover:underline" onClick={() => setVergabeFor({ a, b, brutto: bieterBrutto(b, a), netto: bieterNetto(b, a) })}>wählen</button> : ""}</td>)}<td className="border-l border-slate-200"></td>
+                      {bieter.map((b, bi) => <td key={bi} className="px-2 py-1 text-right border-l border-stone-200">{b.name ? <button className="text-green-800 hover:underline" onClick={() => setVergabeFor({ a, b, brutto: bieterBrutto(b, a), netto: bieterNetto(b, a) })}>wählen</button> : ""}</td>)}<td className="border-l border-stone-200"></td>
                     </tr>
                   </tfoot>
                 </table>
@@ -1754,11 +1756,11 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen }) {
 
               {showKond && bieter.length > 0 && (
                 <div className={`${card} overflow-x-auto`}>
-                  <div className="px-3 py-2 bg-slate-50 text-sm font-medium border-b border-slate-200">Konditionen (Kaskade auf Brutto) & Bewertungspunkte (0–100)</div>
+                  <div className="px-3 py-2 bg-stone-50 text-sm font-medium border-b border-stone-200">Konditionen (Kaskade auf Brutto) & Bewertungspunkte (0–100)</div>
                   <table className="w-full text-xs">
-                    <thead className="text-slate-500"><tr><th className="text-left px-2 py-1.5">Unternehmer</th><th className="px-2 py-1.5 text-right">Rabatt %</th><th className="px-2 py-1.5 text-right">Pauschal</th><th className="px-2 py-1.5 text-right">Skonto %</th><th className="px-2 py-1.5 text-right">Bauabz. %</th><th className="px-2 py-1.5 text-right">Rundung</th><th className="px-2 py-1.5 text-right">Netto</th><th className="px-2 py-1.5 text-right">Referenz</th><th className="px-2 py-1.5 text-right">Lehrling</th><th className="px-2 py-1.5 text-left">Bemerkung</th></tr></thead>
+                    <thead className="text-stone-500"><tr><th className="text-left px-2 py-1.5">Unternehmer</th><th className="px-2 py-1.5 text-right">Rabatt %</th><th className="px-2 py-1.5 text-right">Pauschal</th><th className="px-2 py-1.5 text-right">Skonto %</th><th className="px-2 py-1.5 text-right">Bauabz. %</th><th className="px-2 py-1.5 text-right">Rundung</th><th className="px-2 py-1.5 text-right">Netto</th><th className="px-2 py-1.5 text-right">Referenz</th><th className="px-2 py-1.5 text-right">Lehrling</th><th className="px-2 py-1.5 text-left">Bemerkung</th></tr></thead>
                     <tbody>{bieter.map((b, bi) => (
-                      <tr key={bi} className="border-t border-slate-100">
+                      <tr key={bi} className="border-t border-stone-100">
                         <td className="px-2 py-1 font-medium whitespace-nowrap">{b.name || ("Firma " + (bi + 1))}</td>
                         <td className="px-2 py-1"><input className={cell} value={b.rabattPct} onChange={(e) => patchBieter(bi, { rabattPct: e.target.value })} /></td>
                         <td className="px-2 py-1"><input className={cell} value={b.pauschalabzug} onChange={(e) => patchBieter(bi, { pauschalabzug: e.target.value })} /></td>
@@ -1768,7 +1770,7 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen }) {
                         <td className="px-2 py-1 text-right tabular-nums font-medium">{chf(bieterNetto(b, a))}</td>
                         <td className="px-2 py-1"><input className={cell} value={b.referenzPunkte} onChange={(e) => patchBieter(bi, { referenzPunkte: e.target.value })} /></td>
                         <td className="px-2 py-1"><input className={cell} value={b.lehrlingPunkte} onChange={(e) => patchBieter(bi, { lehrlingPunkte: e.target.value })} /></td>
-                        <td className="px-2 py-1"><input className="w-full text-xs px-1 py-0.5 border border-slate-200 rounded" value={b.bemerkung} onChange={(e) => patchBieter(bi, { bemerkung: e.target.value })} /></td>
+                        <td className="px-2 py-1"><input className="w-full text-xs px-1 py-0.5 border border-stone-200 rounded" value={b.bemerkung} onChange={(e) => patchBieter(bi, { bemerkung: e.target.value })} /></td>
                       </tr>
                     ))}</tbody>
                   </table>
@@ -1780,7 +1782,7 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen }) {
           {a.bedingungen && (
             <div className={`${card} p-4`}>
               <h3 className="text-sm font-semibold mb-2">Besondere Bestimmungen / Bedingungen</h3>
-              <div className="max-h-52 overflow-y-auto whitespace-pre-wrap text-xs text-slate-600">{a.bedingungen}</div>
+              <div className="max-h-52 overflow-y-auto whitespace-pre-wrap text-xs text-stone-600">{a.bedingungen}</div>
             </div>
           )}
         </>
@@ -1788,8 +1790,8 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen }) {
 
       {detail && (
         <Modal title={detail.npk + " " + (detail.bezeichnung || "")} onClose={() => setDetail(null)} wide>
-          <div className="text-sm text-slate-600 whitespace-pre-wrap">{(detail.langtext || []).join("\n") || "Kein Langtext."}</div>
-          <div className="mt-3 text-xs text-slate-500">Einheit {detail.einheit || "—"} · Menge {detail.menge}</div>
+          <div className="text-sm text-stone-600 whitespace-pre-wrap">{(detail.langtext || []).join("\n") || "Kein Langtext."}</div>
+          <div className="mt-3 text-xs text-stone-500">Einheit {detail.einheit || "—"} · Menge {detail.menge}</div>
         </Modal>
       )}
       {offerFor && <OfferteImportModal a={d.angebote.find((x) => x.id === offerFor.aId)} bieterIndex={offerFor.bieterIndex} dispatch={dispatch} onClose={() => setOfferFor(null)} />}
@@ -1848,12 +1850,12 @@ function OfferteImportModal({ a, bieterIndex, dispatch, onClose }) {
         <div className="flex items-center gap-2">
           <button className={btnGhost} onClick={() => fileRef.current?.click()}>Datei wählen (CSV oder .crbx)</button>
           <input ref={fileRef} type="file" accept=".csv,.crbx,.e1s,.sia,application/zip,text/csv" className="hidden" onChange={onFile} />
-          {fileName && <span className="text-xs text-slate-500">{fileName}</span>}
+          {fileName && <span className="text-xs text-stone-500">{fileName}</span>}
         </div>
         <Field label="… oder Preise als CSV einfügen (Spalten: Code/NPK ; Einheitspreis)">
           <textarea className={`${inputCls} font-mono h-32`} value={text} onChange={(e) => setText(e.target.value)} placeholder={"Code;Einheitspreis\n661211;48.50\n661212;52.00"} />
         </Field>
-        <div className="text-sm text-slate-600">{result.count} von {(a.positionen || []).length} Positionen zugeordnet.</div>
+        <div className="text-sm text-stone-600">{result.count} von {(a.positionen || []).length} Positionen zugeordnet.</div>
         <div className="flex justify-end gap-2"><button className={btnGhost} onClick={onClose}>Abbrechen</button><button className={btnPrimary} disabled={!result.count || (ziel === "__new" && !neuName)} onClick={importieren}>Preise übernehmen</button></div>
       </div>
     </Modal>
@@ -1877,7 +1879,7 @@ function VergabeModal({ info, vertraege, dispatch, projektId, onClose }) {
   return (
     <Modal title={`Vergabe an ${b.name || "Unternehmer"}`} onClose={onClose}>
       <div className="space-y-3">
-        <p className="text-sm text-slate-600">Ausschreibung «{a.titel}» · Brutto <span className="tabular-nums font-medium">{chf(brutto)}</span> → Netto <span className="tabular-nums font-medium">{chf(netto)}</span></p>
+        <p className="text-sm text-stone-600">Ausschreibung «{a.titel}» · Brutto <span className="tabular-nums font-medium">{chf(brutto)}</span> → Netto <span className="tabular-nums font-medium">{chf(netto)}</span></p>
         <div className="flex gap-4 text-sm">
           <label className="inline-flex items-center gap-1.5"><input type="radio" checked={modus === "neu"} onChange={() => setModus("neu")} /> neuer Vertrag</label>
           <label className="inline-flex items-center gap-1.5"><input type="radio" checked={modus === "bestehend"} onChange={() => setModus("bestehend")} /> zu bestehendem Vertrag hinzufügen</label>
@@ -1885,7 +1887,7 @@ function VergabeModal({ info, vertraege, dispatch, projektId, onClose }) {
         {modus === "bestehend" && (
           <Field label="Vertrag (Brutto wird addiert)"><select className={inputCls} value={vertragId} onChange={(e) => setVertragId(e.target.value)}><option value="">wählen…</option>{vertraege.map((v) => <option key={v.id} value={v.id}>{v.unternehmer}{v.nr ? ` · ${v.nr}` : ""} ({chf(v.betrag)})</option>)}</select></Field>
         )}
-        <p className="text-xs text-slate-400">Bei «neuer Vertrag» werden die %-Konditionen des Bieters übernommen. Bei «bestehend» wird die Brutto-Summe addiert und es gelten die Konditionen des bestehenden Vertrags — so bündelt ein Vertrag mehrere Ausschreibungen. Regiebudget/Teuerung anschliessend unter «Verträge» ergänzen.</p>
+        <p className="text-xs text-stone-400">Bei «neuer Vertrag» werden die %-Konditionen des Bieters übernommen. Bei «bestehend» wird die Brutto-Summe addiert und es gelten die Konditionen des bestehenden Vertrags — so bündelt ein Vertrag mehrere Ausschreibungen. Regiebudget/Teuerung anschliessend unter «Verträge» ergänzen.</p>
         <div className="flex justify-end gap-2"><button className={btnGhost} onClick={onClose}>Abbrechen</button><button className={btnPrimary} disabled={modus === "bestehend" && !vertragId} onClick={vergeben}>Vergeben</button></div>
       </div>
     </Modal>
@@ -1906,7 +1908,7 @@ function RapporteView({ d, dispatch, projektId }) {
   }, [d]);
   return (
     <div className="space-y-4">
-      <p className="text-sm text-slate-500">Rapporte werden auf <strong>Verträge</strong> gebucht und mit den <strong>%-Konditionen des Vertrags</strong> verrechnet (netto). Solange die Netto-Summe das Regiebudget nicht übersteigt, erhöht sich die Erwartung nicht — erst der <strong>Überschuss</strong> fliesst automatisch in die Erwartung.</p>
+      <p className="text-sm text-stone-500">Rapporte werden auf <strong>Verträge</strong> gebucht und mit den <strong>%-Konditionen des Vertrags</strong> verrechnet (netto). Solange die Netto-Summe das Regiebudget nicht übersteigt, erhöht sich die Erwartung nicht — erst der <strong>Überschuss</strong> fliesst automatisch in die Erwartung.</p>
       <div className={`${card} p-4`}>
         <div className="grid grid-cols-1 md:grid-cols-[1fr_120px_1fr_80px_80px_90px_auto] gap-2 items-end">
           <Field label="Vertrag"><select className={inputCls} value={f.vertragId} onChange={(e) => setF({ ...f, vertragId: e.target.value })}><option value="">wählen…</option>{d.vertraege.map((v) => <option key={v.id} value={v.id}>{vLabel(v.id)}</option>)}</select></Field>
@@ -1917,7 +1919,7 @@ function RapporteView({ d, dispatch, projektId }) {
           <Field label="Material"><input className={inputCls} value={f.material} onChange={(e) => setF({ ...f, material: e.target.value })} /></Field>
           <button className={btnPrimary} disabled={!f.vertragId} onClick={() => { dispatch({ type: "add", coll: "rapporte", item: { id: uid(), projektId, ...f, stunden: parseBetrag(f.stunden), ansatz: parseBetrag(f.ansatz), material: parseBetrag(f.material) } }); setF({ vertragId: "", datum: today(), beschrieb: "", stunden: "", ansatz: "", material: "" }); }}>+</button>
         </div>
-        <div className="mt-2"><button className="text-blue-700 text-xs hover:underline" onClick={() => setImportOpen(true)}>Rapporte importieren (CSV)…</button></div>
+        <div className="mt-2"><button className="text-green-800 text-xs hover:underline" onClick={() => setImportOpen(true)}>Rapporte importieren (CSV)…</button></div>
       </div>
 
       {proVertrag.length > 0 && (
@@ -1925,9 +1927,9 @@ function RapporteView({ d, dispatch, projektId }) {
           <h3 className="text-sm font-semibold mb-2">Regiebudget pro Vertrag (netto inkl. Konditionen)</h3>
           <table className="w-full text-sm"><tbody>
             {proVertrag.map(({ v, rs, budget, ueber }) => (
-              <tr key={v.id} className="border-t border-slate-100 first:border-0">
+              <tr key={v.id} className="border-t border-stone-100 first:border-0">
                 <td className="py-1.5">{vLabel(v.id)}</td>
-                <td className="py-1.5 text-right tabular-nums text-slate-500">{chf(rs)} / {chf(budget)}</td>
+                <td className="py-1.5 text-right tabular-nums text-stone-500">{chf(rs)} / {chf(budget)}</td>
                 <td className="py-1.5 text-right w-44">{ueber > 0 ? <span className="text-red-600 font-medium tabular-nums">Überschuss +{chf(ueber)} → Erwartung</span> : <span className="text-emerald-600 text-xs">im Budget</span>}</td>
               </tr>
             ))}
@@ -1937,9 +1939,9 @@ function RapporteView({ d, dispatch, projektId }) {
 
       {!d.rapporte.length ? <Empty text="Keine Rapporte erfasst." /> : (
         <div className={`${card} overflow-x-auto`}><table className="w-full text-sm">
-          <thead className="bg-slate-50 text-slate-500 text-xs"><tr><th className="text-left font-medium px-3 py-2">Datum</th><th className="text-left font-medium px-3 py-2">Vertrag</th><th className="text-left font-medium px-3 py-2">Beschrieb</th><th className="text-right font-medium px-3 py-2">Std.</th><th className="text-right font-medium px-3 py-2">Ansatz</th><th className="text-right font-medium px-3 py-2">Material</th><th className="text-right font-medium px-3 py-2">Betrag</th><th className="text-right font-medium px-3 py-2">netto n. Kond.</th><th className="w-12"></th></tr></thead>
-          <tbody>{d.rapporte.map((r) => { const v = vertragOf(r.vertragId); return (<tr key={r.id} className="border-t border-slate-100"><td className="px-3 py-2 tabular-nums text-slate-500">{r.datum}</td><td className="px-3 py-2">{vLabel(r.vertragId)}</td><td className="px-3 py-2 text-slate-600">{r.beschrieb}</td><td className="px-3 py-2 text-right tabular-nums">{r.stunden || "–"}</td><td className="px-3 py-2 text-right tabular-nums">{r.ansatz ? chf(r.ansatz) : "–"}</td><td className="px-3 py-2 text-right tabular-nums">{r.material ? chf(r.material) : "–"}</td><td className="px-3 py-2 text-right tabular-nums">{chf(rapportBetrag(r))}</td><td className="px-3 py-2 text-right tabular-nums font-medium">{chf(rapportNetto(r, v))}</td><td className="px-3 py-2 text-right"><button className="text-red-600 text-xs hover:underline" onClick={() => dispatch({ type: "remove", coll: "rapporte", id: r.id })}>Lö.</button></td></tr>); })}</tbody>
-          <tfoot><tr className="border-t-2 border-slate-300 font-semibold bg-slate-50"><td className="px-3 py-2" colSpan={7}>Total Regie netto</td><td className="px-3 py-2 text-right tabular-nums">{chf(totalNetto)}</td><td></td></tr></tfoot>
+          <thead className="bg-stone-50 text-stone-500 text-xs"><tr><th className="text-left font-medium px-3 py-2">Datum</th><th className="text-left font-medium px-3 py-2">Vertrag</th><th className="text-left font-medium px-3 py-2">Beschrieb</th><th className="text-right font-medium px-3 py-2">Std.</th><th className="text-right font-medium px-3 py-2">Ansatz</th><th className="text-right font-medium px-3 py-2">Material</th><th className="text-right font-medium px-3 py-2">Betrag</th><th className="text-right font-medium px-3 py-2">netto n. Kond.</th><th className="w-12"></th></tr></thead>
+          <tbody>{d.rapporte.map((r) => { const v = vertragOf(r.vertragId); return (<tr key={r.id} className="border-t border-stone-100"><td className="px-3 py-2 tabular-nums text-stone-500">{r.datum}</td><td className="px-3 py-2">{vLabel(r.vertragId)}</td><td className="px-3 py-2 text-stone-600">{r.beschrieb}</td><td className="px-3 py-2 text-right tabular-nums">{r.stunden || "–"}</td><td className="px-3 py-2 text-right tabular-nums">{r.ansatz ? chf(r.ansatz) : "–"}</td><td className="px-3 py-2 text-right tabular-nums">{r.material ? chf(r.material) : "–"}</td><td className="px-3 py-2 text-right tabular-nums">{chf(rapportBetrag(r))}</td><td className="px-3 py-2 text-right tabular-nums font-medium">{chf(rapportNetto(r, v))}</td><td className="px-3 py-2 text-right"><button className="text-red-600 text-xs hover:underline" onClick={() => dispatch({ type: "remove", coll: "rapporte", id: r.id })}>Lö.</button></td></tr>); })}</tbody>
+          <tfoot><tr className="border-t-2 border-stone-300 font-semibold bg-stone-50"><td className="px-3 py-2" colSpan={7}>Total Regie netto</td><td className="px-3 py-2 text-right tabular-nums">{chf(totalNetto)}</td><td></td></tr></tfoot>
         </table></div>
       )}
       {importOpen && <RapportImport vertraege={d.vertraege} onClose={() => setImportOpen(false)} onImport={(rows) => { dispatch({ type: "addMany", coll: "rapporte", items: rows.map((r) => ({ id: uid(), projektId, ...r })) }); setImportOpen(false); }} />}
@@ -1963,9 +1965,9 @@ function RapportImport({ vertraege, onClose, onImport }) {
   const ok = rows.filter((r) => r._match);
   return (
     <Modal title="Rapporte importieren" onClose={onClose} wide>
-      <p className="text-sm text-slate-500 mb-2">Spalten: Vertrags-Nr. (oder Unternehmer) · Datum · Beschrieb · Stunden · Ansatz · Material.</p>
+      <p className="text-sm text-stone-500 mb-2">Spalten: Vertrags-Nr. (oder Unternehmer) · Datum · Beschrieb · Stunden · Ansatz · Material.</p>
       <textarea className={`${inputCls} font-mono h-32`} value={text} onChange={(e) => setText(e.target.value)} />
-      <div className="mt-3 max-h-48 overflow-y-auto border border-slate-200 rounded-md"><table className="w-full text-sm"><tbody>{rows.map((r, i) => (<tr key={i} className="border-b border-slate-100 last:border-0"><td className="px-3 py-1 tabular-nums w-28">{r.key}</td><td className="px-3 py-1">{r.beschrieb}</td><td className="px-3 py-1 text-right tabular-nums">{chf(r.stunden * r.ansatz + r.material)}</td><td className="px-3 py-1 w-24">{r._match ? <span className="text-emerald-600">✓</span> : <span className="text-red-500 text-xs">kein Vertrag</span>}</td></tr>))}</tbody></table></div>
+      <div className="mt-3 max-h-48 overflow-y-auto border border-stone-200 rounded-md"><table className="w-full text-sm"><tbody>{rows.map((r, i) => (<tr key={i} className="border-b border-stone-100 last:border-0"><td className="px-3 py-1 tabular-nums w-28">{r.key}</td><td className="px-3 py-1">{r.beschrieb}</td><td className="px-3 py-1 text-right tabular-nums">{chf(r.stunden * r.ansatz + r.material)}</td><td className="px-3 py-1 w-24">{r._match ? <span className="text-emerald-600">✓</span> : <span className="text-red-500 text-xs">kein Vertrag</span>}</td></tr>))}</tbody></table></div>
       <div className="flex justify-end gap-2 pt-4"><button className={btnGhost} onClick={onClose}>Abbrechen</button><button className={btnPrimary} disabled={!ok.length} onClick={() => onImport(ok)}>{ok.length} Rapporte importieren</button></div>
     </Modal>
   );
@@ -1980,7 +1982,7 @@ function ErwartungenView({ d, dispatch, projektId, ks }) {
   const totalAuto = autoZeilen.reduce((s, z) => s + z.betrag, 0);
   return (
     <div className="space-y-4">
-      <p className="text-sm text-slate-500">Erwartungen sind <strong>Mehrkosten gegenüber dem Vertrag</strong> (bzw. KV), die noch in keinem Nachtrag stecken — mehrzeilig pro BKP. Prognose = Vertrag (oder KV) + Erwartung. Regie-Überschüsse aus Rapporten erscheinen automatisch. Tipp: In der Bauabrechnung kannst du Erwartung und Prognose pro Position auch per Doppelklick direkt setzen.</p>
+      <p className="text-sm text-stone-500">Erwartungen sind <strong>Mehrkosten gegenüber dem Vertrag</strong> (bzw. KV), die noch in keinem Nachtrag stecken — mehrzeilig pro BKP. Prognose = Vertrag (oder KV) + Erwartung. Regie-Überschüsse aus Rapporten erscheinen automatisch. Tipp: In der Bauabrechnung kannst du Erwartung und Prognose pro Position auch per Doppelklick direkt setzen.</p>
       <div className={`${card} p-4`}>
         <div className="grid grid-cols-1 md:grid-cols-[1fr_1fr_140px_140px_auto] gap-3 items-end">
           <Field label="BKP-Position"><select className={inputCls} value={f.positionId} onChange={(e) => setF({ ...f, positionId: e.target.value })}><option value="">wählen…</option>{opts.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</select></Field>
@@ -1995,24 +1997,24 @@ function ErwartungenView({ d, dispatch, projektId, ks }) {
         <div className={`${card} p-4`}>
           <h3 className="text-sm font-semibold mb-2">Automatische Erwartungen (Regie-Überschuss)</h3>
           <table className="w-full text-sm"><tbody>
-            {autoZeilen.map((z, i) => (<tr key={i} className="border-t border-slate-100 first:border-0"><td className="py-1.5">{z.pos.bkp} {z.pos.bezeichnung}</td><td className="py-1.5 text-slate-500 text-xs">Regie über Budget (netto)</td><td className="py-1.5 text-right"><Abw v={z.betrag} /></td></tr>))}
+            {autoZeilen.map((z, i) => (<tr key={i} className="border-t border-stone-100 first:border-0"><td className="py-1.5">{z.pos.bkp} {z.pos.bezeichnung}</td><td className="py-1.5 text-stone-500 text-xs">Regie über Budget (netto)</td><td className="py-1.5 text-right"><Abw v={z.betrag} /></td></tr>))}
           </tbody></table>
         </div>
       )}
 
       {!d.erwartungen.length ? <Empty text="Keine manuellen Erwartungen erfasst." /> : (
         <div className={`${card} overflow-x-auto`}><table className="w-full text-sm">
-          <thead className="bg-slate-50 text-slate-500 text-xs"><tr><th className="text-left font-medium px-3 py-2">Datum</th><th className="text-left font-medium px-3 py-2">Position</th><th className="text-left font-medium px-3 py-2">Bezeichnung</th><th className="text-right font-medium px-3 py-2">Betrag</th><th className="w-12"></th></tr></thead>
+          <thead className="bg-stone-50 text-stone-500 text-xs"><tr><th className="text-left font-medium px-3 py-2">Datum</th><th className="text-left font-medium px-3 py-2">Position</th><th className="text-left font-medium px-3 py-2">Bezeichnung</th><th className="text-right font-medium px-3 py-2">Betrag</th><th className="w-12"></th></tr></thead>
           <tbody>{d.erwartungen.map((e) => (
-            <tr key={e.id} className="border-t border-slate-100">
-              <td className="px-3 py-2 tabular-nums text-slate-500">{e.datum}</td>
+            <tr key={e.id} className="border-t border-stone-100">
+              <td className="px-3 py-2 tabular-nums text-stone-500">{e.datum}</td>
               <td className="px-3 py-2">{posLabel(e.positionId)}</td>
-              <td className="px-3 py-2"><input className="w-full text-sm bg-transparent border-b border-transparent hover:border-slate-200 focus:border-blue-500 focus:outline-none py-0.5" value={e.bezeichnung || ""} onChange={(ev) => dispatch({ type: "update", coll: "erwartungen", id: e.id, patch: { bezeichnung: ev.target.value } })} /></td>
-              <td className="px-3 py-2 text-right"><input className="w-28 text-sm text-right tabular-nums bg-transparent border-b border-transparent hover:border-slate-200 focus:border-blue-500 focus:outline-none py-0.5" value={e.betrag} onChange={(ev) => dispatch({ type: "update", coll: "erwartungen", id: e.id, patch: { betrag: parseBetrag(ev.target.value) } })} /></td>
+              <td className="px-3 py-2"><input className="w-full text-sm bg-transparent border-b border-transparent hover:border-stone-200 focus:border-green-600 focus:outline-none py-0.5" value={e.bezeichnung || ""} onChange={(ev) => dispatch({ type: "update", coll: "erwartungen", id: e.id, patch: { bezeichnung: ev.target.value } })} /></td>
+              <td className="px-3 py-2 text-right"><input className="w-28 text-sm text-right tabular-nums bg-transparent border-b border-transparent hover:border-stone-200 focus:border-green-600 focus:outline-none py-0.5" value={e.betrag} onChange={(ev) => dispatch({ type: "update", coll: "erwartungen", id: e.id, patch: { betrag: parseBetrag(ev.target.value) } })} /></td>
               <td className="px-3 py-2 text-right"><button className="text-red-600 text-xs hover:underline" onClick={() => dispatch({ type: "remove", coll: "erwartungen", id: e.id })}>Lö.</button></td>
             </tr>
           ))}</tbody>
-          <tfoot><tr className="border-t-2 border-slate-300 font-semibold bg-slate-50"><td className="px-3 py-2" colSpan={3}>Total Erwartungen (manuell {chf(totalMan)} + automatisch {chf(totalAuto)})</td><td className="px-3 py-2 text-right"><Abw v={totalMan + totalAuto} /></td><td></td></tr></tfoot>
+          <tfoot><tr className="border-t-2 border-stone-300 font-semibold bg-stone-50"><td className="px-3 py-2" colSpan={3}>Total Erwartungen (manuell {chf(totalMan)} + automatisch {chf(totalAuto)})</td><td className="px-3 py-2 text-right"><Abw v={totalMan + totalAuto} /></td><td></td></tr></tfoot>
         </table></div>
       )}
     </div>
@@ -2093,33 +2095,33 @@ function AbrechnungView({ ks, projekt, d, dispatch, projektId }) {
         <button className={btnPrimary} onClick={exportCsv}>CSV exportieren</button>
         <button className={btnGhost} onClick={() => window.print()}>Drucken / PDF</button>
         <button className={btnGhost} onClick={() => { setAllOpen(!allOpen); setOpen({}); }}>{allOpen ? "Details zuklappen" : "Alle Details aufklappen"}</button>
-        <div className="ml-auto inline-flex rounded-md border border-slate-200 overflow-hidden text-sm">
-          <button className={`px-3 py-1.5 ${!brutto ? "bg-blue-700 text-white" : "bg-white text-slate-600"}`} onClick={() => setBrutto(false)}>Netto</button>
-          <button className={`px-3 py-1.5 ${brutto ? "bg-blue-700 text-white" : "bg-white text-slate-600"}`} onClick={() => setBrutto(true)}>Brutto (inkl. {ks.satz}%)</button>
+        <div className="ml-auto inline-flex rounded-md border border-stone-200 overflow-hidden text-sm">
+          <button className={`px-3 py-1.5 ${!brutto ? "bg-green-800 text-white" : "bg-white text-stone-600"}`} onClick={() => setBrutto(false)}>Netto</button>
+          <button className={`px-3 py-1.5 ${brutto ? "bg-green-800 text-white" : "bg-white text-stone-600"}`} onClick={() => setBrutto(true)}>Brutto (inkl. {ks.satz}%)</button>
         </div>
       </div>
-      <p className="text-xs text-slate-400 print:hidden">▸ öffnet Detailzeilen (Verträge, Rechnungen, Mutationen, Erwartungen). Doppelklick auf <strong>Erwartung</strong> oder <strong>Prognose</strong> einer Position (ohne Unterpositionen) setzt den Wert direkt — die Differenz wird als Zeile «Anpassung (Bauabrechnung)» in den Erwartungen geführt. Direkteingabe wirkt auf Nettowerte.</p>
+      <p className="text-xs text-stone-400 print:hidden">▸ öffnet Detailzeilen (Verträge, Rechnungen, Mutationen, Erwartungen). Doppelklick auf <strong>Erwartung</strong> oder <strong>Prognose</strong> einer Position (ohne Unterpositionen) setzt den Wert direkt — die Differenz wird als Zeile «Anpassung (Bauabrechnung)» in den Erwartungen geführt. Direkteingabe wirkt auf Nettowerte.</p>
       <div className={`${card} p-5`}>
-        <div className="mb-4 pb-3 border-b border-slate-200">
+        <div className="mb-4 pb-3 border-b border-stone-200">
           <h2 className="text-lg font-bold">Bauabrechnung / Kostenzusammenstellung nach BKP</h2>
-          <p className="text-sm text-slate-500">{projekt?.name}{projekt?.strasse ? `, ${projekt.strasse}` : ""} · {projekt?.plzOrt || projekt?.ort} · Bauherr: {projekt?.bauherr} · Stand {today()} · Beträge {brutto ? "brutto" : "netto"}</p>
+          <p className="text-sm text-stone-500">{projekt?.name}{projekt?.strasse ? `, ${projekt.strasse}` : ""} · {projekt?.plzOrt || projekt?.ort} · Bauherr: {projekt?.bauherr} · Stand {today()} · Beträge {brutto ? "brutto" : "netto"}</p>
         </div>
         <div className="overflow-x-auto"><table className="w-full text-xs">
-          <thead className="text-slate-500"><tr className="border-b border-slate-300">
+          <thead className="text-stone-500"><tr className="border-b border-stone-300">
             <th className="text-left font-medium px-2 py-1.5">BKP / Bezeichnung</th><th className="text-right font-medium px-2 py-1.5">KV</th><th className="text-right font-medium px-2 py-1.5">KV rev.</th><th className="text-right font-medium px-2 py-1.5">Vertrag</th><th className="text-right font-medium px-2 py-1.5">NT gen.</th><th className="text-right font-medium px-2 py-1.5">Beauftr.</th><th className="text-right font-medium px-2 py-1.5">Erwartung</th><th className="text-right font-medium px-2 py-1.5">Prognose</th><th className="text-right font-medium px-2 py-1.5">Bezahlt</th><th className="text-right font-medium px-2 py-1.5">Abw. KV</th>
           </tr></thead>
           <tbody>
             {ks.groups.map((g) => (
               <React.Fragment key={g.g}>
-                <tr className="bg-slate-100 font-medium"><td className="px-2 py-1" colSpan={10}>{g.g} · {g.name}</td></tr>
+                <tr className="bg-stone-100 font-medium"><td className="px-2 py-1" colSpan={10}>{g.g} · {g.name}</td></tr>
                 {(byGroup[g.g] || []).map((z) => {
                   const det = details[z.pos.id] || [];
                   const editable = !z.hasChildren;
                   return (
                     <React.Fragment key={z.pos.id}>
-                      <tr className={`border-b border-slate-50 ${z.hasChildren ? "font-semibold bg-slate-50/40" : ""}`}>
+                      <tr className={`border-b border-stone-50 ${z.hasChildren ? "font-semibold bg-stone-50/40" : ""}`}>
                         <td className="px-2 py-1" style={{ paddingLeft: 8 + z.depth * 16 }}>
-                          {det.length > 0 && <button className="text-slate-400 hover:text-slate-700 mr-1 print:hidden" onClick={() => setOpen({ ...open, [z.pos.id]: !isOpen(z.pos.id) })}>{isOpen(z.pos.id) ? "▾" : "▸"}</button>}
+                          {det.length > 0 && <button className="text-stone-400 hover:text-stone-700 mr-1 print:hidden" onClick={() => setOpen({ ...open, [z.pos.id]: !isOpen(z.pos.id) })}>{isOpen(z.pos.id) ? "▾" : "▸"}</button>}
                           <span className="tabular-nums">{z.pos.bkp}</span> {z.pos.bezeichnung}
                         </td>
                         <td className="px-2 py-1 text-right tabular-nums">{V(z.roll.kv)}</td>
@@ -2140,10 +2142,10 @@ function AbrechnungView({ ks, projekt, d, dispatch, projektId }) {
                         const cells = Array(8).fill(null);
                         cells[colIdx[it.col] - 1] = it;
                         return (
-                          <tr key={i} className="border-b border-slate-50 bg-slate-50/60 text-[11px] text-slate-500">
-                            <td className="px-2 py-0.5" style={{ paddingLeft: 24 + z.depth * 16 }}>↳ {it.label}{it.sub ? <span className="text-slate-400"> · {it.sub}</span> : ""}</td>
+                          <tr key={i} className="border-b border-stone-50 bg-stone-50/60 text-[11px] text-stone-500">
+                            <td className="px-2 py-0.5" style={{ paddingLeft: 24 + z.depth * 16 }}>↳ {it.label}{it.sub ? <span className="text-stone-400"> · {it.sub}</span> : ""}</td>
                             {cells.map((c, ci) => (
-                              <td key={ci} className={`px-2 py-0.5 text-right tabular-nums ${c && c.muted ? "italic text-slate-400" : ""}`}>
+                              <td key={ci} className={`px-2 py-0.5 text-right tabular-nums ${c && c.muted ? "italic text-stone-400" : ""}`}>
                                 {c ? (c.signed ? (c.betrag > 0 ? "+" : "") + chf(c.betrag * f) : chf(c.betrag * f)) + (c.muted && c.kind === "rg" ? " (offen)" : "") + (c.muted && c.kind === "nt" ? " (pendent)" : "") : ""}
                               </td>
                             ))}
@@ -2154,25 +2156,25 @@ function AbrechnungView({ ks, projekt, d, dispatch, projektId }) {
                     </React.Fragment>
                   );
                 })}
-                <tr className="border-b border-slate-200 text-slate-600 font-medium">
+                <tr className="border-b border-stone-200 text-stone-600 font-medium">
                   <td className="px-2 py-1">Zwischentotal {g.g}</td>
                   <td className="px-2 py-1 text-right tabular-nums">{V(g.kv)}</td><td className="px-2 py-1 text-right tabular-nums">{V(g.kvRevidiert)}</td><td className="px-2 py-1 text-right tabular-nums">{V(g.vertragNetto)}</td><td className="px-2 py-1 text-right tabular-nums">{V(g.ntGen)}</td><td className="px-2 py-1 text-right tabular-nums">{V(g.beauftragt)}</td><td className="px-2 py-1 text-right tabular-nums">{V(g.erwartung)}</td><td className="px-2 py-1 text-right tabular-nums">{V(g.prognose)}</td><td className="px-2 py-1 text-right tabular-nums">{V(g.bezahlt)}</td><td className="px-2 py-1 text-right"><Abw v={g.abwKv * f} /></td>
                 </tr>
               </React.Fragment>
             ))}
           </tbody>
-          <tfoot><tr className="border-t-2 border-slate-800 font-bold text-sm">
+          <tfoot><tr className="border-t-2 border-stone-800 font-bold text-sm">
             <td className="px-2 py-2">TOTAL {brutto ? "BRUTTO" : "NETTO"}</td>
             <td className="px-2 py-2 text-right tabular-nums">{V(t.kv)}</td><td className="px-2 py-2 text-right tabular-nums">{V(t.kvRevidiert)}</td><td className="px-2 py-2 text-right tabular-nums">{V(t.vertragNetto)}</td><td className="px-2 py-2 text-right tabular-nums">{V(t.ntGen)}</td><td className="px-2 py-2 text-right tabular-nums">{V(t.beauftragt)}</td><td className="px-2 py-2 text-right tabular-nums">{V(t.erwartung)}</td><td className="px-2 py-2 text-right tabular-nums">{V(t.prognose)}</td><td className="px-2 py-2 text-right tabular-nums">{V(t.bezahlt)}</td><td className="px-2 py-2 text-right"><Abw v={t.abwKv * f} /></td>
           </tr></tfoot>
         </table></div>
         <div className="mt-5 max-w-sm ml-auto text-sm space-y-1">
-          <div className="flex justify-between"><span className="text-slate-500">Prognose netto</span><span className="tabular-nums font-medium">{chf(t.prognose)}</span></div>
-          <div className="flex justify-between"><span className="text-slate-500">MwSt {ks.satz}%</span><span className="tabular-nums">{chf(ks.mwst)}</span></div>
-          <div className="flex justify-between border-t border-slate-200 pt-1"><span className="font-semibold">Prognose brutto</span><span className="tabular-nums font-semibold">{chf(ks.brutto)}</span></div>
-          {ks.reserve > 0 && <div className="flex justify-between text-slate-500"><span>+ Teuerungsreserve {ks.resSatz}% (auf KV rev.)</span><span className="tabular-nums">{chf(ks.reserve)}</span></div>}
-          <div className="flex justify-between border-t border-slate-200 pt-1"><span className="text-slate-500">Abweichung zu KV (netto)</span><Abw v={t.abwKv} /></div>
-          <div className="flex justify-between"><span className="text-slate-500">Bezahlt netto / offen</span><span className="tabular-nums">{chf(t.bezahlt)} / {chf(t.offen)}</span></div>
+          <div className="flex justify-between"><span className="text-stone-500">Prognose netto</span><span className="tabular-nums font-medium">{chf(t.prognose)}</span></div>
+          <div className="flex justify-between"><span className="text-stone-500">MwSt {ks.satz}%</span><span className="tabular-nums">{chf(ks.mwst)}</span></div>
+          <div className="flex justify-between border-t border-stone-200 pt-1"><span className="font-semibold">Prognose brutto</span><span className="tabular-nums font-semibold">{chf(ks.brutto)}</span></div>
+          {ks.reserve > 0 && <div className="flex justify-between text-stone-500"><span>+ Teuerungsreserve {ks.resSatz}% (auf KV rev.)</span><span className="tabular-nums">{chf(ks.reserve)}</span></div>}
+          <div className="flex justify-between border-t border-stone-200 pt-1"><span className="text-stone-500">Abweichung zu KV (netto)</span><Abw v={t.abwKv} /></div>
+          <div className="flex justify-between"><span className="text-stone-500">Bezahlt netto / offen</span><span className="tabular-nums">{chf(t.bezahlt)} / {chf(t.offen)}</span></div>
         </div>
       </div>
     </div>
