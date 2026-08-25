@@ -876,6 +876,43 @@ function AdressstammView({ firmen, db, dispatch }) {
   );
 }
 
+// Rolle wird erst beim Verlassen des Felds übernommen — sonst würde die Gruppierung bei jedem Tastendruck umsortieren
+// Zahlenfeld für Tabellenzellen: während des Tippens bleibt der Rohtext stehen (kein Sprung auf 0),
+// übernommen wird die geparste Zahl beim Verlassen des Felds
+function ZahlZelle({ wert, onSpeichern, className }) {
+  const [entwurf, setEntwurf] = useState(String(wert ?? ""));
+  const [aktiv, setAktiv] = useState(false);
+  useEffect(() => { if (!aktiv) setEntwurf(String(wert ?? "")); }, [wert, aktiv]);
+  const uebernehmen = () => { setAktiv(false); const n = parseBetrag(entwurf); setEntwurf(String(n)); if (n !== Number(wert)) onSpeichern(n); };
+  return (
+    <input
+      className={className}
+      value={entwurf}
+      onFocus={() => setAktiv(true)}
+      onChange={(e) => setEntwurf(e.target.value)}
+      onBlur={uebernehmen}
+      onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") { setEntwurf(String(wert ?? "")); setAktiv(false); e.currentTarget.blur(); } }}
+    />
+  );
+}
+
+function RolleFeld({ wert, onSpeichern }) {
+  const [entwurf, setEntwurf] = useState(wert);
+  const [aktiv, setAktiv] = useState(false);
+  useEffect(() => { if (!aktiv) setEntwurf(wert); }, [wert, aktiv]);
+  return (
+    <input
+      className={inputCls}
+      list="rollenliste"
+      value={entwurf}
+      onFocus={() => setAktiv(true)}
+      onChange={(e) => setEntwurf(e.target.value)}
+      onBlur={() => { setAktiv(false); if (entwurf !== wert) onSpeichern(entwurf.trim()); }}
+      onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") { setEntwurf(wert); setAktiv(false); e.currentTarget.blur(); } }}
+    />
+  );
+}
+
 function ProjektBeteiligteView({ db, dispatch, projektId, firmen }) {
   const beteiligte = projektBeteiligte(db, projektId);
   const [neu, setNeu] = useState({ firmaId: "", rolle: "" });
@@ -931,7 +968,7 @@ function ProjektBeteiligteView({ db, dispatch, projektId, firmen }) {
                   <div className="text-xs text-stone-500 pl-[18px]">{firmaAdresse(b.firma) || "—"}</div>
                 </div>
                 <Field label="Rolle">
-                  <input className={inputCls} list="rollenliste" value={b.rolle} onChange={(e) => upd(b.id, { rolle: e.target.value })} />
+                  <RolleFeld wert={b.rolle} onSpeichern={(r) => upd(b.id, { rolle: r })} />
                 </Field>
                 <Field label="Hauptperson für dieses Projekt">
                   <select className={inputCls} value={b.hauptpersonId || ""} onChange={(e) => upd(b.id, { hauptpersonId: e.target.value })}>
@@ -1218,7 +1255,7 @@ function App() {
           {view === "umbuchungen" && <UmbuchungenView d={d} dispatch={dispatch} projektId={db.aktiv} />}
           {view === "vertraege" && <VertraegeView d={d} dispatch={dispatch} projektId={db.aktiv} projekt={projekt} firmen={firmen} db={db} />}
           {view === "rechnungen" && <RechnungenView d={d} dispatch={dispatch} projektId={db.aktiv} projekt={projekt} db={db} />}
-          {view === "lv" && <LeistungsverzeichnisView d={d} dispatch={dispatch} projektId={db.aktiv} projekt={projekt} firmen={firmen} />}
+          {view === "lv" && <LeistungsverzeichnisView d={d} dispatch={dispatch} projektId={db.aktiv} projekt={projekt} firmen={firmen} db={db} />}
           {view === "angebote" && <AngeboteView d={d} dispatch={dispatch} projektId={db.aktiv} projekt={projekt} db={db} />}
           {view === "rapporte" && <RapporteView d={d} dispatch={dispatch} projektId={db.aktiv} />}
           {view === "erwartungen" && <ErwartungenView d={d} dispatch={dispatch} projektId={db.aktiv} ks={ks} />}
@@ -1808,13 +1845,13 @@ function AngeboteView({ d, dispatch, projektId, projekt, db }) {
     <div className="space-y-4">
       <button className={btnPrimary} onClick={() => setEdit({ id: null, titel: "", positionId: "", modus: "pauschal", positionen: [], bedingungen: "", gewichte: { preis: Number(projekt?.gewichtPreis) || 70, referenzen: Number(projekt?.gewichtReferenzen) || 20, lehrlinge: Number(projekt?.gewichtLehrlinge) || 10 }, bieter: [neuBieter(), neuBieter()] })}>+ Ausschreibung / Vergleich</button>
       <p className="text-xs text-stone-400">Tipp: Leistungsverzeichnisse (NPK) importierst du im Reiter «Leistungsverzeichnisse» — dort kannst du auch mehrere NPK-Kataloge zu einer Ausschreibung zusammenführen. Hier bepreisen die Bieter die Positionen und du vergleichst.</p>
-      {!d.angebote.length ? <Empty text="Keine Angebote erstellt." /> : d.angebote.map((a) => <AngebotCard key={a.id} a={a} d={d} dispatch={dispatch} projektId={projektId} projekt={projekt} onEdit={() => setEdit(a)} />)}
+      {!d.angebote.length ? <Empty text="Keine Angebote erstellt." /> : d.angebote.map((a) => <AngebotCard key={a.id} a={a} d={d} dispatch={dispatch} projektId={projektId} projekt={projekt} onEdit={() => setEdit(a)} db={db} rollen={rollen} />)}
       {edit && <AngebotEditor angebot={edit} positionen={d.positionen} projekt={projekt} neuBieter={neuBieter} onClose={() => setEdit(null)} onSave={(a) => { if (a.id) dispatch({ type: "update", coll: "angebote", id: a.id, patch: a }); else dispatch({ type: "add", coll: "angebote", item: { ...a, id: uid(), projektId } }); setEdit(null); }} />}
     </div>
   );
 }
 
-function AngebotCard({ a, d, dispatch, projektId, projekt, onEdit }) {
+function AngebotCard({ a, d, dispatch, projektId, projekt, onEdit, db, rollen }) {
   const { w, rows, min } = nutzwerte(a, projekt);
   const [showPos, setShowPos] = useState(false);
   const isLv = a.modus === "lv";
@@ -1953,7 +1990,8 @@ function AngebotEditor({ angebot, positionen, projekt, neuBieter, onClose, onSav
   );
 }
 
-function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen }) {
+function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen, db }) {
+  const rollen = projektRollen(db, projekt);
   const [selId, setSelId] = useState(d.angebote.find((x) => x.modus === "lv")?.id || d.angebote[0]?.id || "");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
@@ -2133,7 +2171,7 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen }) {
                             {p.langtext?.length ? <button className="ml-1 text-orange-700 text-[10px] hover:underline align-top" title="Langtext" onClick={() => setDetail(p)}>ⓘ</button> : null}
                           </td>
                           <td className="px-2 py-1 text-stone-500 whitespace-nowrap">{p.einheit}</td>
-                          <td className="px-2 py-1 text-right"><input className="w-16 text-xs text-right tabular-nums bg-transparent border-b border-transparent hover:border-stone-200 focus:border-orange-600 focus:outline-none" value={p.menge} onChange={(e) => dispatch({ type: "update", coll: "angebote", id: a.id, patch: { positionen: a.positionen.map((x) => x.code === p.code ? { ...x, menge: parseBetrag(e.target.value) } : x) } })} /></td>
+                          <td className="px-2 py-1 text-right"><ZahlZelle className="w-16 text-xs text-right tabular-nums bg-transparent border-b border-transparent hover:border-stone-200 focus:border-orange-600 focus:outline-none" wert={p.menge} onSpeichern={(n) => dispatch({ type: "update", coll: "angebote", id: a.id, patch: { positionen: a.positionen.map((x) => x.code === p.code ? { ...x, menge: n } : x) } })} /></td>
                           {bieter.map((b, bi) => { const ep = eps[bi]; return (
                             <td key={bi} className={"px-1 py-1 border-l border-stone-100 " + (ep === minEp && ep > 0 ? "bg-emerald-50" : "")}>
                               <input className={cell} value={(b.preise || {})[p.code] ?? ""} onChange={(e) => setEp(bi, p.code, e.target.value)} placeholder="–" />
@@ -2214,7 +2252,7 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen }) {
         </Modal>
       )}
       {offerFor && <OfferteImportModal a={d.angebote.find((x) => x.id === offerFor.aId)} bieterIndex={offerFor.bieterIndex} dispatch={dispatch} onClose={() => setOfferFor(null)} />}
-      {vergabeFor && <VergabeModal info={vergabeFor} vertraege={d.vertraege} dispatch={dispatch} projektId={projektId} onClose={() => setVergabeFor(null)} />}
+      {vergabeFor && <VergabeModal info={vergabeFor} vertraege={d.vertraege} dispatch={dispatch} projektId={projektId} onClose={() => setVergabeFor(null)} db={db} rollen={rollen} />}
       {printAntrag && a && (
         <PrintModal onClose={() => setPrintAntrag(false)}>
           <VergabeantragDoc a={a} projekt={projekt} nw={nw} rollen={rollen} />
@@ -2281,7 +2319,7 @@ function OfferteImportModal({ a, bieterIndex, dispatch, onClose }) {
   );
 }
 
-function VergabeModal({ info, vertraege, dispatch, projektId, onClose }) {
+function VergabeModal({ info, vertraege, dispatch, projektId, onClose, db, rollen }) {
   const { a, b, brutto, netto } = info;
   const [modus, setModus] = useState("neu");
   const [vertragId, setVertragId] = useState("");
@@ -2429,7 +2467,7 @@ function ErwartungenView({ d, dispatch, projektId, ks }) {
               <td className="px-3 py-2 tabular-nums text-stone-500">{e.datum}</td>
               <td className="px-3 py-2">{posLabel(e.positionId)}</td>
               <td className="px-3 py-2"><input className="w-full text-sm bg-transparent border-b border-transparent hover:border-stone-200 focus:border-orange-600 focus:outline-none py-0.5" value={e.bezeichnung || ""} onChange={(ev) => dispatch({ type: "update", coll: "erwartungen", id: e.id, patch: { bezeichnung: ev.target.value } })} /></td>
-              <td className="px-3 py-2 text-right"><input className="w-28 text-sm text-right tabular-nums bg-transparent border-b border-transparent hover:border-stone-200 focus:border-orange-600 focus:outline-none py-0.5" value={e.betrag} onChange={(ev) => dispatch({ type: "update", coll: "erwartungen", id: e.id, patch: { betrag: parseBetrag(ev.target.value) } })} /></td>
+              <td className="px-3 py-2 text-right"><ZahlZelle className="w-28 text-sm text-right tabular-nums bg-transparent border-b border-transparent hover:border-stone-200 focus:border-orange-600 focus:outline-none py-0.5" wert={e.betrag} onSpeichern={(n) => dispatch({ type: "update", coll: "erwartungen", id: e.id, patch: { betrag: n } })} /></td>
               <td className="px-3 py-2 text-right"><button className="text-red-600 text-xs hover:underline" onClick={() => dispatch({ type: "remove", coll: "erwartungen", id: e.id })}>Lö.</button></td>
             </tr>
           ))}</tbody>
