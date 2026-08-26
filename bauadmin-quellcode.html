@@ -316,7 +316,12 @@ function normalize(db) {
       if (!db.beteiligte.some((b) => b.projektId === p.id && b.firmaId === fa.id)) db.beteiligte.push({ id: uid(), projektId: p.id, firmaId: fa.id, rolle: "Unternehmer", hauptpersonId: (fa.personen || [])[0]?.id || "" });
     });
   });
-  db.vertraege = db.vertraege.map((v) => ({ rabattPct: 0, pauschalabzug: 0, skontoPct: 0, bauabzuegePct: 0, rundung: 0, regieBudget: 0, teuerung: 0, rueckbehaltPct: 0, abnahme: "", garantieJahre: 2, buergschaft: false, ...v }));
+  db.vertraege = db.vertraege.map((v) => {
+    const n = { rabattPct: 0, pauschalabzug: 0, skontoPct: 0, bauabzuegePct: 0, rundung: 0, regieBudget: 0, teuerung: 0, rueckbehaltPct: 0, abnahme: "", garantieJahre: 2, buergschaft: false, pauschal: false, garantieArt: "", ...v };
+    // Das frühere Häkchen «Bürgschaft» geht in der Garantieart auf
+    if (!n.garantieArt) n.garantieArt = n.buergschaft ? "solidarbuergschaft" : (Number(n.rueckbehaltPct) > 0 ? "rueckbehalt" : "");
+    return n;
+  });
   db.rechnungen = db.rechnungen.map((r) => ({ typ: r.typ || "rechnung", beleg: null, vaId: "", ...r }));
   db.positionen.forEach((p) => {
     if (p.erwartungManuell !== undefined && p.erwartungManuell !== null && p.erwartungManuell !== "") {
@@ -371,7 +376,7 @@ const RSTATUS = { erfasst: "erfasst", geprueft: "geprüft", bezahlt: "bezahlt" }
 
 // Umlaute u.ä. auf WinAnsi beschränken — die Standardschriften können nichts anderes
 function pdfText(t) {
-  return String(t ?? "").replace(/[«»]/g, '"').replace(/[–—]/g, "-").replace(/[’‘]/g, "'").replace(/…/g, "...").replace(/[^\x20-\xFF\n]/g, "");
+  return String(t ?? "").replace(/[«»]/g, '"').replace(/[–—−]/g, "-").replace(/[’‘]/g, "'").replace(/…/g, "...").replace(/[^\x20-\xFF\n]/g, "");
 }
 function chfPdf(n) { return (Math.round((Number(n) || 0) * 100) / 100).toLocaleString("de-CH", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).replace(/ | /g, "'"); }
 function pct(n, stellen) { const v = Number(n) || 0; return (v > 0 ? "+" : "") + v.toFixed(stellen === undefined ? 1 : stellen) + "%"; }
@@ -648,51 +653,27 @@ function HilfeBox({ view }) {
 // =========================================================================
 //  DRUCKVORLAGEN
 // =========================================================================
-function PrintModal({ onClose, children }) {
-  useEffect(() => { document.body.classList.add("print-doc-open"); return () => document.body.classList.remove("print-doc-open"); }, []);
-  return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-stone-900/40 p-4 overflow-y-auto" onClick={onClose}>
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-3xl my-6" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-end gap-2 px-5 py-3 border-b border-stone-200">
-          <button className={btnPrimary} onClick={() => window.print()}>Drucken / PDF</button>
-          <button className={btnGhost} onClick={onClose}>Schliessen</button>
-        </div>
-        <div className="print-area p-10 text-sm leading-relaxed text-stone-900">{children}</div>
-      </div>
-    </div>
-  );
+const GARANTIEARTEN = [
+  { k: "", l: "— keine —" },
+  { k: "rueckbehalt", l: "Rückbehalt" },
+  { k: "bankgarantie", l: "Bankgarantie" },
+  { k: "solidarbuergschaft", l: "Solidarbürgschaft" },
+  { k: "versicherungsgarantie", l: "Versicherungsgarantie" },
+  { k: "garantieschein", l: "Garantieschein" },
+];
+const garantieArtLabel = (k) => (k ? (GARANTIEARTEN.find((g) => g.k === k) || {}).l : "") || "–";
+// Nummernvorschlag: dreistellige BKP-Gruppe der Position, laufend hochgezählt
+function vertragsNrVorschlag(vertraege, positionen, positionId) {
+  const pos = (positionen || []).find((p) => p.id === positionId);
+  if (!pos) return "";
+  const gruppe = String(pos.bkp || "").split(".")[0].slice(0, 3);
+  if (!gruppe) return "";
+  const belegt = (vertraege || []).map((v) => String(v.nr || "")).filter((n) => n.startsWith(gruppe + "."));
+  let i = 1;
+  while (belegt.includes(`${gruppe}.${String(i).padStart(2, "0")}`)) i++;
+  return `${gruppe}.${String(i).padStart(2, "0")}`;
 }
-function DocKopf({ projekt, typ, rollen }) {
-  const r = rollen || { bauherr: projekt?.bauherr || "", bauleitung: projekt?.bauleitung || "" };
-  return (
-    <div className="mb-8 pb-4 border-b-2 border-stone-800">
-      <div className="flex justify-between items-start gap-4">
-        <div>
-          <div className="text-[11px] uppercase tracking-widest text-stone-500">{typ}</div>
-          <div className="text-2xl font-bold mt-1">{projekt?.name}</div>
-          <div className="text-sm text-stone-600">{projekt?.strasse}{projekt?.strasse ? ", " : ""}{projekt?.plzOrt || projekt?.ort}</div>
-        </div>
-        <div className="text-right text-sm text-stone-600 shrink-0">
-          <div className="tabular-nums">{today()}</div>
-          <div className="mt-1">Bauherr: {r.bauherr}</div>
-          {r.bauleitung ? <div>Bauleitung: {r.bauleitung}</div> : null}
-        </div>
-      </div>
-    </div>
-  );
-}
-function DocUnterschriften({ links, rechts }) {
-  return (
-    <div className="grid grid-cols-2 gap-12 mt-16">
-      {[links, rechts].map((t, i) => (
-        <div key={i}>
-          <div className="border-t border-stone-800 pt-1 text-sm">{t}</div>
-          <div className="text-xs text-stone-500 mt-4">Ort / Datum: ____________________</div>
-        </div>
-      ))}
-    </div>
-  );
-}
+
 function garantieBis(v) {
   if (!v.abnahme) return null;
   const d = new Date(v.abnahme);
@@ -707,93 +688,6 @@ function garantieStatus(bis) {
   if (rest < 180) return { label: "läuft ab", cls: "bg-amber-100 text-amber-700" };
   return { label: "aktiv", cls: "bg-emerald-100 text-emerald-700" };
 }
-function WerkvertragDoc({ v, pos, projekt, firma, rollen }) {
-  // Beim Vertragsabschluss eingefrorene Angaben haben Vorrang vor dem heutigen Stammdatenstand
-  const snap = v.firmaSnap || null;
-  const uName = snap?.name || v.unternehmer;
-  const uAdr = snap ? [snap.strasse, [snap.plz, snap.ort].filter(Boolean).join(" ")].filter(Boolean).join(", ") : firmaAdresse(firma);
-  const uKontakt = snap?.kontakt || "";
-  const uTel = snap?.telefon || snap?.mobile || "";
-  const uMwst = snap?.mwstNr || firma?.mwstNr || "";
-  const bh = v.bauherrSnap || rollen || { bauherr: projekt?.bauherr || "", bauherrAdresse: projekt?.bauherrAdresse || "" };
-  const b = Number(v.betrag) || 0;
-  const s1 = b * (1 - (Number(v.rabattPct) || 0) / 100);
-  const s2 = s1 - (Number(v.pauschalabzug) || 0);
-  const s3 = s2 * (1 - (Number(v.skontoPct) || 0) / 100);
-  const s4 = s3 * (1 - (Number(v.bauabzuegePct) || 0) / 100);
-  const netto = s4 + (Number(v.rundung) || 0);
-  const gBis = garantieBis(v);
-  const Row = ({ label, val, strong, neg }) => (
-    <div className={`flex justify-between py-1 ${strong ? "font-bold border-t-2 border-stone-800 mt-1 pt-2" : "border-t border-stone-100"}`}>
-      <span>{label}</span><span className={`tabular-nums ${neg ? "text-stone-500" : ""}`}>{neg ? "− " : ""}{chf(val)}</span>
-    </div>
-  );
-  return (
-    <div>
-      <DocKopf projekt={projekt} typ={`Werkvertrag ${v.nr || ""}`} rollen={rollen} />
-      <div className="grid grid-cols-2 gap-8 mb-6">
-        <div><div className="text-xs uppercase tracking-wide text-stone-500 mb-1">Bauherrschaft</div><div className="font-medium">{bh.bauherr}</div><div className="text-stone-600">{bh.bauherrAdresse}</div>{bh.bauherrPerson ? <div className="text-stone-600">{bh.bauherrPerson}</div> : null}</div>
-        <div><div className="text-xs uppercase tracking-wide text-stone-500 mb-1">Unternehmer</div><div className="font-medium">{uName}</div>{uAdr ? <div className="text-stone-600">{uAdr}</div> : null}{uKontakt ? <div className="text-stone-600">{uKontakt}{uTel ? " · " + uTel : ""}</div> : null}{uMwst ? <div className="text-stone-500 text-xs mt-0.5">{uMwst}</div> : null}</div>
-      </div>
-      <div className="mb-6"><div className="text-xs uppercase tracking-wide text-stone-500 mb-1">Gegenstand</div><div>Arbeitsgattung <span className="font-medium">{pos ? `BKP ${pos.bkp} ${pos.bezeichnung}` : "—"}</span> gemäss Leistungsverzeichnis und den Bestimmungen der Norm SIA 118.</div></div>
-      <div className="mb-6 max-w-md">
-        <div className="text-xs uppercase tracking-wide text-stone-500 mb-1">Vergütung (exkl. MwSt)</div>
-        <Row label="Vertragssumme brutto" val={b} />
-        {Number(v.rabattPct) ? <Row label={`Rabatt ${v.rabattPct}%`} val={s1 - b} neg /> : null}
-        {Number(v.pauschalabzug) ? <Row label="Pauschalabzug" val={Number(v.pauschalabzug)} neg /> : null}
-        {Number(v.skontoPct) ? <Row label={`Skonto ${v.skontoPct}%`} val={s3 - s2} neg /> : null}
-        {Number(v.bauabzuegePct) ? <Row label={`Allg. Bauabzüge ${v.bauabzuegePct}%`} val={s4 - s3} neg /> : null}
-        {Number(v.rundung) ? <Row label="Rundung" val={Number(v.rundung)} /> : null}
-        <Row label="Werkvertragssumme netto" val={netto} strong />
-      </div>
-      <div className="grid grid-cols-2 gap-8 mb-6 text-sm">
-        <div>
-          <div className="text-xs uppercase tracking-wide text-stone-500 mb-1">Zahlung & Sicherheit</div>
-          <div>Rückbehalt: <span className="font-medium">{Number(v.rueckbehaltPct) ? `${v.rueckbehaltPct}% (${chf(netto * v.rueckbehaltPct / 100)})` : "keiner"}</span></div>
-          <div>Solidarbürgschaft: <span className="font-medium">{v.buergschaft ? "ja, beizubringen" : "keine"}</span></div>
-          {Number(v.regieBudget) ? <div>Regiebudget: <span className="font-medium tabular-nums">{chf(v.regieBudget)}</span></div> : null}
-          {Number(v.teuerung) ? <div>Teuerung: <span className="font-medium tabular-nums">{chf(v.teuerung)}</span></div> : null}
-        </div>
-        <div>
-          <div className="text-xs uppercase tracking-wide text-stone-500 mb-1">Garantie</div>
-          <div>Garantiefrist: <span className="font-medium">{Number(v.garantieJahre) || 0} Jahre ab Abnahme</span></div>
-          <div>Abnahme: <span className="font-medium tabular-nums">{v.abnahme || "offen"}</span></div>
-          {gBis ? <div>Garantie bis: <span className="font-medium tabular-nums">{gBis}</span></div> : null}
-        </div>
-      </div>
-      <DocUnterschriften links={`Die Bauherrschaft: ${projekt?.bauherr || ""}`} rechts={`Der Unternehmer: ${v.unternehmer || ""}`} />
-    </div>
-  );
-}
-function ZahlungsfreigabeDoc({ r, v, posLabel, projekt, soll, faktTotal, bezahltTotal, rollen }) {
-  return (
-    <div>
-      <DocKopf projekt={projekt} typ="Zahlungsfreigabe" rollen={rollen} />
-      <div className="grid grid-cols-2 gap-8 mb-6">
-        <div><div className="text-xs uppercase tracking-wide text-stone-500 mb-1">Rechnung</div>
-          <div>{RTYP[r.typ] || "Rechnung"} <span className="font-medium">{r.nr || "—"}</span> vom <span className="tabular-nums">{r.datum}</span></div>
-          <div>Unternehmer: <span className="font-medium">{v ? v.unternehmer : "—"}</span>{v && v.nr ? ` · Vertrag ${v.nr}` : ""}</div>
-          <div>Position: {posLabel}</div>
-        </div>
-        <div><div className="text-xs uppercase tracking-wide text-stone-500 mb-1">Stand Vertrag (netto)</div>
-          <div className="flex justify-between max-w-[240px]"><span>Werkvertrag + NT:</span><span className="tabular-nums">{chf(soll)}</span></div>
-          <div className="flex justify-between max-w-[240px]"><span>Fakturiert (inkl. diese):</span><span className={`tabular-nums ${faktTotal > soll && soll > 0 ? "font-bold" : ""}`}>{chf(faktTotal)}</span></div>
-          <div className="flex justify-between max-w-[240px]"><span>Davon bezahlt:</span><span className="tabular-nums">{chf(bezahltTotal)}</span></div>
-        </div>
-      </div>
-      <div className="border-2 border-stone-800 rounded p-4 mb-4 flex items-baseline justify-between">
-        <span className="font-medium">Zur Zahlung freigegeben (netto, exkl. MwSt)</span>
-        <span className="text-2xl font-bold tabular-nums">CHF {chf(r.betrag)}</span>
-      </div>
-      {faktTotal > soll && soll > 0 ? <div className="text-sm mb-4 border border-stone-800 rounded p-3">⚠ Achtung: Mit dieser Rechnung übersteigt die fakturierte Summe die Vertragssumme um <span className="font-bold tabular-nums">{chf(faktTotal - soll)}</span>. Freigabe nur mit Begründung / Nachtrag.</div> : null}
-      <DocUnterschriften links={`Geprüft Bauleitung: ${(rollen||{}).bauleitung || projekt?.bauleitung || ""}`} rechts={`Freigabe Bauherrschaft: ${(rollen||{}).bauherr || projekt?.bauherr || ""}`} />
-    </div>
-  );
-}
-
-// =========================================================================
-//  KOSTENSTAND-VERLAUF (Chart)
-// =========================================================================
 const VERLAUF_SERIEN = [
   { key: "prognose", label: "Prognose", col: "#1d4ed8", dash: "" },
   { key: "bezahlt", label: "Bezahlt", col: "#0d9488", dash: "" },
@@ -1084,7 +978,6 @@ const LISTEN_VORLAGEN = [
 function ListenView({ db, dispatch, projektId, projekt, d }) {
   const listen = (db.listen || []).filter((l) => l.projektId === projektId);
   const [sel, setSel] = useState("");
-  const [print, setPrint] = useState(null);
   const beteiligte = projektBeteiligte(db, projektId);
   const rollenImProjekt = useMemo(() => [...new Set(beteiligte.map((b) => b.rolle || "Ohne Rolle"))].sort((a, b) => a.localeCompare(b, "de")), [beteiligte]);
 
@@ -1121,7 +1014,12 @@ function ListenView({ db, dispatch, projektId, projekt, d }) {
           <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3 items-end">
             <Field label="Listenname"><input className={inputCls} value={aktiv.name} onChange={(e) => upd(aktiv.id, { name: e.target.value })} /></Field>
             <div className="flex gap-2">
-              <button className={btnGhost} onClick={() => setPrint(aktiv)}>🖨 Drucken</button>
+              <button className={btnGhost} onClick={async () => {
+                try {
+                  const bytes = await baueListePdf(aktiv, { zeilen: listenZeilen(aktiv, db, d, projektId), projekt, rollen: projektRollen(db, projekt) });
+                  pdfSpeichern(bytes, `${(aktiv.name || "Liste").replace(/[^\w]+/g, "_")}.pdf`);
+                } catch (e) { window.alert("Die Liste konnte nicht erzeugt werden: " + e.message); }
+              }}>📄 PDF</button>
               <button className="text-red-600 text-xs hover:underline px-2" onClick={() => { dispatch({ type: "remove", coll: "listen", id: aktiv.id }); setSel(""); }}>Löschen</button>
             </div>
           </div>
@@ -1150,8 +1048,7 @@ function ListenView({ db, dispatch, projektId, projekt, d }) {
         </div>
       )}
 
-      {print && <PrintModal onClose={() => setPrint(null)}><ListeDoc liste={print} db={db} d={d} projekt={projekt} projektId={projektId} /></PrintModal>}
-    </div>
+          </div>
   );
 }
 
@@ -1190,34 +1087,6 @@ function ListenVorschau({ liste, db, d, projektId }) {
         ))}</tbody>
       </table>
       <div className="text-xs text-stone-400 mt-2">{zeilen.length} Eintr{zeilen.length === 1 ? "ag" : "äge"}</div>
-    </div>
-  );
-}
-
-function ListeDoc({ liste, db, d, projekt, projektId }) {
-  const zeilen = listenZeilen(liste, db, d, projektId);
-  const gruppen = [];
-  zeilen.forEach((z) => { const g = gruppen.find((x) => x.rolle === z.rolle); if (g) g.zeilen.push(z); else gruppen.push({ rolle: z.rolle, zeilen: [z] }); });
-  return (
-    <div className="text-[13px] leading-snug">
-      <DocKopf projekt={projekt} typ={liste.name} rollen={projektRollen(db, projekt)} />
-      {!zeilen.length ? <div className="text-stone-500">Diese Liste ist leer.</div> : gruppen.map((g) => (
-        <div key={g.rolle} className="mb-5 break-inside-avoid">
-          <div className="text-xs uppercase tracking-wide text-stone-500 border-b border-stone-300 pb-1 mb-2">{g.rolle}</div>
-          <table className="w-full">
-            <thead className="text-[11px] text-stone-500"><tr><th className="text-left font-medium pb-1">Firma / Adresse</th><th className="text-left font-medium pb-1">Person</th><th className="text-left font-medium pb-1">Telefon</th><th className="text-left font-medium pb-1">E-Mail</th></tr></thead>
-            <tbody>{g.zeilen.map((z, i) => (
-              <tr key={i} className="align-top border-t border-stone-100">
-                <td className="py-1.5 pr-3"><div className="font-medium">{z.name}</div><div className="text-stone-500 text-[11px]">{z.adresse || "—"}</div></td>
-                <td className="py-1.5 pr-3">{personName(z.person) || "—"}{z.person?.funktion ? <div className="text-stone-500 text-[11px]">{z.person.funktion}</div> : null}</td>
-                <td className="py-1.5 pr-3 tabular-nums">{z.mobile ? <div>{z.mobile}</div> : null}{z.festnetz ? <div className="text-stone-500">{z.festnetz}</div> : null}{!z.mobile && !z.festnetz ? "—" : null}</td>
-                <td className="py-1.5">{z.email || "—"}</td>
-              </tr>
-            ))}</tbody>
-          </table>
-        </div>
-      ))}
-      <div className="text-[11px] text-stone-400 mt-6 border-t border-stone-200 pt-2">{zeilen.length} Eintr{zeilen.length === 1 ? "ag" : "äge"} · Stand {new Date().toLocaleDateString("de-CH")}</div>
     </div>
   );
 }
@@ -1286,7 +1155,7 @@ function App() {
   const nav = [
     ["projekt", "Projekt"], ["beteiligte", "Beteiligte"], ["listen", "Listen"], ["dashboard", "Kostenübersicht"], ["kv", "KV / BKP-Positionen"],
     ["mutationen", "Mutationen"], ["umbuchungen", "Umbuchungen"], ["vertraege", "Verträge & Nachträge"],
-    ["rechnungen", "Rechnungen"], ["vergauftraege", "Vergütungsaufträge"], ["lv", "Leistungsverzeichnisse"], ["angebote", "Angebote & Vergleich"], ["rapporte", "Rapporte"],
+    ["rechnungen", "Rechnungen"], ["vergauftraege", "Vergütungsaufträge"], ["lv", "Leistungsverzeichnisse"], ["angebote", "Angebotsvergleiche"], ["rapporte", "Rapporte"],
     ["erwartungen", "Erwartungen"], ["abrechnung", "Bauabrechnung"],
   ];
 
@@ -1335,7 +1204,7 @@ function App() {
           {view === "beteiligte" && <ProjektBeteiligteView db={db} dispatch={dispatch} projektId={db.aktiv} firmen={firmen} />}
           {view === "listen" && <ListenView db={db} dispatch={dispatch} projektId={db.aktiv} projekt={projekt} d={d} />}
           {view === "dashboard" && <Dashboard ks={ks} d={d} dispatch={dispatch} projektId={db.aktiv} />}
-          {view === "kv" && <KvView d={d} dispatch={dispatch} projektId={db.aktiv} ks={ks} />}
+          {view === "kv" && <KvView d={d} dispatch={dispatch} projektId={db.aktiv} ks={ks} projekt={projekt} db={db} />}
           {view === "mutationen" && <MutationenView d={d} dispatch={dispatch} projektId={db.aktiv} />}
           {view === "umbuchungen" && <UmbuchungenView d={d} dispatch={dispatch} projektId={db.aktiv} />}
           {view === "vertraege" && <VertraegeView d={d} dispatch={dispatch} projektId={db.aktiv} projekt={projekt} firmen={firmen} db={db} />}
@@ -1500,7 +1369,11 @@ function Dashboard({ ks, d, dispatch, projektId }) {
   );
 }
 
-function KvView({ d, dispatch, projektId, ks }) {
+function KvView({ d, dispatch, projektId, ks, projekt, db }) {
+  const rollen = projektRollen(db, projekt);
+  const [kvUmfang, setKvUmfang] = useState("kv");
+  const [kvMwst, setKvMwst] = useState(false);
+  const [kvBusy, setKvBusy] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [edit, setEdit] = useState(null);
   return (
@@ -1508,6 +1381,21 @@ function KvView({ d, dispatch, projektId, ks }) {
       <div className="flex gap-2 flex-wrap">
         <button className={btnPrimary} onClick={() => setEdit({ bkp: "", bezeichnung: "", kv: "", parentId: null })}>+ Hauptposition</button>
         <button className={btnGhost} onClick={() => setImportOpen(true)}>KV importieren (CSV)</button>
+        <div className="flex items-center gap-2 ml-auto">
+          <select className="text-xs rounded border border-stone-300 px-2 py-1.5 bg-white" value={kvUmfang} onChange={(e) => setKvUmfang(e.target.value)}>
+            <option value="kv">Kostenvoranschlag</option>
+            <option value="voll">Vollständige Kostenübersicht</option>
+          </select>
+          <label className="inline-flex items-center gap-1.5 text-xs text-stone-600"><input type="checkbox" checked={kvMwst} onChange={(e) => setKvMwst(e.target.checked)} /> inkl. MwSt</label>
+          <button className={btnGhost} disabled={kvBusy || !ks.ordered.length} onClick={async () => {
+            setKvBusy(true);
+            try {
+              const bytes = await baueKvPdf({ ks, projekt, rollen, umfang: kvUmfang, mitMwst: kvMwst });
+              pdfSpeichern(bytes, `${kvUmfang === "voll" ? "Kostenuebersicht" : "Kostenvoranschlag"}_${(projekt?.name || "").replace(/[^\w]+/g, "_")}.pdf`);
+            } catch (e) { window.alert("Das PDF konnte nicht erzeugt werden: " + e.message); }
+            setKvBusy(false);
+          }}>{kvBusy ? "erzeugt…" : "📄 PDF"}</button>
+        </div>
       </div>
       {!ks.ordered.length ? <Empty text="Noch keine BKP-Positionen. Importiere den KV oder erfasse Positionen einzeln." /> : (
         <div className={`${card} overflow-x-auto`}>
@@ -1644,11 +1532,11 @@ function UmbuchungenView({ d, dispatch, projektId }) {
 
 function VertraegeView({ d, dispatch, projektId, projekt, firmen, db }) {
   const rollen = projektRollen(db, projekt);
+  const [offeneVertraege, setOffeneVertraege] = useState([]);
   const [vForm, setVForm] = useState(null);
   const [ntFor, setNtFor] = useState(null);
-  const [printV, setPrintV] = useState(null);
   const posOrder = useMemo(() => { const m = {}; orderedPositions(d.positionen).forEach((p, i) => { m[p.id] = i; }); return m; }, [d.positionen]);
-  const garantieRows = d.vertraege.filter((v) => v.abnahme || Number(v.rueckbehaltPct) > 0 || v.buergschaft);
+  const garantieRows = d.vertraege.filter((v) => v.abnahme || Number(v.rueckbehaltPct) > 0 || v.garantieArt);
   const sorted = useMemo(() => [...d.vertraege].sort((a, b) => { const pa = posOrder[a.positionId] ?? 99999, pb = posOrder[b.positionId] ?? 99999; return pa !== pb ? pa - pb : String(a.unternehmer || "").localeCompare(String(b.unternehmer || ""), "de"); }), [d.vertraege, posOrder]);
   const totalBeauftragt = d.vertraege.reduce((s, v) => { const ntGen = d.nachtraege.filter((n) => n.vertragId === v.id && n.status === "genehmigt").reduce((a, n) => a + konditionenNetto(n.betrag, v, false), 0); return s + konditionenNetto(v.betrag, v, true) + ntGen + (Number(v.teuerung) || 0); }, 0);
 
@@ -1665,8 +1553,21 @@ function VertraegeView({ d, dispatch, projektId, projekt, firmen, db }) {
     const rapSum = d.rapporte.filter((r) => r.vertragId === v.id).reduce((s, r) => s + rapportNetto(r, v), 0);
     const regieUeber = Math.max(0, rapSum - (Number(v.regieBudget) || 0));
     const beauftragt = netto + ntGen + (Number(v.teuerung) || 0);
+    const fakt = d.rechnungen.filter((r) => r.vertragId === v.id).reduce((s, r) => s + (Number(r.betrag) || 0), 0);
+    const offen = offeneVertraege.includes(v.id);
     rows.push(
-      <div key={v.id} className={`${card} p-4`}>
+      <div key={v.id} className={card}>
+        <button className="w-full text-left px-3 py-2.5 flex items-center gap-2.5 hover:bg-stone-50/70 rounded-xl" onClick={() => setOffeneVertraege(offen ? offeneVertraege.filter((x) => x !== v.id) : [...offeneVertraege, v.id])}>
+          <span className={`text-stone-400 text-[10px] shrink-0 ${offen ? "rotate-90" : ""}`} style={{ display: "inline-block", transition: "transform .15s" }}>▶</span>
+          <span className="shrink-0 inline-block bg-orange-50 text-orange-800 font-semibold tabular-nums text-xs rounded px-1.5 py-0.5">{pos ? pos.bkp : "—"}</span>
+          <span className="font-medium tabular-nums text-sm shrink-0 whitespace-nowrap min-w-[58px]">{v.nr || "—"}</span>
+          <span className="font-medium truncate flex-1 min-w-0">{v.unternehmer}</span>
+          {v.pauschal ? <span className="text-[10px] bg-stone-100 text-stone-600 rounded px-1.5 py-0.5 shrink-0">pauschal</span> : null}
+          <span className="text-xs text-stone-500 shrink-0 hidden md:inline w-[110px] text-right">{nts.length ? `${nts.length} NT · ${chf(ntGen)}` : "keine NT"}</span>
+          <span className="text-xs text-stone-500 shrink-0 hidden sm:inline w-[80px] text-right">{beauftragt > 0 ? `${Math.round(100 * fakt / beauftragt)}% fakt.` : "–"}</span>
+          <span className="tabular-nums font-semibold shrink-0 w-[92px] text-right">{chf(beauftragt)}</span>
+        </button>
+        {offen && <div className="px-4 pb-4 border-t border-stone-100 pt-3">
         <div className="flex items-start gap-3">
           <span className="shrink-0 inline-block bg-orange-50 text-orange-800 font-semibold tabular-nums text-sm rounded px-2 py-1 mt-0.5">{pos ? pos.bkp : "—"}</span>
           <div className="flex-1 min-w-0">
@@ -1688,19 +1589,24 @@ function VertraegeView({ d, dispatch, projektId, projekt, firmen, db }) {
             </div>
             {(hatKonditionen(v) || ntPend > 0) && <div className="text-xs text-stone-500 mt-2">{hatKonditionen(v) ? `Konditionen: ${konditionenText(v)}` : ""}{hatKonditionen(v) && ntPend > 0 ? " · " : ""}{ntPend > 0 ? `NT pendent ${chf(ntPend)} netto` : ""}</div>}
             {Number(v.regieBudget) > 0 && <div className="text-xs mt-1"><span className="text-stone-500">Regiebudget {chf(v.regieBudget)} · verbraucht {chf(rapSum)} netto</span>{regieUeber > 0 && <span className="text-red-600 font-medium"> · Überschuss +{chf(regieUeber)} → Erwartung</span>}</div>}
-            {(Number(v.rueckbehaltPct) > 0 || v.abnahme || v.buergschaft) && (() => { const gBis = garantieBis(v); const gs = garantieStatus(gBis); return (
+            {(Number(v.rueckbehaltPct) > 0 || v.abnahme || v.garantieArt) && (() => { const gBis = garantieBis(v); const gs = garantieStatus(gBis); return (
               <div className="text-xs text-stone-500 mt-1">
                 {Number(v.rueckbehaltPct) > 0 ? `Rückbehalt ${v.rueckbehaltPct}% (${chf(beauftragt * v.rueckbehaltPct / 100)})` : ""}
                 {Number(v.rueckbehaltPct) > 0 && (v.abnahme || v.buergschaft) ? " · " : ""}
                 {v.abnahme ? <>Garantie bis <span className="tabular-nums">{gBis}</span> {gs && <span className={`rounded px-1.5 py-0.5 ${gs.cls}`}>{gs.label}</span>}</> : ""}
-                {v.buergschaft ? (v.abnahme || Number(v.rueckbehaltPct) > 0 ? " · " : "") + "Solidarbürgschaft" : ""}
+                {v.garantieArt ? (v.abnahme || Number(v.rueckbehaltPct) > 0 ? " · " : "") + garantieArtLabel(v.garantieArt) : ""}
               </div>
             ); })()}
           </div>
         </div>
         <div className="mt-3 border-t border-stone-100 pt-3">
           <div className="flex items-center justify-between mb-2"><span className="text-xs font-medium text-stone-500 uppercase tracking-wide">Nachträge <span className="normal-case font-normal text-stone-400">(erben %-Konditionen)</span></span>
-            <div className="flex gap-3"><button className="text-stone-600 text-xs hover:underline" onClick={() => setPrintV(v)}>🖨 Werkvertrag</button><button className="text-stone-500 text-xs hover:underline" title="Die im Vertrag eingefrorenen Firmenangaben durch den heutigen Stand aus dem Adressstamm ersetzen" onClick={() => { const fa = findFirma(firmen, v.firmaId, v.unternehmer); if (!fa) { window.alert("Diese Firma steht nicht (mehr) im Adressstamm."); return; } const bet = (db.beteiligte || []).find((x) => x.projektId === projektId && x.firmaId === fa.id); if (window.confirm(`Firmenangaben im Vertrag durch den heutigen Stand von «${fa.name}» ersetzen?`)) dispatch({ type: "update", coll: "vertraege", id: v.id, patch: { firmaId: fa.id, unternehmer: fa.name, firmaSnap: firmaSnapshot(fa, bet?.hauptpersonId) } }); }}>Adresse aktualisieren</button><button className="text-orange-800 text-xs hover:underline" onClick={() => setNtFor({ vertragId: v.id, _v: v, bezeichnung: "", betrag: "", status: "pendent", datum: today() })}>+ Nachtrag</button><button className="text-orange-800 text-xs hover:underline" onClick={() => setVForm(v)}>Bearbeiten</button><button className="text-red-600 text-xs hover:underline" onClick={() => dispatch({ type: "remove", coll: "vertraege", id: v.id })}>Löschen</button></div>
+            <div className="flex gap-3"><button className="text-stone-600 text-xs hover:underline" onClick={async () => {
+              try {
+                const bytes = await baueWerkvertragPdf(v, { pos: d.positionen.find((x) => x.id === v.positionId), projekt, rollen, firma: findFirma(firmen, v.firmaId, v.unternehmer), d });
+                pdfSpeichern(bytes, `Werkvertrag_${(v.nr || v.unternehmer || "").replace(/[^\w.]+/g, "_")}.pdf`);
+              } catch (e) { window.alert("Der Werkvertrag konnte nicht erzeugt werden: " + e.message); }
+            }}>📄 Werkvertrag</button><button className="text-stone-500 text-xs hover:underline" title="Die im Vertrag eingefrorenen Firmenangaben durch den heutigen Stand aus dem Adressstamm ersetzen" onClick={() => { const fa = findFirma(firmen, v.firmaId, v.unternehmer); if (!fa) { window.alert("Diese Firma steht nicht (mehr) im Adressstamm."); return; } const bet = (db.beteiligte || []).find((x) => x.projektId === projektId && x.firmaId === fa.id); if (window.confirm(`Firmenangaben im Vertrag durch den heutigen Stand von «${fa.name}» ersetzen?`)) dispatch({ type: "update", coll: "vertraege", id: v.id, patch: { firmaId: fa.id, unternehmer: fa.name, firmaSnap: firmaSnapshot(fa, bet?.hauptpersonId) } }); }}>Adresse aktualisieren</button><button className="text-orange-800 text-xs hover:underline" onClick={() => setNtFor({ vertragId: v.id, _v: v, bezeichnung: "", betrag: "", status: "pendent", datum: today() })}>+ Nachtrag</button><button className="text-orange-800 text-xs hover:underline" onClick={() => setVForm(v)}>Bearbeiten</button><button className="text-red-600 text-xs hover:underline" onClick={() => dispatch({ type: "remove", coll: "vertraege", id: v.id })}>Löschen</button></div>
           </div>
           {!nts.length ? <div className="text-xs text-stone-400">keine Nachträge</div> : (
             <table className="w-full text-sm"><tbody>{nts.map((n) => (
@@ -1713,6 +1619,7 @@ function VertraegeView({ d, dispatch, projektId, projekt, firmen, db }) {
               </tr>))}</tbody></table>
           )}
         </div>
+        </div>}
       </div>
     );
   });
@@ -1726,7 +1633,7 @@ function VertraegeView({ d, dispatch, projektId, projekt, firmen, db }) {
       {garantieRows.length > 0 && (
         <div className={`${card} overflow-x-auto`}>
           <div className="px-3 py-2 bg-stone-50 text-sm font-medium border-b border-stone-200">Rückbehalt & Garantien</div>
-          <table className="w-full text-sm"><thead className="text-stone-500 text-xs"><tr><th className="text-left font-medium px-3 py-1.5">Unternehmer</th><th className="text-right font-medium px-3 py-1.5">Rückbehalt</th><th className="text-left font-medium px-3 py-1.5">Abnahme</th><th className="text-left font-medium px-3 py-1.5">Garantie bis</th><th className="text-left font-medium px-3 py-1.5">Status</th><th className="text-left font-medium px-3 py-1.5">Bürgschaft</th></tr></thead>
+          <table className="w-full text-sm"><thead className="text-stone-500 text-xs"><tr><th className="text-left font-medium px-3 py-1.5">Unternehmer</th><th className="text-right font-medium px-3 py-1.5">Rückbehalt</th><th className="text-left font-medium px-3 py-1.5">Abnahme</th><th className="text-left font-medium px-3 py-1.5">Garantie bis</th><th className="text-left font-medium px-3 py-1.5">Status</th><th className="text-left font-medium px-3 py-1.5">Garantieart</th></tr></thead>
           <tbody>{garantieRows.map((v) => {
             const gBis = garantieBis(v); const gs = garantieStatus(gBis);
             const ntG = d.nachtraege.filter((n) => n.vertragId === v.id && n.status === "genehmigt").reduce((s, n) => s + konditionenNetto(n.betrag, v, false), 0);
@@ -1738,7 +1645,7 @@ function VertraegeView({ d, dispatch, projektId, projekt, firmen, db }) {
                 <td className="px-3 py-1.5 tabular-nums">{v.abnahme || "offen"}</td>
                 <td className="px-3 py-1.5 tabular-nums">{gBis || "–"}</td>
                 <td className="px-3 py-1.5">{gs ? <span className={`text-xs rounded px-1.5 py-0.5 ${gs.cls}`}>{gs.label}</span> : "–"}</td>
-                <td className="px-3 py-1.5">{v.buergschaft ? "ja" : "–"}</td>
+                <td className="px-3 py-1.5">{garantieArtLabel(v.garantieArt)}</td>
               </tr>
             );
           })}</tbody></table>
@@ -1746,7 +1653,7 @@ function VertraegeView({ d, dispatch, projektId, projekt, firmen, db }) {
       )}
       {!d.vertraege.length ? <Empty text="Keine Verträge erfasst." /> : rows}
 
-      {vForm && <VertragEditor v={vForm} positionen={d.positionen} firmen={firmen} onClose={() => setVForm(null)} onSave={(v) => {
+      {vForm && <VertragEditor v={vForm} positionen={d.positionen} firmen={firmen} vertraege={d.vertraege} onClose={() => setVForm(null)} onSave={(v) => {
         let fa = findFirma(firmen, v.firmaId, v.unternehmer);
         if (!fa && v.unternehmer) { fa = { id: uid(), name: v.unternehmer, strasse: "", plz: "", ort: "", land: "Schweiz", email: "", website: "", mwstNr: "", bkp: "", ampel: "", personen: [] }; dispatch({ type: "add", coll: "firmen", item: fa }); }
         // Firmendaten und Bauherrschaft beim Abschluss einfrieren
@@ -1756,12 +1663,7 @@ function VertraegeView({ d, dispatch, projektId, projekt, firmen, db }) {
         if (v.id) dispatch({ type: "update", coll: "vertraege", id: v.id, patch: vv }); else dispatch({ type: "add", coll: "vertraege", item: { id: uid(), projektId, ...vv } });
         setVForm(null);
       }} />}
-      {printV && (
-        <PrintModal onClose={() => setPrintV(null)}>
-          <WerkvertragDoc v={printV} pos={d.positionen.find((p) => p.id === printV.positionId)} projekt={projekt} firma={findFirma(firmen, printV.firmaId, printV.unternehmer)} rollen={rollen} />
-        </PrintModal>
-      )}
-      {ntFor && (
+            {ntFor && (
         <Modal title="Nachtrag erfassen" onClose={() => setNtFor(null)}>
           <div className="space-y-3">
             <Field label="Bezeichnung"><input className={inputCls} value={ntFor.bezeichnung} onChange={(e) => setNtFor({ ...ntFor, bezeichnung: e.target.value })} placeholder="NT1 Zusatzleistung" /></Field>
@@ -1778,9 +1680,16 @@ function VertraegeView({ d, dispatch, projektId, projekt, firmen, db }) {
   );
 }
 
-function VertragEditor({ v, positionen, firmen, onClose, onSave }) {
-  const [f, setF] = useState({ positionId: v.positionId || "", unternehmer: v.unternehmer || "", firmaId: v.firmaId || "", firmaSnap: v.firmaSnap || null, bauherrSnap: v.bauherrSnap || null, nr: v.nr || "", betrag: v.betrag ?? "", rabattPct: v.rabattPct ?? "", pauschalabzug: v.pauschalabzug ?? "", skontoPct: v.skontoPct ?? "", bauabzuegePct: v.bauabzuegePct ?? "", rundung: v.rundung ?? "", regieBudget: v.regieBudget ?? "", teuerung: v.teuerung ?? "", rueckbehaltPct: v.rueckbehaltPct ?? "", abnahme: v.abnahme || "", garantieJahre: v.garantieJahre ?? 2, buergschaft: !!v.buergschaft, datum: v.datum || today() });
+function VertragEditor({ v, positionen, firmen, onClose, onSave, vertraege }) {
+  const [f, setF] = useState({ pauschal: !!v.pauschal, garantieArt: v.garantieArt || "", positionId: v.positionId || "", unternehmer: v.unternehmer || "", firmaId: v.firmaId || "", firmaSnap: v.firmaSnap || null, bauherrSnap: v.bauherrSnap || null, nr: v.nr || "", betrag: v.betrag ?? "", rabattPct: v.rabattPct ?? "", pauschalabzug: v.pauschalabzug ?? "", skontoPct: v.skontoPct ?? "", bauabzuegePct: v.bauabzuegePct ?? "", rundung: v.rundung ?? "", regieBudget: v.regieBudget ?? "", teuerung: v.teuerung ?? "", rueckbehaltPct: v.rueckbehaltPct ?? "", abnahme: v.abnahme || "", garantieJahre: v.garantieJahre ?? 2, buergschaft: !!v.buergschaft, datum: v.datum || today() });
   const opts = posSelectOptions(positionen);
+  // Bei neuen Verträgen die Nummer aus der BKP-Gruppe vorbelegen
+  useEffect(() => {
+    if (v.id || !f.positionId || f.nr) return;
+    const vor = vertragsNrVorschlag(vertraege, positionen, f.positionId);
+    if (vor) setF((x) => ({ ...x, nr: vor }));
+  }, [f.positionId]);
+  const nrDoppelt = !!f.nr && (vertraege || []).some((x) => x.id !== v.id && String(x.nr || "").trim() === String(f.nr).trim());
   const k = { rabattPct: parseBetrag(f.rabattPct), pauschalabzug: parseBetrag(f.pauschalabzug), skontoPct: parseBetrag(f.skontoPct), bauabzuegePct: parseBetrag(f.bauabzuegePct), rundung: parseBetrag(f.rundung) };
   const netto = konditionenNetto(parseBetrag(f.betrag), k, true);
   return (
@@ -1788,7 +1697,8 @@ function VertragEditor({ v, positionen, firmen, onClose, onSave }) {
       <div className="space-y-4">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <Field label="BKP-Position"><select className={inputCls} value={f.positionId} onChange={(e) => setF({ ...f, positionId: e.target.value })}><option value="">wählen…</option>{opts.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</select></Field>
-          <div className="grid grid-cols-2 gap-3"><Field label="Unternehmer"><input className={inputCls} list="firmenliste" value={f.unternehmer} onChange={(e) => { const name = e.target.value; const fa = (firmen || []).find((x) => x.name === name); setF({ ...f, unternehmer: name, firmaId: fa ? fa.id : "" }); }} placeholder="aus Adressstamm oder neu" /><datalist id="firmenliste">{(firmen || []).map((fa) => <option key={fa.id} value={fa.name} />)}</datalist></Field><Field label="Vertrags-Nr."><input className={inputCls} value={f.nr} onChange={(e) => setF({ ...f, nr: e.target.value })} /></Field></div>
+          <div className="grid grid-cols-2 gap-3"><Field label="Unternehmer"><input className={inputCls} list="firmenliste" value={f.unternehmer} onChange={(e) => { const name = e.target.value; const fa = (firmen || []).find((x) => x.name === name); setF({ ...f, unternehmer: name, firmaId: fa ? fa.id : "" }); }} placeholder="aus Adressstamm oder neu" /><datalist id="firmenliste">{(firmen || []).map((fa) => <option key={fa.id} value={fa.name} />)}</datalist></Field><Field label="Vertrags-Nr."><input className={inputCls} value={f.nr} onChange={(e) => setF({ ...f, nr: e.target.value })} placeholder="z.B. 222.01" /><div className="text-xs mt-1">{nrDoppelt ? <span className="text-amber-700">Diese Nummer ist in diesem Projekt bereits vergeben.</span> : <span className="text-stone-400">dreistellige BKP-Gruppe, laufend</span>}</div></Field></div>
+          <label className="inline-flex items-center gap-2 text-sm"><input type="checkbox" checked={!!f.pauschal} onChange={(e) => setF({ ...f, pauschal: e.target.checked })} /> Pauschalvertrag</label>
         </div>
         <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
           <Field label="Vertragssumme brutto"><input className={inputCls} value={f.betrag} onChange={(e) => setF({ ...f, betrag: e.target.value })} /></Field>
@@ -1815,17 +1725,322 @@ function VertragEditor({ v, positionen, firmen, onClose, onSave }) {
             <Field label="Rückbehalt %"><input className={inputCls} value={f.rueckbehaltPct} onChange={(e) => setF({ ...f, rueckbehaltPct: e.target.value })} placeholder="z.B. 10" /></Field>
             <Field label="Abnahmedatum"><input type="date" className={inputCls} value={f.abnahme} onChange={(e) => setF({ ...f, abnahme: e.target.value })} /></Field>
             <Field label="Garantie (Jahre)"><input className={inputCls} value={f.garantieJahre} onChange={(e) => setF({ ...f, garantieJahre: e.target.value })} /></Field>
-            <label className="inline-flex items-center gap-2 text-sm pb-2"><input type="checkbox" checked={f.buergschaft} onChange={(e) => setF({ ...f, buergschaft: e.target.checked })} /> Solidarbürgschaft</label>
+            <Field label="Garantieart"><select className={inputCls} value={f.garantieArt || ""} onChange={(e) => setF({ ...f, garantieArt: e.target.value })}>{GARANTIEARTEN.map((g) => <option key={g.k} value={g.k}>{g.l}</option>)}</select></Field>
           </div>
           {f.abnahme && <div className="text-xs text-stone-500 mt-2">Garantie läuft bis <span className="font-medium tabular-nums">{garantieBis({ abnahme: f.abnahme, garantieJahre: parseBetrag(f.garantieJahre) }) || "—"}</span></div>}
         </div>
-        <div className="flex justify-end gap-2"><button className={btnGhost} onClick={onClose}>Abbrechen</button><button className={btnPrimary} disabled={!f.positionId || !f.unternehmer} onClick={() => onSave({ ...v, ...f, betrag: parseBetrag(f.betrag), rabattPct: parseBetrag(f.rabattPct), pauschalabzug: parseBetrag(f.pauschalabzug), skontoPct: parseBetrag(f.skontoPct), bauabzuegePct: parseBetrag(f.bauabzuegePct), rundung: parseBetrag(f.rundung), regieBudget: parseBetrag(f.regieBudget), teuerung: parseBetrag(f.teuerung), rueckbehaltPct: parseBetrag(f.rueckbehaltPct), garantieJahre: parseBetrag(f.garantieJahre), buergschaft: !!f.buergschaft })}>Speichern</button></div>
+        <div className="flex justify-end gap-2"><button className={btnGhost} onClick={onClose}>Abbrechen</button><button className={btnPrimary} disabled={!f.positionId || !f.unternehmer} onClick={() => onSave({ ...v, ...f, betrag: parseBetrag(f.betrag), rabattPct: parseBetrag(f.rabattPct), pauschalabzug: parseBetrag(f.pauschalabzug), skontoPct: parseBetrag(f.skontoPct), bauabzuegePct: parseBetrag(f.bauabzuegePct), rundung: parseBetrag(f.rundung), regieBudget: parseBetrag(f.regieBudget), teuerung: parseBetrag(f.teuerung), rueckbehaltPct: parseBetrag(f.rueckbehaltPct), garantieJahre: parseBetrag(f.garantieJahre), buergschaft: !!f.buergschaft, pauschal: !!f.pauschal, garantieArt: f.garantieArt || "" })}>Speichern</button></div>
       </div>
     </Modal>
   );
 }
 
 // Rechnungsbeleg: genau ein PDF je Rechnung, per Knopf oder Ziehen-und-Ablegen
+// ---------- Werkvertrag, Zahlungsfreigabe und Listen als PDF ----------
+// Wiederkehrende Bausteine für die Hochformat-Dokumente
+function pdfStaffel(bl, zeilen, breite) {
+  const rechts = breite - RAND;
+  zeilen.forEach((z) => {
+    bl.platz(18);
+    if (z.trenner) { bl.linie(RAND, rechts, bl.y + 10, z.dick ? 1.2 : 0.4, z.dick ? PDFLib.rgb(0.13, 0.12, 0.11) : undefined); }
+    bl.text(z.l, { size: z.fett ? 10 : 9, fett: z.fett, farbe: z.grau ? PDFLib.rgb(0.45, 0.42, 0.40) : undefined });
+    if (z.wert !== undefined) bl.text((z.neg ? "- " : "") + chfPdf(z.wert), { rechts, size: z.fett ? 10 : 9, fett: z.fett, farbe: z.grau ? PDFLib.rgb(0.45, 0.42, 0.40) : undefined });
+    else if (z.text !== undefined) bl.text(z.text, { rechts, size: 9 });
+    bl.y -= z.fett ? 17 : 14;
+  });
+}
+function pdfPaare(bl, paare, breite) {
+  // zweispaltige Angabenliste
+  const spalteB = (breite - 2 * RAND) / 2;
+  let i = 0;
+  paare.forEach((pr) => {
+    const spalte = i % 2, x = RAND + spalte * spalteB;
+    if (spalte === 0) bl.platz(16);
+    bl.text(pr[0], { x, size: 8, farbe: PDFLib.rgb(0.45, 0.42, 0.40), y: bl.y });
+    bl.text(pr[1], { x, size: 9.5, y: bl.y - 12 });
+    if (spalte === 1 || i === paare.length - 1) bl.y -= 28;
+    i++;
+  });
+}
+
+async function baueWerkvertragPdf(v, ctx) {
+  const { pos, projekt, rollen, firma, d } = ctx;
+  const doc = await PDFLib.PDFDocument.create();
+  const schriften = { normal: await doc.embedFont(PDFLib.StandardFonts.Helvetica), fett: await doc.embedFont(PDFLib.StandardFonts.HelveticaBold) };
+  const grau = PDFLib.rgb(0.45, 0.42, 0.40);
+  const bl = pdfBlatt(doc, schriften, A4);
+  const rechts = A4.breite - RAND;
+  pdfKopf(bl, v.pauschal ? "Werkvertrag (Pauschalvertrag)" : "Werkvertrag", projekt, rollen, `${v.nr || ""}  ·  ${v.datum || ""}`);
+
+  // Parteien
+  const snap = v.firmaSnap || null;
+  const bh = v.bauherrSnap || rollen;
+  const spalteB = (rechts - RAND) / 2;
+  const yStart = bl.y;
+  bl.text("Bauherrschaft", { size: 7.5, farbe: grau, y: yStart });
+  bl.text(bh.bauherr || "", { size: 10.5, fett: true, y: yStart - 14 });
+  bl.text(bh.bauherrAdresse || "", { size: 9, farbe: grau, y: yStart - 27 });
+  if (bh.bauherrPerson) bl.text(bh.bauherrPerson, { size: 9, farbe: grau, y: yStart - 39 });
+  const uName = snap?.name || v.unternehmer || "";
+  const uAdr = snap ? [snap.strasse, [snap.plz, snap.ort].filter(Boolean).join(" ")].filter(Boolean).join(", ") : firmaAdresse(firma);
+  bl.text("Unternehmer", { x: RAND + spalteB, size: 7.5, farbe: grau, y: yStart });
+  bl.text(uName, { x: RAND + spalteB, size: 10.5, fett: true, y: yStart - 14 });
+  if (uAdr) bl.text(uAdr, { x: RAND + spalteB, size: 9, farbe: grau, y: yStart - 27 });
+  if (snap?.kontakt) bl.text(snap.kontakt + (snap.telefon ? " · " + snap.telefon : ""), { x: RAND + spalteB, size: 9, farbe: grau, y: yStart - 39 });
+  if (snap?.mwstNr) bl.text(snap.mwstNr, { x: RAND + spalteB, size: 8, farbe: grau, y: yStart - 51 });
+  bl.y = yStart - 68;
+
+  // Gegenstand
+  bl.text("Gegenstand", { size: 7.5, farbe: grau }); bl.y -= 13;
+  bl.umbruch(`Arbeitsgattung ${pos ? `BKP ${pos.bkp} ${pos.bezeichnung}` : "—"} gemäss Leistungsverzeichnis und den Bestimmungen der Norm SIA 118.`
+    + (v.pauschal ? " Die Vergütung erfolgt als Pauschalvertrag; das Ausmass ist nicht massgebend." : ""), rechts - RAND, 9.5).forEach((t) => { bl.text(t, { size: 9.5 }); bl.y -= 13; });
+  bl.y -= 10;
+
+  // Vergütung — volle Abzugsstaffel
+  const b = Number(v.betrag) || 0;
+  const s1 = b * (1 - (Number(v.rabattPct) || 0) / 100);
+  const s2 = s1 - (Number(v.pauschalabzug) || 0);
+  const s3 = s2 * (1 - (Number(v.skontoPct) || 0) / 100);
+  const s4 = s3 * (1 - (Number(v.bauabzuegePct) || 0) / 100);
+  const netto = s4 + (Number(v.rundung) || 0);
+  bl.text("Vergütung (exkl. MwSt)", { size: 7.5, farbe: grau }); bl.y -= 14;
+  pdfStaffel(bl, [
+    { l: "Vertragssumme brutto", wert: b, trenner: true },
+    { l: `Rabatt ${Number(v.rabattPct) || 0}%`, wert: b - s1, neg: true, grau: true },
+    { l: "Pauschalabzug", wert: s1 - s2, neg: true, grau: true },
+    { l: `Skonto ${Number(v.skontoPct) || 0}%`, wert: s2 - s3, neg: true, grau: true },
+    { l: `Allg. Bauabzüge ${Number(v.bauabzuegePct) || 0}%`, wert: s3 - s4, neg: true, grau: true },
+    { l: "Rundung", wert: Number(v.rundung) || 0, grau: true },
+    { l: "Werkvertragssumme netto", wert: netto, fett: true, trenner: true, dick: true },
+  ], A4.breite);
+  bl.y -= 12;
+
+  // Konditionenblock
+  bl.text("Konditionen", { size: 7.5, farbe: grau }); bl.y -= 16;
+  const gBis = garantieBis(v);
+  pdfPaare(bl, [
+    ["Vertragsart", v.pauschal ? "Pauschalvertrag" : "Einheitspreisvertrag"],
+    ["Teuerung", Number(v.teuerung) ? "CHF " + chfPdf(v.teuerung) : "keine"],
+    ["Regiebudget im Vertrag", Number(v.regieBudget) ? "CHF " + chfPdf(v.regieBudget) + " netto" : "keines"],
+    ["Rückbehalt", Number(v.rueckbehaltPct) ? `${v.rueckbehaltPct}%  (CHF ${chfPdf(netto * v.rueckbehaltPct / 100)})` : "keiner"],
+    ["Garantieart", garantieArtLabel(v.garantieArt)],
+    ["Garantiefrist", `${Number(v.garantieJahre) || 0} Jahre${gBis ? "  ·  bis " + gBis : ""}`],
+    ["Abnahmedatum", v.abnahme || "offen"],
+    ["Vertragsdatum", v.datum || "—"],
+  ], A4.breite);
+
+  // Unterschriften
+  bl.y = Math.max(bl.y - 20, RAND + 70);
+  const uB = (rechts - RAND - 40) / 2;
+  bl.linie(RAND, RAND + uB, bl.y);
+  bl.linie(RAND + uB + 40, rechts, bl.y);
+  bl.text("Bauherrschaft: " + (bh.bauherr || ""), { size: 8, farbe: grau, y: bl.y - 12 });
+  bl.text("Unternehmer: " + uName, { x: RAND + uB + 40, size: 8, farbe: grau, y: bl.y - 12 });
+  return doc.save();
+}
+
+async function baueZahlungsfreigabePdf(r, ctx) {
+  const { v, posLabel, projekt, rollen, soll, faktTotal, bezahltTotal } = ctx;
+  const doc = await PDFLib.PDFDocument.create();
+  const schriften = { normal: await doc.embedFont(PDFLib.StandardFonts.Helvetica), fett: await doc.embedFont(PDFLib.StandardFonts.HelveticaBold) };
+  const grau = PDFLib.rgb(0.45, 0.42, 0.40);
+  const bl = pdfBlatt(doc, schriften, A4);
+  pdfKopf(bl, "Zahlungsfreigabe", projekt, rollen, `${RTYP[r.typ] || "Rechnung"} ${r.nr || ""}  ·  ${r.datum || ""}`);
+  pdfPaare(bl, [
+    ["Unternehmer", v ? v.unternehmer : "—"],
+    ["Vertrag", v ? (v.nr || "—") : "direkt auf Position"],
+    ["Position", posLabel || "—"],
+    ["Status", RSTATUS[r.status] || r.status],
+  ], A4.breite);
+  bl.y -= 6;
+  bl.text("Stand", { size: 7.5, farbe: grau }); bl.y -= 14;
+  pdfStaffel(bl, [
+    { l: "Werkvertrag + Nachträge netto", wert: soll, trenner: true },
+    { l: "bisher fakturiert", wert: faktTotal, grau: true },
+    { l: "davon bezahlt", wert: bezahltTotal, grau: true },
+    { l: "diese Rechnung", wert: Number(r.betrag) || 0, fett: true, trenner: true, dick: true },
+  ], A4.breite);
+  bl.y -= 30;
+  const rechts = A4.breite - RAND, uB = (rechts - RAND - 40) / 2;
+  bl.linie(RAND, RAND + uB, bl.y); bl.linie(RAND + uB + 40, rechts, bl.y);
+  bl.text("Geprüft Bauleitung: " + (rollen?.bauleitung || ""), { size: 8, farbe: grau, y: bl.y - 12 });
+  bl.text("Freigabe Bauherrschaft: " + (rollen?.bauherr || ""), { x: RAND + uB + 40, size: 8, farbe: grau, y: bl.y - 12 });
+  return doc.save();
+}
+
+async function baueListePdf(liste, ctx) {
+  const { zeilen, projekt, rollen } = ctx;
+  const doc = await PDFLib.PDFDocument.create();
+  const schriften = { normal: await doc.embedFont(PDFLib.StandardFonts.Helvetica), fett: await doc.embedFont(PDFLib.StandardFonts.HelveticaBold) };
+  const grau = PDFLib.rgb(0.45, 0.42, 0.40);
+  const bl = pdfBlatt(doc, schriften, A4);
+  const rechts = A4.breite - RAND;
+  pdfKopf(bl, liste.name, projekt, rollen);
+  if (!zeilen.length) { bl.text("Diese Liste ist leer.", { size: 9.5, farbe: grau }); return doc.save(); }
+  const gruppen = [];
+  zeilen.forEach((z) => { const g = gruppen.find((x) => x.rolle === z.rolle); if (g) g.zeilen.push(z); else gruppen.push({ rolle: z.rolle, zeilen: [z] }); });
+  const sp = { firma: RAND, person: RAND + 210, tel: RAND + 340, mail: RAND + 430 };
+  gruppen.forEach((g) => {
+    bl.platz(50);
+    bl.y -= 6;
+    bl.text(g.rolle.toUpperCase(), { size: 7.5, farbe: grau }); bl.y -= 4;
+    bl.linie(RAND, rechts, bl.y, 0.6); bl.y -= 13;
+    g.zeilen.forEach((z) => {
+      bl.platz(26);
+      bl.text(z.name, { x: sp.firma, size: 9, fett: true });
+      bl.text(personName(z.person) || "—", { x: sp.person, size: 9 });
+      bl.text([z.mobile, z.festnetz].filter(Boolean).join(" / ") || "—", { x: sp.tel, size: 8.5 });
+      bl.text(z.email || "—", { x: sp.mail, size: 8 });
+      bl.y -= 11;
+      bl.text(z.adresse || "—", { x: sp.firma, size: 7.5, farbe: grau });
+      if (z.person?.funktion) bl.text(z.person.funktion, { x: sp.person, size: 7.5, farbe: grau });
+      bl.y -= 14;
+      bl.linie(RAND, rechts, bl.y + 5, 0.3, PDFLib.rgb(0.91, 0.90, 0.89));
+    });
+  });
+  bl.y -= 8;
+  bl.text(`${zeilen.length} Einträge · Stand ${today()}`, { size: 7.5, farbe: grau });
+  return doc.save();
+}
+
+// ---------- Kostenvoranschlag als PDF ----------
+async function baueKvPdf(ctx) {
+  const { ks, projekt, rollen, umfang, mitMwst } = ctx;
+  const voll = umfang === "voll";
+  const doc = await PDFLib.PDFDocument.create();
+  const schriften = { normal: await doc.embedFont(PDFLib.StandardFonts.Helvetica), fett: await doc.embedFont(PDFLib.StandardFonts.HelveticaBold) };
+  const grau = PDFLib.rgb(0.45, 0.42, 0.40), rot = PDFLib.rgb(0.86, 0.15, 0.15), gruen = PDFLib.rgb(0.08, 0.50, 0.24);
+  const format = voll ? A4Q : A4;
+  const bl = pdfBlatt(doc, schriften, format);
+  const rechts = format.breite - RAND;
+  const satz = Number(ks.satz) || 8.1;
+  const f = (n) => mitMwst ? (Number(n) || 0) * (1 + satz / 100) : (Number(n) || 0);
+  pdfKopf(bl, voll ? "Kostenübersicht" : "Kostenvoranschlag", projekt, rollen,
+    mitMwst ? `alle Beträge inkl. MwSt ${satz}%` : "alle Beträge exkl. MwSt");
+
+  // Spalten
+  const spalten = voll
+    ? [{ l: "KV", w: 78, f: (z) => chfPdf(f(z.roll.kv)) },
+       { l: "KV revidiert", w: 82, f: (z) => chfPdf(f(z.roll.kvRevidiert)) },
+       { l: "Beauftragt", w: 82, f: (z) => chfPdf(f(z.roll.beauftragt)) },
+       { l: "Erwartung", w: 74, f: (z) => z.roll.erwartung ? chfPdf(f(z.roll.erwartung)) : "–" },
+       { l: "Prognose", w: 82, f: (z) => chfPdf(f(z.roll.prognose)), fett: true },
+       { l: "Abw. KV", w: 78, f: (z) => chfPdf(f(z.roll.abwKv)), ampel: (z) => z.roll.abwKv }]
+    : [{ l: "KV revidiert", w: 110, f: (z) => chfPdf(f(z.roll.kvRevidiert)), fett: true }];
+  const gesamtW = spalten.reduce((a, c) => a + c.w, 0);
+  const textB = rechts - RAND - gesamtW;
+  const spX = (i) => RAND + textB + spalten.slice(0, i + 1).reduce((a, c) => a + c.w, 0);
+
+  const kopfZeile = () => {
+    spalten.forEach((c, i) => bl.text(c.l, { rechts: spX(i) - 4, size: 7.5, farbe: grau }));
+    bl.y -= 5; bl.linie(RAND, rechts, bl.y, 0.8, PDFLib.rgb(0.55, 0.52, 0.50)); bl.y -= 12;
+  };
+  kopfZeile();
+
+  ks.ordered.forEach((z) => {
+    if (bl.y - 16 < RAND + 40) { bl.neueSeite(); pdfKopf(bl, voll ? "Kostenübersicht" : "Kostenvoranschlag", projekt, rollen, "Fortsetzung"); kopfZeile(); }
+    const gruppe = z.hasChildren;
+    const size = gruppe ? 9 : 8.5;
+    bl.text(z.pos.bkp, { x: RAND + 4 + z.depth * 12, size, fett: gruppe });
+    const bez = bl.umbruch(z.pos.bezeichnung, textB - 60 - z.depth * 12, size, gruppe)[0] || "";
+    bl.text(bez, { x: RAND + 46 + z.depth * 12, size, fett: gruppe });
+    spalten.forEach((c, i) => {
+      let farbe;
+      if (c.ampel) { const v = c.ampel(z); farbe = v > 0 ? rot : (v < 0 ? gruen : grau); }
+      bl.text(c.f(z), { rechts: spX(i) - 4, size, fett: gruppe || c.fett, farbe });
+    });
+    bl.y -= gruppe ? 15 : 13;
+    if (gruppe) bl.linie(RAND, rechts, bl.y + 5, 0.3, PDFLib.rgb(0.91, 0.90, 0.89));
+  });
+
+  // Summen
+  bl.platz(60);
+  bl.y -= 4; bl.linie(RAND, rechts, bl.y, 1.2, PDFLib.rgb(0.13, 0.12, 0.11)); bl.y -= 15;
+  bl.text("Total", { size: 10, fett: true });
+  spalten.forEach((c, i) => bl.text(c.f({ roll: ks.total, pos: {}, depth: 0 }), { rechts: spX(i) - 4, size: 10, fett: true }));
+  bl.y -= 20;
+  if (!mitMwst) {
+    const basis = voll ? ks.total.prognose : ks.total.kvRevidiert;
+    bl.text(`MwSt ${satz}%`, { size: 9, farbe: grau });
+    bl.text(chfPdf(basis * satz / 100), { rechts, size: 9, farbe: grau });
+    bl.y -= 14;
+    bl.text("Total inkl. MwSt", { size: 10, fett: true });
+    bl.text("CHF " + chfPdf(basis * (1 + satz / 100)), { rechts, size: 10, fett: true });
+  }
+  return doc.save();
+}
+
+// ---------- Leistungsverzeichnis als PDF ----------
+async function baueLvPdf(a, ctx) {
+  const { projekt, rollen, bieterName } = ctx;
+  const bieter = bieterName ? (a.bieter || []).find((b) => b.name === bieterName) : null;
+  const mitPreisen = !!bieter;
+  const doc = await PDFLib.PDFDocument.create();
+  const schriften = { normal: await doc.embedFont(PDFLib.StandardFonts.Helvetica), fett: await doc.embedFont(PDFLib.StandardFonts.HelveticaBold) };
+  const grau = PDFLib.rgb(0.45, 0.42, 0.40);
+  const bl = pdfBlatt(doc, schriften, A4);
+  const rechts = A4.breite - RAND;
+  pdfKopf(bl, "Leistungsverzeichnis", projekt, rollen, a.titel + (mitPreisen ? `  ·  ${bieter.name}` : "  ·  Ausschreibungsexemplar"));
+
+  const sp = { code: RAND, bez: RAND + 62, menge: RAND + 330, einheit: RAND + 372, ep: RAND + 445, betrag: rechts };
+  const kopfZeile = () => {
+    bl.text("NPK", { x: sp.code, size: 7.5, farbe: grau });
+    bl.text("Bezeichnung", { x: sp.bez, size: 7.5, farbe: grau });
+    bl.text("Menge", { rechts: sp.menge, size: 7.5, farbe: grau });
+    bl.text("Einh.", { x: sp.einheit, size: 7.5, farbe: grau });
+    bl.text("Einheitspreis", { rechts: sp.ep, size: 7.5, farbe: grau });
+    bl.text("Betrag", { rechts: sp.betrag, size: 7.5, farbe: grau });
+    bl.y -= 5; bl.linie(RAND, rechts, bl.y, 0.8, PDFLib.rgb(0.55, 0.52, 0.50)); bl.y -= 12;
+  };
+  kopfZeile();
+
+  let total = 0;
+  (a.positionen || []).forEach((pz) => {
+    if (bl.y - 18 < RAND + 50) { bl.neueSeite(); pdfKopf(bl, "Leistungsverzeichnis", projekt, rollen, "Fortsetzung"); kopfZeile(); }
+    const menge = Number(pz.menge) || 0;
+    const ep = mitPreisen ? parseBetrag((bieter.preise || {})[pz.code]) || 0 : null;
+    const betrag = mitPreisen ? menge * ep : null;
+    if (mitPreisen) total += betrag;
+    bl.text(pz.npk || pz.code || "", { x: sp.code, size: 8 });
+    const zln = bl.umbruch(pz.bezeichnung || "", sp.menge - sp.bez - 50, 8.5);
+    bl.text(zln[0] || "", { x: sp.bez, size: 8.5 });
+    bl.text(menge ? menge.toLocaleString("de-CH") : "", { rechts: sp.menge, size: 8.5 });
+    bl.text(pz.einheit || "", { x: sp.einheit, size: 8 });
+    if (mitPreisen) {
+      bl.text(chfPdf(ep), { rechts: sp.ep, size: 8.5 });
+      bl.text(chfPdf(betrag), { rechts: sp.betrag, size: 8.5 });
+    } else {
+      // leere Felder zum Ausfüllen
+      bl.linie(sp.ep - 60, sp.ep, bl.y - 2, 0.4);
+      bl.linie(sp.betrag - 70, sp.betrag, bl.y - 2, 0.4);
+    }
+    bl.y -= 12;
+    if (zln[1]) { bl.text(zln[1], { x: sp.bez, size: 7.5, farbe: grau }); bl.y -= 10; }
+    bl.linie(RAND, rechts, bl.y + 4, 0.25, PDFLib.rgb(0.93, 0.92, 0.91));
+  });
+
+  bl.platz(50);
+  bl.y -= 6; bl.linie(RAND, rechts, bl.y, 1.2, PDFLib.rgb(0.13, 0.12, 0.11)); bl.y -= 16;
+  if (mitPreisen) {
+    bl.text("Total netto", { size: 10.5, fett: true });
+    bl.text("CHF " + chfPdf(total), { rechts, size: 10.5, fett: true });
+  } else {
+    bl.text("Total netto", { size: 10.5, fett: true });
+    bl.linie(rechts - 120, rechts, bl.y - 2, 0.5);
+    bl.y -= 26;
+    bl.text("Datum / Firma / Unterschrift", { size: 8, farbe: grau });
+    bl.linie(RAND, RAND + 260, bl.y - 14, 0.5);
+  }
+  if (a.bedingungen) {
+    bl.y -= 26; bl.platz(50);
+    bl.text("Besondere Bestimmungen", { size: 7.5, farbe: grau }); bl.y -= 12;
+    String(a.bedingungen).split("\n").forEach((abs) => {
+      bl.umbruch(abs, rechts - RAND, 8).forEach((t) => { bl.platz(12); bl.text(t, { size: 8, farbe: grau }); bl.y -= 10; });
+    });
+  }
+  return doc.save();
+}
+
 // ---------- Vergabeantrag im Querformat ----------
 const VA_MAX_SPALTEN = 6;
 
@@ -1928,6 +2143,76 @@ async function baueVergabeantragPdf(a, ctx) {
         bl.text("kein Anbieter erfasst", { x: kx + 12, y: ky + kastenH - 36, size: 10, farbe: grau });
       }
     }
+  }
+  return doc.save();
+}
+
+// ---------- Positionsvergleich (Querformat) ----------
+async function bauePositionsvergleichPdf(a, ctx) {
+  const { projekt, rollen } = ctx;
+  const doc = await PDFLib.PDFDocument.create();
+  const schriften = { normal: await doc.embedFont(PDFLib.StandardFonts.Helvetica), fett: await doc.embedFont(PDFLib.StandardFonts.HelveticaBold) };
+  const grau = PDFLib.rgb(0.45, 0.42, 0.40), rot = PDFLib.rgb(0.86, 0.15, 0.15), gruen = PDFLib.rgb(0.08, 0.50, 0.24);
+  const bieter = (a.bieter || []).filter((b) => b.name);
+  const positionen = a.positionen || [];
+  const gruppen = [];
+  for (let i = 0; i < bieter.length; i += VA_MAX_SPALTEN) gruppen.push(bieter.slice(i, i + VA_MAX_SPALTEN));
+  if (!gruppen.length) gruppen.push([]);
+
+  for (let gi = 0; gi < gruppen.length; gi++) {
+    const gruppe = gruppen[gi];
+    const bl = pdfBlatt(doc, schriften, A4Q);
+    const rechts = A4Q.breite - RAND;
+    const labelB = 250, spB = Math.max(95, (rechts - RAND - labelB) / Math.max(gruppe.length, 1));
+    const spR = (i) => RAND + labelB + i * spB + spB - 8;
+
+    const kopf = (fortsetzung) => {
+      pdfKopf(bl, "Positionsvergleich", projekt, rollen, a.titel + (gruppen.length > 1 ? `  (Blatt ${gi + 1} von ${gruppen.length})` : "") + (fortsetzung ? "  ·  Fortsetzung" : ""));
+      const y0 = bl.y;
+      bl.text("NPK · Bezeichnung", { size: 7.5, farbe: grau, y: y0 });
+      bl.text("Menge", { rechts: RAND + labelB - 8, size: 7.5, farbe: grau, y: y0 });
+      gruppe.forEach((b, i) => bl.umbruch(b.name, spB - 10, 8, true).slice(0, 2).forEach((zl, k) => bl.text(zl, { rechts: spR(i), y: y0 - k * 9, size: 8, fett: true })));
+      bl.y = y0 - 22;
+      bl.linie(RAND, rechts, bl.y + 6, 0.8, PDFLib.rgb(0.55, 0.52, 0.50));
+    };
+    kopf(false);
+
+    const totale = gruppe.map((b) => positionen.reduce((s, pz) => s + (Number(pz.menge) || 0) * (parseBetrag((b.preise || {})[pz.code]) || 0), 0));
+
+    positionen.forEach((pz) => {
+      if (bl.y - 30 < RAND + 60) { bl.neueSeite(); kopf(true); }
+      const menge = Number(pz.menge) || 0;
+      const preise = gruppe.map((b) => parseBetrag((b.preise || {})[pz.code]) || 0);
+      const gueltig = preise.filter((x) => x > 0);
+      const min = gueltig.length ? Math.min(...gueltig) : 0;
+      bl.text(pz.npk || pz.code || "", { size: 7.5, farbe: grau });
+      bl.text(bl.umbruch(pz.bezeichnung || "", labelB - 115, 8.5)[0] || "", { x: RAND + 48, size: 8.5 });
+      bl.text(`${menge.toLocaleString("de-CH")} ${pz.einheit || ""}`, { rechts: RAND + labelB - 8, size: 8, farbe: grau });
+      preise.forEach((ep, i) => {
+        if (!ep) { bl.text("–", { rechts: spR(i), size: 8.5, farbe: grau }); return; }
+        const auf = min > 0 ? 100 * (ep - min) / min : 0;
+        bl.text(chfPdf(ep), { rechts: spR(i), size: 8.5 });
+        bl.text(chfPdf(menge * ep), { rechts: spR(i), y: bl.y - 9, size: 7.5, farbe: grau });
+        bl.text(pct(auf), { rechts: spR(i) - 62, y: bl.y - 9, size: 7.5, farbe: auf > 0 ? rot : gruen });
+      });
+      bl.y -= 22;
+      bl.linie(RAND, rechts, bl.y + 6, 0.25, PDFLib.rgb(0.93, 0.92, 0.91));
+    });
+
+    bl.platz(46);
+    bl.y -= 4; bl.linie(RAND, rechts, bl.y, 1.2, PDFLib.rgb(0.13, 0.12, 0.11)); bl.y -= 16;
+    const gueltigT = totale.filter((x) => x > 0);
+    const minTotal = gueltigT.length ? Math.min(...gueltigT) : 0;
+    bl.text("Total netto", { size: 10, fett: true });
+    totale.forEach((t, i) => {
+      bl.text(chfPdf(t), { rechts: spR(i), size: 10, fett: true });
+      if (t > 0 && minTotal > 0) {
+        const auf = 100 * (t - minTotal) / minTotal;
+        bl.text(pct(auf), { rechts: spR(i), y: bl.y - 11, size: 8, farbe: auf > 0 ? rot : gruen });
+      }
+    });
+    bl.y -= 26;
+    bl.text("Prozentwerte je Position gegenüber dem günstigsten Angebot dieser Position.", { size: 7.5, farbe: grau });
   }
   return doc.save();
 }
@@ -2273,7 +2558,6 @@ function BelegFeld({ rechnung, dispatch }) {
 function RechnungenView({ d, dispatch, projektId, projekt, db }) {
   const rollen = projektRollen(db, projekt);
   const [f, setF] = useState({ buchung: "vertrag", vertragId: "", positionId: "", typ: "akonto", nr: "", betrag: "", datum: today(), status: "geprueft" });
-  const [printR, setPrintR] = useState(null);
   const vLabel = (id) => { const v = d.vertraege.find((x) => x.id === id); return v ? v.unternehmer + (v.nr ? ` (${v.nr})` : "") : "—"; };
   const posLabel = (id) => { const x = d.positionen.find((p) => p.id === id); return x ? `${x.bkp} ${x.bezeichnung}` : "—"; };
   const opts = posSelectOptions(d.positionen);
@@ -2331,24 +2615,21 @@ function RechnungenView({ d, dispatch, projektId, projekt, db }) {
                 <td className="px-3 py-2"><select className={`text-xs rounded px-1.5 py-0.5 border-0 ${statusCol[r.status]}`} value={r.status} onChange={(e) => dispatch({ type: "update", coll: "rechnungen", id: r.id, patch: { status: e.target.value } })}><option value="erfasst">erfasst</option><option value="geprueft">geprüft</option><option value="bezahlt">bezahlt</option></select></td>
                 <td className={`px-3 py-2 text-right tabular-nums text-xs ${ueber ? "text-red-600 font-medium" : "text-stone-500"}`}>{pv ? `${chf(pv.fakt)} / ${chf(pv.soll)}` : "–"}</td>
                 <td className="px-3 py-2"><BelegFeld rechnung={r} dispatch={dispatch} /></td>
-                <td className="px-3 py-2 text-right whitespace-nowrap"><button className="text-stone-600 text-xs hover:underline mr-2" title="Zahlungsfreigabe drucken" onClick={() => setPrintR(r)}>🖨</button><button className="text-red-600 text-xs hover:underline" onClick={() => dispatch({ type: "remove", coll: "rechnungen", id: r.id })}>Lö.</button></td>
+                <td className="px-3 py-2 text-right whitespace-nowrap"><button className="text-stone-600 text-xs hover:underline mr-2" title="Zahlungsfreigabe als PDF" onClick={async () => {
+                  try {
+                    const v = d.vertraege.find((x) => x.id === r.vertragId);
+                    const pv = r.vertragId ? proVertrag[r.vertragId] : null;
+                    const bez = r.vertragId ? d.rechnungen.filter((x) => x.vertragId === r.vertragId && x.status === "bezahlt").reduce((s2, x) => s2 + (Number(x.betrag) || 0), 0) : 0;
+                    const bytes = await baueZahlungsfreigabePdf(r, { v, posLabel: v ? posLabel(v.positionId) : posLabel(r.positionId), projekt, rollen, soll: pv ? pv.soll : 0, faktTotal: pv ? pv.fakt : Number(r.betrag) || 0, bezahltTotal: bez });
+                    pdfSpeichern(bytes, `Zahlungsfreigabe_${(r.nr || "").replace(/[^\w.]+/g, "_") || "Rechnung"}.pdf`);
+                  } catch (e) { window.alert("Die Zahlungsfreigabe konnte nicht erzeugt werden: " + e.message); }
+                }}>📄</button><button className="text-red-600 text-xs hover:underline" onClick={() => dispatch({ type: "remove", coll: "rechnungen", id: r.id })}>Lö.</button></td>
               </tr>
             );
           })}</tbody>
         </table></div>
       )}
-      {printR && (() => {
-        const v = d.vertraege.find((x) => x.id === printR.vertragId);
-        const pv = printR.vertragId ? proVertrag[printR.vertragId] : null;
-        const bez = printR.vertragId ? d.rechnungen.filter((x) => x.vertragId === printR.vertragId && x.status === "bezahlt").reduce((s, x) => s + (Number(x.betrag) || 0), 0) : 0;
-        const pl = v ? posLabel(v.positionId) : posLabel(printR.positionId);
-        return (
-          <PrintModal onClose={() => setPrintR(null)}>
-            <ZahlungsfreigabeDoc rollen={rollen} r={printR} v={v} posLabel={pl} projekt={projekt} soll={pv ? pv.soll : 0} faktTotal={pv ? pv.fakt : Number(printR.betrag) || 0} bezahltTotal={bez} />
-          </PrintModal>
-        );
-      })()}
-    </div>
+          </div>
   );
 }
 
@@ -2386,6 +2667,7 @@ function AngeboteView({ d, dispatch, projektId, projekt, db, ks }) {
 function AngebotCard({ a, d, dispatch, projektId, projekt, onEdit, db, rollen }) {
   const { w, rows, min } = nutzwerte(a, projekt);
   const [showPos, setShowPos] = useState(false);
+  const [posBusy, setPosBusy] = useState(false);
   const isLv = a.modus === "lv";
   const posLabel = (() => { const x = d.positionen.find((p) => p.id === a.positionId); return x ? `${x.bkp} ${x.bezeichnung}` : "ohne BKP-Zuordnung"; })();
   function vergeben(b, brutto, netto) {
@@ -2394,8 +2676,22 @@ function AngebotCard({ a, d, dispatch, projektId, projekt, onEdit, db, rollen })
     alert(`Vertrag mit ${b.name} erstellt: brutto CHF ${chf(brutto)} → netto CHF ${chf(netto)}. Konditionen übernommen; Regiebudget unter «Verträge» ergänzen.`);
   }
   const named = rows.filter((r) => r.b.name);
+  const [offen, setOffen] = useState(false);
+  const bester = named[0] || null;
+  const posKurz = (() => { const x = d.positionen.find((p) => p.id === a.positionId); return x ? x.bkp : "—"; })();
   return (
-    <div className={`${card} p-4`}>
+    <div className={card}>
+      <button className="w-full text-left px-3 py-2.5 flex items-center gap-2.5 hover:bg-stone-50/70 rounded-xl" onClick={() => setOffen(!offen)}>
+        <span className="text-stone-400 text-[10px] shrink-0" style={{ display: "inline-block", transition: "transform .15s", transform: offen ? "rotate(90deg)" : "none" }}>▶</span>
+        <span className="shrink-0 inline-block bg-orange-50 text-orange-800 font-semibold tabular-nums text-xs rounded px-1.5 py-0.5">{posKurz}</span>
+        <span className="font-medium truncate flex-1 min-w-0">{a.titel || "Ohne Titel"}</span>
+        {isLv ? <span className="text-[10px] bg-stone-100 text-stone-600 rounded px-1.5 py-0.5 shrink-0">LV · {(a.positionen || []).length} Pos.</span> : null}
+        <span className="text-xs text-stone-500 shrink-0 w-[70px] text-right">{named.length} Bieter</span>
+        <span className="text-xs text-stone-600 shrink-0 hidden md:inline max-w-[170px] truncate text-right">{bester ? bester.b.name : "—"}</span>
+        <span className="tabular-nums font-semibold shrink-0 w-[92px] text-right">{bester ? chf(bester.netto) : "–"}</span>
+      </button>
+      {!offen ? null : (
+      <div className="px-4 pb-4 border-t border-stone-100 pt-3">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <div className="font-semibold">{a.titel || "Ohne Titel"} {isLv && <span className="text-xs font-normal bg-orange-50 text-orange-800 rounded px-1.5 py-0.5 align-middle">LV · {(a.positionen || []).length} Pos.</span>}</div>
@@ -2425,6 +2721,14 @@ function AngebotCard({ a, d, dispatch, projektId, projekt, onEdit, db, rollen })
       {isLv && (a.positionen || []).length > 0 && named.length > 0 && (
         <div className="mt-2">
           <button className="text-orange-800 text-xs hover:underline print:hidden" onClick={() => setShowPos(!showPos)}>{showPos ? "Positionsvergleich ausblenden" : "Positionsvergleich einblenden"}</button>
+          <button className="text-orange-800 text-xs hover:underline ml-3" disabled={posBusy || !(a.positionen || []).length} onClick={async () => {
+            setPosBusy(true);
+            try {
+              const bytes = await bauePositionsvergleichPdf(a, { projekt, rollen });
+              pdfSpeichern(bytes, `Positionsvergleich_${(a.titel || "").replace(/[^\w]+/g, "_")}.pdf`);
+            } catch (e) { window.alert("Der Positionsvergleich konnte nicht erzeugt werden: " + e.message); }
+            setPosBusy(false);
+          }}>{posBusy ? "erzeugt…" : "📄 Positionsvergleich"}</button>
           {showPos && (
             <div className="mt-2 overflow-x-auto border border-stone-200 rounded-md"><table className="w-full text-xs">
               <thead className="bg-stone-50 text-stone-500"><tr><th className="px-2 py-1 text-left">NPK</th><th className="px-2 py-1 text-left">Bezeichnung</th><th className="px-2 py-1 text-right">Menge</th><th className="px-2 py-1">Einh.</th>{named.map((t, i) => <th key={i} className="px-2 py-1 text-right min-w-[80px]">{t.b.name}</th>)}</tr></thead>
@@ -2439,6 +2743,8 @@ function AngebotCard({ a, d, dispatch, projektId, projekt, onEdit, db, rollen })
         </div>
       )}
       <p className="text-xs text-stone-400 mt-2">{isLv ? "Brutto = Σ (Menge × Einheitspreis) je Bieter. " : ""}Punkte 1–100. Preispunkte = 100 × günstigstes Netto ÷ Netto. Nutzwert = gewichtete Summe (max. 100).</p>
+      </div>
+      )}
     </div>
   );
 }
@@ -2531,6 +2837,8 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen, db,
   const [vergabeFor, setVergabeFor] = useState(null);
   const [vorschlag, setVorschlag] = useState("");
   const [antragBusy, setAntragBusy] = useState(false);
+  const [lvBieter, setLvBieter] = useState("");
+  const [lvBusy, setLvBusy] = useState(false);
   const [posForm, setPosForm] = useState({ code: "", bezeichnung: "", einheit: "", menge: "" });
   const [showKond, setShowKond] = useState(false);
   const [showAddPos, setShowAddPos] = useState(false);
@@ -2750,6 +3058,18 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen, db,
                   } catch (e) { window.alert("Der Vergabeantrag konnte nicht erzeugt werden: " + e.message); }
                   setAntragBusy(false);
                 }}>{antragBusy ? "erzeugt…" : "📄 Vergabeantrag (quer)"}</button>
+                <select className="text-xs rounded border border-stone-300 px-2 py-1.5 bg-white" title="Leistungsverzeichnis ausgeben" value={lvBieter} onChange={(e) => setLvBieter(e.target.value)}>
+                  <option value="">LV ohne Preise (Ausschreibung)</option>
+                  {(a.bieter || []).filter((b) => b.name).map((b) => <option key={b.name} value={b.name}>LV mit Preisen: {b.name}</option>)}
+                </select>
+                <button className={btnGhost} disabled={lvBusy || !(a.positionen || []).length} onClick={async () => {
+                  setLvBusy(true);
+                  try {
+                    const bytes = await baueLvPdf(a, { projekt, rollen, bieterName: lvBieter });
+                    pdfSpeichern(bytes, `LV_${(a.titel || "").replace(/[^\w]+/g, "_")}${lvBieter ? "_" + lvBieter.replace(/[^\w]+/g, "_") : "_Ausschreibung"}.pdf`);
+                  } catch (e) { window.alert("Das Leistungsverzeichnis konnte nicht erzeugt werden: " + e.message); }
+                  setLvBusy(false);
+                }}>{lvBusy ? "erzeugt…" : "📄 LV"}</button>
                 <button className={btnGhost} onClick={() => setOfferFor({ aId: a.id, bieterIndex: null })}>+ Offerte importieren</button>
               </div>
               <datalist id="firmenliste-lv">{(firmen || []).map((fa) => <option key={fa.id} value={fa.name} />)}</datalist>
