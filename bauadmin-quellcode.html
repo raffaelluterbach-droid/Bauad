@@ -322,7 +322,14 @@ function normalize(db) {
     if (!n.garantieArt) n.garantieArt = n.buergschaft ? "solidarbuergschaft" : (Number(n.rueckbehaltPct) > 0 ? "rueckbehalt" : "");
     return n;
   });
-  db.rechnungen = db.rechnungen.map((r) => ({ typ: r.typ || "rechnung", beleg: null, vaId: "", ...r }));
+  db.rechnungen = db.rechnungen.map((r) => ({ typ: r.typ || "rechnung", beleg: null, buchungsNr: "", ...r }));
+  // Bestehende Rechnungen je Projekt nach Datum nachnummerieren
+  db.projekte.forEach((pr) => {
+    const offen = db.rechnungen.filter((r) => r.projektId === pr.id && !r.buchungsNr).sort((a, b) => (a.datum || "").localeCompare(b.datum || ""));
+    if (!offen.length) return;
+    let i = db.rechnungen.filter((r) => r.projektId === pr.id && r.buchungsNr).length;
+    offen.forEach((r) => { i++; r.buchungsNr = `B-${String(i).padStart(4, "0")}`; });
+  });
   db.positionen.forEach((p) => {
     if (p.erwartungManuell !== undefined && p.erwartungManuell !== null && p.erwartungManuell !== "") {
       db.erwartungen.push({ id: uid(), projektId: p.projektId, positionId: p.id, bezeichnung: "Übernommen (alt)", betrag: Number(p.erwartungManuell) || 0, datum: today() });
@@ -636,7 +643,7 @@ const HILFE = {
   angebote: ["Für pauschale Angebote ohne Positionen: Bruttosummen, Konditionen und Bewertungspunkte je Bieter erfassen.", "Der Nutzwert gewichtet Preis, Referenzen und Lehrlingsausbildung (Gewichtung im Reiter Projekt)."],
   rapporte: ["Regierapporte auf Verträge buchen (Stunden × Ansatz + Material).", "Solange das Regiebudget des Vertrags nicht überschritten ist, ändert sich die Prognose nicht — erst der Überschuss fliesst als Erwartung ein."],
   erwartungen: ["Erwartete Mehrkosten erfassen, die noch in keinem Nachtrag stecken.", "Prognose = Vertrag (oder KV) + Erwartung. Regie-Überschüsse erscheinen automatisch."],
-  abrechnung: ["Die Gesamtübersicht nach BKP — netto oder brutto, mit Detailzeilen (▸).", "Doppelklick auf Erwartung/Prognose setzt den Wert direkt.", "CSV-Export für Excel oder Drucken/PDF für die Bauherrschaft."],
+  abrechnung: ["Die Gesamtübersicht nach BKP — netto oder brutto, mit Detailzeilen (▸).", "Doppelklick auf Erwartung/Prognose setzt den Wert direkt.", "CSV-Export für Excel oder PDF für die Bauherrschaft — Spalten und Einzelrechnungen sind dabei wählbar.", "Klick auf eine Rechnung öffnet ihren Beleg; fehlt er, kannst du ihn gleich anhängen."],
 };
 function HilfeBox({ view }) {
   const steps = HILFE[view];
@@ -653,6 +660,17 @@ function HilfeBox({ view }) {
 // =========================================================================
 //  DRUCKVORLAGEN
 // =========================================================================
+// Buchungsnummer: fortlaufend je Projekt, überschreibbar
+function naechsteBuchungsNr(rechnungen, projektId) {
+  const belegt = new Set((rechnungen || []).filter((r) => r.projektId === projektId).map((r) => String(r.buchungsNr || "")));
+  let i = belegt.size + 1;
+  while (belegt.has(`B-${String(i).padStart(4, "0")}`)) i++;
+  return `B-${String(i).padStart(4, "0")}`;
+}
+// In welchem Vergütungsauftrag steckt diese Rechnung?
+function vaFuerRechnung(vergauftraege, rechnungId) {
+  return (vergauftraege || []).find((a) => (a.rechnungIds || []).includes(rechnungId)) || null;
+}
 const GARANTIEARTEN = [
   { k: "", l: "— keine —" },
   { k: "rueckbehalt", l: "Rückbehalt" },
@@ -1214,7 +1232,7 @@ function App() {
           {view === "angebote" && <AngeboteView d={d} dispatch={dispatch} projektId={db.aktiv} projekt={projekt} db={db} ks={ks} />}
           {view === "rapporte" && <RapporteView d={d} dispatch={dispatch} projektId={db.aktiv} />}
           {view === "erwartungen" && <ErwartungenView d={d} dispatch={dispatch} projektId={db.aktiv} ks={ks} />}
-          {view === "abrechnung" && <AbrechnungView ks={ks} projekt={projekt} d={d} dispatch={dispatch} projektId={db.aktiv} />}
+          {view === "abrechnung" && <AbrechnungView ks={ks} projekt={projekt} d={d} dispatch={dispatch} projektId={db.aktiv} db={db} />}
         </main>
       </div>
       <style>{`@media print{ body.print-doc-open *{visibility:hidden !important} body.print-doc-open .print-area, body.print-doc-open .print-area *{visibility:visible !important} body.print-doc-open .print-area{position:absolute !important;left:0;top:0;width:100%;padding:0 !important} }`}</style>
@@ -1845,8 +1863,9 @@ async function baueZahlungsfreigabePdf(r, ctx) {
   const schriften = { normal: await doc.embedFont(PDFLib.StandardFonts.Helvetica), fett: await doc.embedFont(PDFLib.StandardFonts.HelveticaBold) };
   const grau = PDFLib.rgb(0.45, 0.42, 0.40);
   const bl = pdfBlatt(doc, schriften, A4);
-  pdfKopf(bl, "Zahlungsfreigabe", projekt, rollen, `${RTYP[r.typ] || "Rechnung"} ${r.nr || ""}  ·  ${r.datum || ""}`);
+  pdfKopf(bl, "Zahlungsfreigabe", projekt, rollen, `Buchung ${r.buchungsNr || "–"}  ·  ${RTYP[r.typ] || "Rechnung"} ${r.nr || ""}  ·  ${r.datum || ""}`);
   pdfPaare(bl, [
+    ["Buchungsnummer", r.buchungsNr || "—"],
     ["Unternehmer", v ? v.unternehmer : "—"],
     ["Vertrag", v ? (v.nr || "—") : "direkt auf Position"],
     ["Position", posLabel || "—"],
@@ -2217,6 +2236,88 @@ async function bauePositionsvergleichPdf(a, ctx) {
   return doc.save();
 }
 
+// ---------- Bauabrechnung als PDF (Querformat, Spalten wählbar) ----------
+async function baueAbrechnungPdf(ctx) {
+  const { ks, projekt, rollen, brutto, spalten, mitRechnungen, details } = ctx;
+  const doc = await PDFLib.PDFDocument.create();
+  const schriften = { normal: await doc.embedFont(PDFLib.StandardFonts.Helvetica), fett: await doc.embedFont(PDFLib.StandardFonts.HelveticaBold) };
+  const grau = PDFLib.rgb(0.45, 0.42, 0.40), rot = PDFLib.rgb(0.86, 0.15, 0.15), gruen = PDFLib.rgb(0.08, 0.50, 0.24);
+  const satz = Number(ks.satz) || 8.1;
+  const f = brutto ? 1 + satz / 100 : 1;
+  const bl = pdfBlatt(doc, schriften, A4Q);
+  const rechts = A4Q.breite - RAND;
+
+  const moegliche = [
+    { k: "kv", l: "KV", g: (z) => z.roll.kv },
+    { k: "kvRevidiert", l: "KV revidiert", g: (z) => z.roll.kvRevidiert },
+    { k: "beauftragt", l: "Beauftragt", g: (z) => z.roll.beauftragt },
+    { k: "erwartung", l: "Erwartung", g: (z) => z.roll.erwartung },
+    { k: "prognose", l: "Prognose", g: (z) => z.roll.prognose, fett: true },
+    { k: "bezahlt", l: "Bezahlt", g: (z) => z.roll.bezahlt },
+    { k: "abwKv", l: "Abw. KV", g: (z) => z.roll.abwKv, ampel: true },
+  ];
+  const cols = moegliche.filter((c) => spalten[c.k]);
+  const spW = 92, gesamtW = cols.length * spW, textB = rechts - RAND - gesamtW;
+  const spR = (i) => RAND + textB + (i + 1) * spW - 6;
+
+  const kopf = (fortsetzung) => {
+    pdfKopf(bl, "Bauabrechnung", projekt, rollen, (brutto ? `alle Beträge inkl. MwSt ${satz}%` : "alle Beträge exkl. MwSt") + (fortsetzung ? "  ·  Fortsetzung" : ""));
+    cols.forEach((c, i) => bl.text(c.l, { rechts: spR(i), size: 7.5, farbe: grau }));
+    bl.y -= 5; bl.linie(RAND, rechts, bl.y, 0.8, PDFLib.rgb(0.55, 0.52, 0.50)); bl.y -= 12;
+  };
+  kopf(false);
+
+  ks.ordered.forEach((z) => {
+    if (bl.y - 18 < RAND + 50) { bl.neueSeite(); kopf(true); }
+    const gruppe = z.hasChildren;
+    const size = gruppe ? 9 : 8.5;
+    bl.text(z.pos.bkp, { x: RAND + 4 + z.depth * 12, size, fett: gruppe });
+    bl.text(bl.umbruch(z.pos.bezeichnung, textB - 62 - z.depth * 12, size, gruppe)[0] || "", { x: RAND + 46 + z.depth * 12, size, fett: gruppe });
+    cols.forEach((c, i) => {
+      const v = (Number(c.g(z)) || 0) * f;
+      let farbe;
+      if (c.ampel) farbe = v > 0 ? rot : (v < 0 ? gruen : grau);
+      bl.text(c.ampel && v !== 0 ? (v > 0 ? "+" : "") + chfPdf(v) : chfPdf(v), { rechts: spR(i), size, fett: gruppe || c.fett, farbe });
+    });
+    bl.y -= gruppe ? 15 : 13;
+
+    // Einzelrechnungen unter der Position
+    if (mitRechnungen) {
+      const rgs = (details[z.pos.id] || []).filter((it) => it.kind === "rg");
+      rgs.forEach((it) => {
+        if (bl.y - 14 < RAND + 40) { bl.neueSeite(); kopf(true); }
+        bl.text(`· ${it.label}`, { x: RAND + 62 + z.depth * 12, size: 7.5, farbe: grau });
+        bl.text(it.sub || "", { x: RAND + 205 + z.depth * 12, size: 7, farbe: grau });
+        const iBez = cols.findIndex((c) => c.k === "bezahlt");
+        bl.text(chfPdf((Number(it.betrag) || 0) * f) + (it.muted ? " (offen)" : ""), { rechts: spR(iBez >= 0 ? iBez : cols.length - 1), size: 7.5, farbe: grau });
+        bl.y -= 11;
+      });
+      if (rgs.length) bl.linie(RAND + 50, rechts, bl.y + 4, 0.25, PDFLib.rgb(0.93, 0.92, 0.91));
+    }
+    if (gruppe) bl.linie(RAND, rechts, bl.y + 5, 0.3, PDFLib.rgb(0.91, 0.90, 0.89));
+  });
+
+  // Summen
+  bl.platz(70);
+  bl.y -= 4; bl.linie(RAND, rechts, bl.y, 1.2, PDFLib.rgb(0.13, 0.12, 0.11)); bl.y -= 16;
+  bl.text("Total", { size: 10, fett: true });
+  cols.forEach((c, i) => {
+    const v = (Number(c.g({ roll: ks.total })) || 0) * f;
+    let farbe;
+    if (c.ampel) farbe = v > 0 ? rot : (v < 0 ? gruen : grau);
+    bl.text(c.ampel && v !== 0 ? (v > 0 ? "+" : "") + chfPdf(v) : chfPdf(v), { rechts: spR(i), size: 10, fett: true, farbe });
+  });
+  bl.y -= 20;
+  if (!brutto) {
+    bl.text(`MwSt ${satz}% auf Prognose`, { size: 9, farbe: grau });
+    bl.text(chfPdf(ks.total.prognose * satz / 100), { rechts, size: 9, farbe: grau });
+    bl.y -= 14;
+    bl.text("Prognose inkl. MwSt", { size: 10, fett: true });
+    bl.text("CHF " + chfPdf(ks.total.prognose * (1 + satz / 100)), { rechts, size: 10, fett: true });
+  }
+  return doc.save();
+}
+
 // ---------- Vergütungsaufträge ----------
 // Zahlen für das Deckblatt einer Rechnung: Vertragsstaffel, sonst Positionsbudget
 function belegStaffel(r, d, ks) {
@@ -2247,7 +2348,8 @@ async function baueVergauftragPdf(auftrag, rechnungen, ctx) {
   const bl = pdfBlatt(doc, schriften, A4);
   pdfKopf(bl, "Vergütungsauftrag", projekt, rollen, `${auftrag.nr || ""}  ·  ${auftrag.datum || today()}`);
 
-  const sp = { datum: RAND, firma: RAND + 62, nr: RAND + 250, netto: RAND + 370, mwst: RAND + 445, brutto: rechts };
+  const sp = { bnr: RAND, datum: RAND + 52, firma: RAND + 112, nr: RAND + 268, netto: RAND + 375, mwst: RAND + 448, brutto: rechts };
+  bl.text("Buchung", { x: sp.bnr, size: 7.5, farbe: grau });
   bl.text("Datum", { x: sp.datum, size: 7.5, farbe: grau });
   bl.text("Unternehmer / Buchung", { x: sp.firma, size: 7.5, farbe: grau });
   bl.text("Rg-Nr.", { x: sp.nr, size: 7.5, farbe: grau });
@@ -2264,6 +2366,7 @@ async function baueVergauftragPdf(auftrag, rechnungen, ctx) {
     const netto = Number(r.betrag) || 0, mwst = netto * satz / 100;
     sumNetto += netto;
     const name = v ? v.unternehmer : (pos ? `BKP ${pos.bkp} ${pos.bezeichnung}` : "ohne Zuordnung");
+    bl.text(r.buchungsNr || "–", { x: sp.bnr, size: 8, farbe: grau });
     bl.text(r.datum || "", { x: sp.datum, size: 8.5 });
     bl.text(bl.umbruch(name, sp.nr - sp.firma - 8, 8.5)[0], { x: sp.firma, size: 8.5 });
     bl.text(`${RTYP[r.typ] || "Rechnung"} ${r.nr || ""}`.trim(), { x: sp.nr, size: 8.5 });
@@ -2293,7 +2396,7 @@ async function baueVergauftragPdf(auftrag, rechnungen, ctx) {
     const firma = st.v ? findFirma(firmen, st.v.firmaId, st.v.unternehmer) : null;
     const snap = st.v?.firmaSnap || null;
     const db2 = pdfBlatt(doc, schriften, A4);
-    pdfKopf(db2, "Rechnungsdeckblatt", projekt, rollen, `${auftrag.nr || ""}  ·  ${RTYP[r.typ] || "Rechnung"} ${r.nr || ""}`);
+    pdfKopf(db2, "Rechnungsdeckblatt", projekt, rollen, `${auftrag.nr || ""}  ·  Buchung ${r.buchungsNr || "–"}  ·  ${RTYP[r.typ] || "Rechnung"} ${r.nr || ""}`);
 
     // Empfänger: Adresse aus dem Adressstamm, dazu der Vertragsname
     db2.text("Unternehmer", { size: 7.5, farbe: grau }); db2.y -= 12;
@@ -2463,16 +2566,17 @@ function VergauftraegeView({ db, d, dispatch, projektId, projekt, ks, firmen }) 
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead className="bg-stone-50 text-stone-500 text-xs"><tr>
-                  <th className="w-8 px-2 py-2"></th><th className="text-left font-medium px-3 py-2">Datum</th><th className="text-left font-medium px-3 py-2">Unternehmer / Buchung</th>
+                  <th className="w-8 px-2 py-2"></th><th className="text-left font-medium px-3 py-2">Buchung</th><th className="text-left font-medium px-3 py-2">Datum</th><th className="text-left font-medium px-3 py-2">Unternehmer / Buchung</th>
                   <th className="text-left font-medium px-3 py-2">Rg-Nr.</th><th className="text-right font-medium px-3 py-2">Netto</th><th className="text-left font-medium px-3 py-2">Beleg</th>
                 </tr></thead>
-                <tbody>{!waehlbar.length ? <tr><td colSpan={6} className="px-3 py-4 text-stone-500">Keine geprüften Rechnungen verfügbar. Setze im Reiter «Rechnungen» den Status auf «geprüft».</td></tr> : waehlbar.map((r) => {
+                <tbody>{!waehlbar.length ? <tr><td colSpan={7} className="px-3 py-4 text-stone-500">Keine geprüften Rechnungen verfügbar. Setze im Reiter «Rechnungen» den Status auf «geprüft».</td></tr> : waehlbar.map((r) => {
                   const an = (aktiv.rechnungIds || []).includes(r.id);
                   const v = d.vertraege.find((x) => x.id === r.vertragId);
                   const pos = d.positionen.find((x) => x.id === r.positionId);
                   return (
                     <tr key={r.id} className={`border-t border-stone-100 ${an ? "bg-orange-50/50" : ""}`}>
                       <td className="px-2 py-2 text-center"><input type="checkbox" checked={an} onChange={() => upd(aktiv.id, { rechnungIds: an ? aktiv.rechnungIds.filter((x) => x !== r.id) : [...(aktiv.rechnungIds || []), r.id] })} /></td>
+                      <td className="px-3 py-2 tabular-nums text-stone-600 font-medium">{r.buchungsNr || "–"}</td>
                       <td className="px-3 py-2 tabular-nums text-stone-600">{r.datum}</td>
                       <td className="px-3 py-2">{v ? v.unternehmer : <span className="text-stone-500">{pos ? `BKP ${pos.bkp} ${pos.bezeichnung}` : "ohne Zuordnung"}</span>}</td>
                       <td className="px-3 py-2 text-stone-600">{RTYP[r.typ] || "Rechnung"} {r.nr}</td>
@@ -2557,7 +2661,10 @@ function BelegFeld({ rechnung, dispatch }) {
 
 function RechnungenView({ d, dispatch, projektId, projekt, db }) {
   const rollen = projektRollen(db, projekt);
-  const [f, setF] = useState({ buchung: "vertrag", vertragId: "", positionId: "", typ: "akonto", nr: "", betrag: "", datum: today(), status: "geprueft" });
+  const [f, setF] = useState({ buchung: "vertrag", vertragId: "", positionId: "", typ: "akonto", nr: "", buchungsNr: "", betrag: "", datum: today(), status: "geprueft" });
+  // Buchungsnummer vorbelegen, sobald das Formular leer ist
+  useEffect(() => { if (!f.buchungsNr) setF((x) => ({ ...x, buchungsNr: naechsteBuchungsNr(db.rechnungen, projektId) })); }, [f.buchungsNr, db.rechnungen]);
+  const buchungDoppelt = !!f.buchungsNr && (db.rechnungen || []).some((r) => r.projektId === projektId && String(r.buchungsNr || "") === String(f.buchungsNr).trim());
   const vLabel = (id) => { const v = d.vertraege.find((x) => x.id === id); return v ? v.unternehmer + (v.nr ? ` (${v.nr})` : "") : "—"; };
   const posLabel = (id) => { const x = d.positionen.find((p) => p.id === id); return x ? `${x.bkp} ${x.bezeichnung}` : "—"; };
   const opts = posSelectOptions(d.positionen);
@@ -2580,33 +2687,35 @@ function RechnungenView({ d, dispatch, projektId, projekt, db }) {
           <label className="inline-flex items-center gap-1.5"><input type="radio" checked={f.buchung === "vertrag"} onChange={() => setF({ ...f, buchung: "vertrag", positionId: "" })} /> auf Vertrag</label>
           <label className="inline-flex items-center gap-1.5"><input type="radio" checked={f.buchung === "bkp"} onChange={() => setF({ ...f, buchung: "bkp", vertragId: "" })} /> direkt auf BKP (ohne Vertrag)</label>
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-[1fr_130px_110px_130px_130px_120px_auto] gap-3 items-end">
+        <div className="grid grid-cols-1 md:grid-cols-[1fr_120px_110px_110px_120px_120px_110px_auto] gap-3 items-end">
           {f.buchung === "vertrag" ? (
             <Field label="Vertrag"><select className={inputCls} value={f.vertragId} onChange={(e) => setF({ ...f, vertragId: e.target.value })}><option value="">wählen…</option>{d.vertraege.map((v) => <option key={v.id} value={v.id}>{v.unternehmer} {v.nr && `(${v.nr})`}</option>)}</select></Field>
           ) : (
             <Field label="BKP-Position"><select className={inputCls} value={f.positionId} onChange={(e) => setF({ ...f, positionId: e.target.value })}><option value="">wählen…</option>{opts.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</select></Field>
           )}
           <Field label="Typ"><select className={inputCls} value={f.typ} onChange={(e) => setF({ ...f, typ: e.target.value })}><option value="akonto">Akonto</option><option value="rechnung">Rechnung</option><option value="regie">Regie</option></select></Field>
+          <Field label="Buchungsnr."><input className={inputCls} value={f.buchungsNr} onChange={(e) => setF({ ...f, buchungsNr: e.target.value })} />{buchungDoppelt ? <div className="text-xs text-amber-700 mt-1">bereits vergeben</div> : null}</Field>
           <Field label="Rg-Nr."><input className={inputCls} value={f.nr} onChange={(e) => setF({ ...f, nr: e.target.value })} /></Field>
           <Field label="Betrag netto"><input className={inputCls} value={f.betrag} onChange={(e) => setF({ ...f, betrag: e.target.value })} /></Field>
           <Field label="Datum"><input type="date" className={inputCls} value={f.datum} onChange={(e) => setF({ ...f, datum: e.target.value })} /></Field>
           <Field label="Status"><select className={inputCls} value={f.status} onChange={(e) => setF({ ...f, status: e.target.value })}><option value="erfasst">erfasst</option><option value="geprueft">geprüft</option><option value="bezahlt">bezahlt</option></select></Field>
           <button className={btnPrimary} disabled={!(f.buchung === "vertrag" ? f.vertragId : f.positionId) || !f.betrag} onClick={() => {
-            const item = { id: uid(), projektId, typ: f.typ, nr: f.nr, betrag: parseBetrag(f.betrag), datum: f.datum, status: f.status };
+            const item = { id: uid(), projektId, typ: f.typ, nr: f.nr, buchungsNr: f.buchungsNr || naechsteBuchungsNr(db.rechnungen, projektId), betrag: parseBetrag(f.betrag), datum: f.datum, status: f.status, beleg: null };
             if (f.buchung === "vertrag") item.vertragId = f.vertragId; else item.positionId = f.positionId;
             dispatch({ type: "add", coll: "rechnungen", item });
-            setF({ ...f, vertragId: "", positionId: "", nr: "", betrag: "" });
+            setF({ ...f, vertragId: "", positionId: "", nr: "", buchungsNr: "", betrag: "" });
           }}>Erfassen</button>
         </div>
       </div>
       {!d.rechnungen.length ? <Empty text="Keine Rechnungen erfasst." /> : (
         <div className={`${card} overflow-x-auto`}><table className="w-full text-sm">
-          <thead className="bg-stone-50 text-stone-500 text-xs"><tr><th className="text-left font-medium px-3 py-2">Datum</th><th className="text-left font-medium px-3 py-2">Buchung</th><th className="text-left font-medium px-3 py-2">Typ</th><th className="text-left font-medium px-3 py-2">Rg-Nr.</th><th className="text-right font-medium px-3 py-2">Betrag</th><th className="text-left font-medium px-3 py-2">Status</th><th className="text-right font-medium px-3 py-2">fakt./soll</th><th className="text-left font-medium px-3 py-2">Beleg</th><th className="w-12"></th></tr></thead>
+          <thead className="bg-stone-50 text-stone-500 text-xs"><tr><th className="text-left font-medium px-3 py-2">Buchungsnr.</th><th className="text-left font-medium px-3 py-2">Datum</th><th className="text-left font-medium px-3 py-2">Buchung</th><th className="text-left font-medium px-3 py-2">Typ</th><th className="text-left font-medium px-3 py-2">Rg-Nr.</th><th className="text-right font-medium px-3 py-2">Betrag</th><th className="text-left font-medium px-3 py-2">Status</th><th className="text-right font-medium px-3 py-2">fakt./soll</th><th className="text-left font-medium px-3 py-2">Beleg</th><th className="w-12"></th></tr></thead>
           <tbody>{d.rechnungen.map((r) => {
             const pv = r.vertragId ? (proVertrag[r.vertragId] || { soll: 0, fakt: 0 }) : null;
             const ueber = pv && pv.fakt > pv.soll;
             return (
               <tr key={r.id} className="border-t border-stone-100">
+                <td className="px-3 py-2 tabular-nums text-stone-600 font-medium">{r.buchungsNr || "–"}</td>
                 <td className="px-3 py-2 tabular-nums text-stone-500">{r.datum}</td>
                 <td className="px-3 py-2">{r.vertragId ? vLabel(r.vertragId) : <span>{posLabel(r.positionId)} <span className="text-xs text-stone-400">(ohne Vertrag)</span></span>}</td>
                 <td className="px-3 py-2"><span className={`text-xs rounded px-1.5 py-0.5 ${typCol[r.typ] || typCol.rechnung}`}>{RTYP[r.typ] || r.typ}</span></td>
@@ -3336,7 +3445,45 @@ function ErwartungenView({ d, dispatch, projektId, ks }) {
   );
 }
 
-function AbrechnungView({ ks, projekt, d, dispatch, projektId }) {
+function AbrechnungView({ ks, projekt, d, dispatch, projektId, db }) {
+  const rollen = projektRollen(db, projekt);
+  const [zeigeRg, setZeigeRg] = useState(true);
+  const [rgImPdf, setRgImPdf] = useState(false);
+  const [pdfSpalten, setPdfSpalten] = useState({ kv: true, kvRevidiert: true, beauftragt: true, erwartung: false, prognose: true, bezahlt: true, abwKv: true });
+  const [pdfBusy, setPdfBusy] = useState(false);
+  const belegRef = useRef(null);
+  const [belegFuer, setBelegFuer] = useState(null);
+
+  // Klick auf eine Rechnung: Beleg anzeigen — oder gleich einen anhängen
+  const belegOeffnen = async (r) => {
+    if (r.beleg) {
+      try {
+        const blob = await belegLaden(r.beleg.id);
+        if (!blob) { window.alert("Der hinterlegte Beleg wurde nicht gefunden. Bitte im Reiter «Rechnungen» neu anhängen."); return; }
+        const url = URL.createObjectURL(blob);
+        window.open(url, "_blank");
+        setTimeout(() => URL.revokeObjectURL(url), 60000);
+      } catch (e) { window.alert("Beleg konnte nicht geöffnet werden: " + e.message); }
+      return;
+    }
+    if (window.confirm(`Zur Buchung ${r.buchungsNr || "–"} (${RTYP[r.typ] || "Rechnung"} ${r.nr || ""}) ist kein Beleg hinterlegt.\n\nJetzt ein PDF anhängen?`)) {
+      setBelegFuer(r);
+      setTimeout(() => belegRef.current?.click(), 0);
+    }
+  };
+  const belegAnhaengen = async (datei) => {
+    const r = belegFuer;
+    setBelegFuer(null);
+    if (!datei || !r) return;
+    if (datei.type !== "application/pdf" && !/\.pdf$/i.test(datei.name)) { window.alert("Bitte eine PDF-Datei wählen."); return; }
+    if (datei.size > 25 * 1024 * 1024) { window.alert("Die Datei ist grösser als 25 MB."); return; }
+    try {
+      const id = uid();
+      await belegSpeichern(id, datei);
+      dispatch({ type: "update", coll: "rechnungen", id: r.id, patch: { beleg: { id, name: datei.name, groesse: datei.size, datum: today() } } });
+    } catch (e) { window.alert("Beleg konnte nicht gespeichert werden: " + e.message); }
+  };
+
   const [brutto, setBrutto] = useState(false);
   const [open, setOpen] = useState({});
   const [allOpen, setAllOpen] = useState(false);
@@ -3363,8 +3510,13 @@ function AbrechnungView({ ks, projekt, d, dispatch, projektId }) {
       const eig = ks.ordered.find((z) => z.pos.id === pos.id)?.eigen;
       if (eig && eig.regieUeber > 0) items.push({ kind: "erw", label: "Erwartung · Regieüberschuss (automatisch)", sub: "aus Rapporten", col: "erwartung", betrag: eig.regieUeber, signed: true });
       d.rechnungen.filter((r) => vIds.includes(r.vertragId) || r.positionId === pos.id).forEach((r) => {
-        const v = d.vertraege.find((x) => x.id === r.vertragId);
-        items.push({ kind: "rg", label: `${RTYP[r.typ] || "Rechnung"} ${r.nr || ""} · ${v ? v.unternehmer : "ohne Vertrag"}`, sub: `${r.datum} · ${r.status}`, col: "bezahlt", betrag: Number(r.betrag) || 0, muted: r.status !== "bezahlt" });
+        const va = vaFuerRechnung(db.vergauftraege, r.id);
+        items.push({
+          kind: "rg", rechnung: r,
+          label: `${r.buchungsNr || "–"} · ${RTYP[r.typ] || "Rechnung"} ${r.nr || ""}`.trim(),
+          sub: `${r.datum} · ${va ? va.nr || "Auftrag" : "nicht verbucht"}`,
+          col: "bezahlt", betrag: Number(r.betrag) || 0, muted: r.status !== "bezahlt",
+        });
       });
       if (items.length) map[pos.id] = items;
     });
@@ -3408,11 +3560,29 @@ function AbrechnungView({ ks, projekt, d, dispatch, projektId }) {
     <div className="space-y-4">
       <div className="flex gap-2 print:hidden flex-wrap items-center">
         <button className={btnPrimary} onClick={exportCsv}>CSV exportieren</button>
-        <button className={btnGhost} onClick={() => window.print()}>Drucken / PDF</button>
+        <button className={btnGhost} disabled={pdfBusy} onClick={async () => {
+          setPdfBusy(true);
+          try {
+            const bytes = await baueAbrechnungPdf({ ks, projekt, rollen, d, db, brutto, spalten: pdfSpalten, mitRechnungen: rgImPdf, details });
+            pdfSpeichern(bytes, `Bauabrechnung_${(projekt?.name || "").replace(/[^\w]+/g, "_")}.pdf`);
+          } catch (e) { window.alert("Die Bauabrechnung konnte nicht erzeugt werden: " + e.message); }
+          setPdfBusy(false);
+        }}>{pdfBusy ? "erzeugt…" : "📄 PDF"}</button>
+        <label className="inline-flex items-center gap-1.5 text-xs text-stone-600"><input type="checkbox" checked={zeigeRg} onChange={(e) => setZeigeRg(e.target.checked)} /> Einzelrechnungen anzeigen</label>
+        <input ref={belegRef} type="file" accept="application/pdf,.pdf" className="hidden" onChange={(e) => { belegAnhaengen(e.target.files[0]); e.target.value = ""; }} />
         <button className={btnGhost} onClick={() => { setAllOpen(!allOpen); setOpen({}); }}>{allOpen ? "Details zuklappen" : "Alle Details aufklappen"}</button>
         <div className="ml-auto inline-flex rounded-md border border-stone-200 overflow-hidden text-sm">
           <button className={`px-3 py-1.5 ${!brutto ? "bg-orange-800 text-white" : "bg-white text-stone-600"}`} onClick={() => setBrutto(false)}>Netto</button>
           <button className={`px-3 py-1.5 ${brutto ? "bg-orange-800 text-white" : "bg-white text-stone-600"}`} onClick={() => setBrutto(true)}>Brutto (inkl. {ks.satz}%)</button>
+        </div>
+      </div>
+      <div className={`${card} p-3 print:hidden`}>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
+          <span className="text-stone-500 font-medium">PDF-Einstellungen</span>
+          {[["kv", "KV"], ["kvRevidiert", "KV revidiert"], ["beauftragt", "Beauftragt"], ["erwartung", "Erwartung"], ["prognose", "Prognose"], ["bezahlt", "Bezahlt"], ["abwKv", "Abweichung"]].map(([k, l]) => (
+            <label key={k} className="inline-flex items-center gap-1.5 text-stone-600"><input type="checkbox" checked={!!pdfSpalten[k]} onChange={(e) => setPdfSpalten({ ...pdfSpalten, [k]: e.target.checked })} /> {l}</label>
+          ))}
+          <label className="inline-flex items-center gap-1.5 text-stone-600 border-l border-stone-200 pl-4"><input type="checkbox" checked={rgImPdf} onChange={(e) => setRgImPdf(e.target.checked)} /> Einzelrechnungen ins PDF</label>
         </div>
       </div>
       <p className="text-xs text-stone-400 print:hidden">▸ öffnet Detailzeilen (Verträge, Rechnungen, Mutationen, Erwartungen). Doppelklick auf <strong>Erwartung</strong> oder <strong>Prognose</strong> einer Position (ohne Unterpositionen) setzt den Wert direkt — die Differenz wird als Zeile «Anpassung (Bauabrechnung)» in den Erwartungen geführt. Direkteingabe wirkt auf Nettowerte.</p>
@@ -3453,12 +3623,14 @@ function AbrechnungView({ ks, projekt, d, dispatch, projektId }) {
                         <td className="px-2 py-1 text-right tabular-nums">{V(z.roll.bezahlt)}</td>
                         <td className="px-2 py-1 text-right"><Abw v={z.roll.abwKv * f} /></td>
                       </tr>
-                      {isOpen(z.pos.id) && det.map((it, i) => {
+                      {isOpen(z.pos.id) && det.filter((it) => it.kind !== "rg" || zeigeRg).map((it, i) => {
                         const cells = Array(8).fill(null);
                         cells[colIdx[it.col] - 1] = it;
                         return (
                           <tr key={i} className="border-b border-stone-50 bg-stone-50/60 text-[11px] text-stone-500">
-                            <td className="px-2 py-0.5" style={{ paddingLeft: 24 + z.depth * 16 }}>↳ {it.label}{it.sub ? <span className="text-stone-400"> · {it.sub}</span> : ""}</td>
+                            <td className="px-2 py-0.5" style={{ paddingLeft: 24 + z.depth * 16 }}>↳ {it.kind === "rg"
+                              ? <button className="text-left hover:underline text-orange-800" title={it.rechnung.beleg ? "Beleg öffnen: " + it.rechnung.beleg.name : "Kein Beleg hinterlegt"} onClick={() => belegOeffnen(it.rechnung)}>{it.rechnung.beleg ? "📄 " : ""}{it.label}</button>
+                              : it.label}{it.sub ? <span className="text-stone-400"> · {it.sub}</span> : ""}</td>
                             {cells.map((c, ci) => (
                               <td key={ci} className={`px-2 py-0.5 text-right tabular-nums ${c && c.muted ? "italic text-stone-400" : ""}`}>
                                 {c ? (c.signed ? (c.betrag > 0 ? "+" : "") + chf(c.betrag * f) : chf(c.betrag * f)) + (c.muted && c.kind === "rg" ? " (offen)" : "") + (c.muted && c.kind === "nt" ? " (pendent)" : "") : ""}
