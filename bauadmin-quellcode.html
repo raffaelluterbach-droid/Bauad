@@ -297,6 +297,23 @@ function normalize(db) {
     return n;
   });
   db.beteiligte = db.beteiligte.map((b) => ({ rolle: "", hauptpersonId: "", ...b }));
+  // Alte Vertragsnummern (z.B. V-2025-01) auf das BKP-Schema 211.02 umstellen
+  db.projekte.forEach((pr) => {
+    const vs = db.vertraege.filter((v) => v.projektId === pr.id);
+    const alt = vs.filter((v) => !/^\d{3}\.\d{2}$/.test(String(v.nr || "").trim()));
+    if (!alt.length) return;
+    alt.sort((a, b) => (a.datum || "").localeCompare(b.datum || ""));
+    alt.forEach((v) => {
+      const pos = db.positionen.find((x) => x.id === v.positionId);
+      const gruppe = String(pos?.bkp || "").split(".")[0].slice(0, 3) || "999";
+      const belegt = new Set(db.vertraege.filter((x) => x.projektId === pr.id).map((x) => String(x.nr || "")));
+      let i = 1;
+      while (belegt.has(`${gruppe}.${String(i).padStart(2, "0")}`)) i++;
+      const neu = `${gruppe}.${String(i).padStart(2, "0")}`;
+      if (v.nr && !v.nrAlt) v.nrAlt = v.nr;
+      v.nr = neu;
+    });
+  });
   db.listen = db.listen.map((l) => ({ typ: "rollen", rollen: [], angebotId: "", ...l }));
   db.vergauftraege = db.vergauftraege.map((va) => ({ nr: "", datum: today(), gesendet: "", rechnungIds: [], bemerkung: "", ...va }));
   // Bauherrschaft und Bauleitung aus den alten Projekt-Textfeldern in den Adressstamm überführen
@@ -322,7 +339,7 @@ function normalize(db) {
     });
   });
   db.vertraege = db.vertraege.map((v) => {
-    const n = { rabattPct: 0, pauschalabzug: 0, skontoPct: 0, bauabzuegePct: 0, rundung: 0, regieBudget: 0, teuerung: 0, rueckbehaltPct: 0, abnahme: "", garantieJahre: 2, buergschaft: false, pauschal: false, garantieArt: "", ...v };
+    const n = { rabattPct: 0, pauschalabzug: 0, skontoPct: 0, bauabzuegePct: 0, rundung: 0, regieBudget: 0, teuerung: 0, rueckbehaltPct: 0, abnahme: "", garantieJahre: 2, buergschaft: false, pauschal: false, garantieArt: "", nrAlt: "", ...v };
     // Das frühere Häkchen «Bürgschaft» geht in der Garantieart auf
     if (!n.garantieArt) n.garantieArt = n.buergschaft ? "solidarbuergschaft" : (Number(n.rueckbehaltPct) > 0 ? "rueckbehalt" : "");
     return n;
@@ -701,7 +718,7 @@ const HILFE = {
   vergauftraege: ["Mehrere geprüfte Rechnungen zu einem Vergütungsauftrag bündeln und als ein PDF ausgeben.", "Das Dokument enthält eine Zusammenstellung, je Rechnung ein Deckblatt mit Vertragsstand — und direkt dahinter den Beleg des Unternehmers.", "«Als gesendet markieren» setzt alle enthaltenen Rechnungen auf bezahlt. Spätere Änderungen am Auftrag lassen den Status unberührt."],
   rechnungen: ["Rechnungen auf einen Vertrag buchen (oder direkt auf eine BKP-Position).", "Je Rechnung lässt sich ein PDF des Unternehmers hinterlegen — per Knopf oder Ziehen-und-Ablegen.", "Status-Ablauf: erfasst → geprüft → bezahlt. Nur «bezahlt» zählt in die Spalte Bezahlt.", "«Druck» erstellt eine Zahlungsfreigabe zum Unterschreiben.", "Rot in fakt./soll = mehr fakturiert als vertraglich vereinbart."],
   lv: ["① LV importieren (.crbx aus Messerli/CRB) oder Positionen manuell erfassen.", "② Leere Offerte als CSV oder .crbx an die Unternehmer senden.", "③ Zurückerhaltene Offerten je Firma einlesen (⬇) — Preise erscheinen automatisch in der Matrix. Oder Preise direkt eintippen.", "④ Vergleichen (günstigster Preis grün) und unten «vergeben» — als neuer Vertrag oder zu einem bestehenden dazu.", "Vergabeantrag drucken für die Bauherrschaft."],
-  angebote: ["Für pauschale Angebote ohne Positionen: Bruttosummen, Konditionen und Bewertungspunkte je Bieter erfassen.", "Der Nutzwert gewichtet Preis, Referenzen und Lehrlingsausbildung (Gewichtung im Reiter Projekt)."],
+  angebote: ["Offerten vergleichen und vergeben: je Unternehmer eine Spalte mit der Konditionen-Staffel von brutto bis netto.", "Bieter fügst du aus dem Adressstamm hinzu — mehrere auf einmal.", "Hier entstehen auch Vergabeantrag, Positionsvergleich und das Leistungsverzeichnis als PDF."],
   rapporte: ["Regierapporte auf Verträge buchen (Stunden × Ansatz + Material).", "Solange das Regiebudget des Vertrags nicht überschritten ist, ändert sich die Prognose nicht — erst der Überschuss fliesst als Erwartung ein."],
   erwartungen: ["Erwartete Mehrkosten erfassen, die noch in keinem Nachtrag stecken.", "Prognose = Vertrag (oder KV) + Erwartung. Regie-Überschüsse erscheinen automatisch."],
   abrechnung: ["Die Gesamtübersicht nach BKP — netto oder brutto, mit Detailzeilen (▸).", "Doppelklick auf Erwartung/Prognose setzt den Wert direkt.", "CSV-Export für Excel oder PDF für die Bauherrschaft — Spalten und Einzelrechnungen sind dabei wählbar.", "Klick auf eine Rechnung öffnet ihren Beleg; fehlt er, kannst du ihn gleich anhängen."],
@@ -1350,7 +1367,7 @@ function App() {
   const nav = [
     ["projekt", "Projekt"], ["beteiligte", "Beteiligte"], ["listen", "Listen"], ["dashboard", "Kostenübersicht"], ["kv", "KV / BKP-Positionen"],
     ["mutationen", "Mutationen"], ["umbuchungen", "Umbuchungen"], ["vertraege", "Verträge & Nachträge"],
-    ["rechnungen", "Rechnungen"], ["vergauftraege", "Vergütungsaufträge"], ["lv", "Leistungsverzeichnisse"], ["angebote", "Angebotsvergleiche"], ["rapporte", "Rapporte"],
+    ["rechnungen", "Rechnungen"], ["vergauftraege", "Vergütungsaufträge"], ["lv", "Leistungsverzeichnisse"], ["angebote", "Angebotsvergleich und Vergabeanträge"], ["rapporte", "Rapporte"],
     ["erwartungen", "Erwartungen"], ["abrechnung", "Bauabrechnung"],
   ];
 
@@ -1741,15 +1758,16 @@ function VertraegeView({ d, dispatch, projektId, projekt, firmen, db }) {
   const [ntFor, setNtFor] = useState(null);
   const posOrder = useMemo(() => { const m = {}; orderedPositions(d.positionen).forEach((p, i) => { m[p.id] = i; }); return m; }, [d.positionen]);
   const garantieRows = d.vertraege.filter((v) => v.abnahme || Number(v.rueckbehaltPct) > 0 || v.garantieArt);
-  const sorted = useMemo(() => [...d.vertraege].sort((a, b) => { const pa = posOrder[a.positionId] ?? 99999, pb = posOrder[b.positionId] ?? 99999; return pa !== pb ? pa - pb : String(a.unternehmer || "").localeCompare(String(b.unternehmer || ""), "de"); }), [d.vertraege, posOrder]);
+  // Flache Liste, rein nach Vertragsnummer (natürliche Zahlenfolge)
+  const sorted = useMemo(() => [...d.vertraege].sort((a, b) =>
+    String(a.nr || "zzz").localeCompare(String(b.nr || "zzz"), "de", { numeric: true, sensitivity: "base" })
+    || String(a.unternehmer || "").localeCompare(String(b.unternehmer || ""), "de")
+  ), [d.vertraege]);
   const totalBeauftragt = d.vertraege.reduce((s, v) => { const ntGen = d.nachtraege.filter((n) => n.vertragId === v.id && n.status === "genehmigt").reduce((a, n) => a + konditionenNetto(n.betrag, v, false), 0); return s + konditionenNetto(v.betrag, v, true) + ntGen + (Number(v.teuerung) || 0); }, 0);
 
   const rows = [];
-  let lastGroup = null;
   sorted.forEach((v) => {
     const pos = d.positionen.find((p) => p.id === v.positionId);
-    const g = pos ? bkpGroup(pos.bkp) : "?";
-    if (g !== lastGroup) { lastGroup = g; rows.push(<div key={"g" + g} className="flex items-center gap-2 pt-3 first:pt-0"><span className="text-xs font-semibold text-stone-500 uppercase tracking-wide whitespace-nowrap">BKP {g} · {BKP_GROUPS[g] || "—"}</span><div className="flex-1 h-px bg-stone-200" /></div>); }
     const netto = konditionenNetto(v.betrag, v, true);
     const nts = d.nachtraege.filter((n) => n.vertragId === v.id);
     const ntGen = nts.filter((n) => n.status === "genehmigt").reduce((s, n) => s + konditionenNetto(n.betrag, v, false), 0);
@@ -1778,7 +1796,7 @@ function VertraegeView({ d, dispatch, projektId, projekt, firmen, db }) {
             <div className="flex items-start justify-between gap-3 flex-wrap">
               <div className="min-w-0">
                 <div className="font-semibold">{v.unternehmer}{v.nr && <span className="text-stone-400 font-normal text-sm"> · {v.nr}</span>}</div>
-                <div className="text-sm text-stone-500">{pos ? pos.bezeichnung : "—"} · {v.datum}</div>
+                <div className="text-sm text-stone-500">{pos ? pos.bezeichnung : "—"} · {v.datum}{v.nrAlt ? <span className="text-stone-400"> · frühere Nr. {v.nrAlt}</span> : null}</div>
               </div>
               <div className="text-right shrink-0">
                 <div className="text-[10px] text-stone-400 uppercase tracking-wide">Beauftragt netto</div>
@@ -2442,7 +2460,9 @@ async function bauePositionsvergleichPdf(a, ctx) {
 
 // ---------- Bauabrechnung als PDF (Querformat, Spalten wählbar) ----------
 async function baueAbrechnungPdf(ctx) {
-  const { ks, projekt, rollen, brutto, spalten, mitRechnungen, details, db: ctxDb } = ctx;
+  const { ks, projekt, rollen, brutto, spalten, artImPdf, details, db: ctxDb } = ctx;
+  const artVon = (kind) => (kind === "nt" || kind === "teuerung" ? "vertrag" : kind);
+  const mitDetails = Object.values(artImPdf || {}).some(Boolean);
   const doc = await PDFLib.PDFDocument.create();
   const schriften = { normal: await doc.embedFont(PDFLib.StandardFonts.Helvetica), fett: await doc.embedFont(PDFLib.StandardFonts.HelveticaBold) };
   const { v: vorlage, logoBild } = await pdfVorlage(doc, ctxDb, projekt);
@@ -2486,18 +2506,21 @@ async function baueAbrechnungPdf(ctx) {
     });
     bl.y -= gruppe ? 15 : 13;
 
-    // Einzelrechnungen unter der Position
-    if (mitRechnungen) {
-      const rgs = (details[z.pos.id] || []).filter((it) => it.kind === "rg");
-      rgs.forEach((it) => {
-        if (bl.y - 14 < RAND + 40) { bl.neueSeite(); kopf(true); }
+    // Gewählte Detailzeilen unter der Position
+    if (mitDetails) {
+      const spalteFuer = { rg: "bezahlt", vertrag: "beauftragt", nt: "beauftragt", teuerung: "beauftragt", rap: "beauftragt", erw: "erwartung", mut: "kvRevidiert", umb: "kvRevidiert" };
+      const zeilen = (details[z.pos.id] || []).filter((it) => artImPdf[artVon(it.kind)]);
+      zeilen.forEach((it) => {
+        if (bl.y - 14 < bl.untenRand + 20) { bl.neueSeite(); kopf(true); }
         bl.text(`· ${it.label}`, { x: RAND + 62 + z.depth * 12, size: 7.5, farbe: grau });
-        bl.text(it.sub || "", { x: RAND + 205 + z.depth * 12, size: 7, farbe: grau });
-        const iBez = cols.findIndex((c) => c.k === "bezahlt");
-        bl.text(chfPdf((Number(it.betrag) || 0) * f) + (it.muted ? " (offen)" : ""), { rechts: spR(iBez >= 0 ? iBez : cols.length - 1), size: 7.5, farbe: grau });
+        bl.text(it.sub || "", { x: RAND + 250 + z.depth * 12, size: 7, farbe: grau });
+        let iBez = cols.findIndex((c) => c.k === spalteFuer[it.kind]);
+        if (iBez < 0) iBez = cols.length - 1;
+        const wert = (Number(it.betrag) || 0) * f;
+        bl.text((it.signed && wert > 0 ? "+" : "") + chfPdf(wert), { rechts: spR(iBez), size: 7.5, farbe: grau });
         bl.y -= 11;
       });
-      if (rgs.length) bl.linie(RAND + 50, rechts, bl.y + 4, 0.25, PDFLib.rgb(0.93, 0.92, 0.91));
+      if (zeilen.length) bl.linie(RAND + 50, rechts, bl.y + 4, 0.25, PDFLib.rgb(0.93, 0.92, 0.91));
     }
     if (gruppe) bl.linie(RAND, rechts, bl.y + 5, 0.3, PDFLib.rgb(0.91, 0.90, 0.89));
   });
@@ -2975,16 +2998,20 @@ function AngeboteView({ d, dispatch, projektId, projekt, db, ks }) {
     <div className="space-y-4">
       <button className={btnPrimary} onClick={() => setEdit({ id: null, titel: "", positionId: "", modus: "pauschal", positionen: [], bedingungen: "", gewichte: { preis: Number(projekt?.gewichtPreis) || 70, referenzen: Number(projekt?.gewichtReferenzen) || 20, lehrlinge: Number(projekt?.gewichtLehrlinge) || 10 }, bieter: [neuBieter(), neuBieter()] })}>+ Ausschreibung / Vergleich</button>
       <p className="text-xs text-stone-400">Tipp: Leistungsverzeichnisse (NPK) importierst du im Reiter «Leistungsverzeichnisse» — dort kannst du auch mehrere NPK-Kataloge zu einer Ausschreibung zusammenführen. Hier bepreisen die Bieter die Positionen und du vergleichst.</p>
-      {!d.angebote.length ? <Empty text="Keine Angebote erstellt." /> : d.angebote.map((a) => <AngebotCard key={a.id} a={a} d={d} dispatch={dispatch} projektId={projektId} projekt={projekt} onEdit={() => setEdit(a)} db={db} rollen={rollen} />)}
-      {edit && <AngebotEditor angebot={edit} positionen={d.positionen} projekt={projekt} neuBieter={neuBieter} onClose={() => setEdit(null)} onSave={(a) => { if (a.id) dispatch({ type: "update", coll: "angebote", id: a.id, patch: a }); else dispatch({ type: "add", coll: "angebote", item: { ...a, id: uid(), projektId } }); setEdit(null); }} />}
+      {!d.angebote.length ? <Empty text="Keine Angebote erstellt." /> : d.angebote.map((a) => <AngebotCard key={a.id} a={a} d={d} dispatch={dispatch} projektId={projektId} projekt={projekt} onEdit={() => setEdit(a)} db={db} rollen={rollen} ks={ks} />)}
+      {edit && <AngebotEditor angebot={edit} positionen={d.positionen} projekt={projekt} neuBieter={neuBieter} firmen={db.firmen} onClose={() => setEdit(null)} onSave={(a) => { if (a.id) dispatch({ type: "update", coll: "angebote", id: a.id, patch: a }); else dispatch({ type: "add", coll: "angebote", item: { ...a, id: uid(), projektId } }); setEdit(null); }} />}
     </div>
   );
 }
 
-function AngebotCard({ a, d, dispatch, projektId, projekt, onEdit, db, rollen }) {
+function AngebotCard({ a, d, dispatch, projektId, projekt, onEdit, db, rollen, ks }) {
   const { w, rows, min } = nutzwerte(a, projekt);
   const [showPos, setShowPos] = useState(false);
   const [posBusy, setPosBusy] = useState(false);
+  const [vorschlag, setVorschlag] = useState("");
+  const [antragBusy, setAntragBusy] = useState(false);
+  const [lvBieter, setLvBieter] = useState("");
+  const [lvBusy, setLvBusy] = useState(false);
   const isLv = a.modus === "lv";
   const posLabel = (() => { const x = d.positionen.find((p) => p.id === a.positionId); return x ? `${x.bkp} ${x.bezeichnung}` : "ohne BKP-Zuordnung"; })();
   function vergeben(b, brutto, netto) {
@@ -3014,26 +3041,86 @@ function AngebotCard({ a, d, dispatch, projektId, projekt, onEdit, db, rollen })
           <div className="font-semibold">{a.titel || "Ohne Titel"} {isLv && <span className="text-xs font-normal bg-orange-50 text-orange-800 rounded px-1.5 py-0.5 align-middle">LV · {(a.positionen || []).length} Pos.</span>}</div>
           <div className="text-sm text-stone-500">{posLabel} · {named.length} Bieter · Gewichtung Preis {w.preis}% / Ref. {w.referenzen}% / Lehrl. {w.lehrlinge}%</div>
         </div>
+        <div className="flex flex-wrap gap-2 items-center">
         <button className={btnGhost} onClick={onEdit}>{isLv ? "Bieter bepreisen / bearbeiten" : "Bearbeiten"}</button>
+        <select className="text-xs rounded border border-stone-300 px-2 py-1.5 bg-white" title="Vorgeschlagener Unternehmer" value={vorschlag || (named[0]?.b.name || "")} onChange={(e) => setVorschlag(e.target.value)}>
+                  {named.map((r) => <option key={r.b.name} value={r.b.name}>Vorschlag: {r.b.name}</option>)}
+                </select>
+                <button className={btnGhost} disabled={!named.length || antragBusy} onClick={async () => {
+                  setAntragBusy(true);
+                  try {
+                    const bytes = await baueVergabeantragPdf(a, { projekt, rollen, ks, d, vorschlagName: vorschlag || named[0]?.b.name, db });
+                    pdfSpeichern(bytes, `Vergabeantrag_${(a.titel || "").replace(/[^\w]+/g, "_")}.pdf`);
+                  } catch (e) { window.alert("Der Vergabeantrag konnte nicht erzeugt werden: " + e.message); }
+                  setAntragBusy(false);
+                }}>{antragBusy ? "erzeugt…" : "📄 Vergabeantrag (quer)"}</button>
+                <select className="text-xs rounded border border-stone-300 px-2 py-1.5 bg-white" title="Leistungsverzeichnis ausgeben" value={lvBieter} onChange={(e) => setLvBieter(e.target.value)}>
+                  <option value="">LV ohne Preise (Ausschreibung)</option>
+                  {(a.bieter || []).filter((b) => b.name).map((b) => <option key={b.name} value={b.name}>LV mit Preisen: {b.name}</option>)}
+                </select>
+                <button className={btnGhost} disabled={lvBusy || !(a.positionen || []).length} onClick={async () => {
+                  setLvBusy(true);
+                  try {
+                    const bytes = await baueLvPdf(a, { projekt, rollen, bieterName: lvBieter, db });
+                    pdfSpeichern(bytes, `LV_${(a.titel || "").replace(/[^\w]+/g, "_")}${lvBieter ? "_" + lvBieter.replace(/[^\w]+/g, "_") : "_Ausschreibung"}.pdf`);
+                  } catch (e) { window.alert("Das Leistungsverzeichnis konnte nicht erzeugt werden: " + e.message); }
+                  setLvBusy(false);
+                }}>{lvBusy ? "erzeugt…" : "📄 LV"}</button>
+        </div>
       </div>
       {named.length > 0 && (
-        <div className="mt-3 overflow-x-auto"><table className="w-full text-sm">
-          <thead className="text-stone-500 text-xs"><tr><th className="text-left font-medium py-1 pr-2">Rang</th><th className="text-left font-medium py-1 pr-2">Bieter</th><th className="text-right font-medium py-1 px-2">Brutto</th><th className="text-left font-medium py-1 px-2">Konditionen</th><th className="text-right font-medium py-1 px-2">Netto</th><th className="text-right font-medium py-1 px-2">Preis-P.</th><th className="text-right font-medium py-1 px-2">Ref.</th><th className="text-right font-medium py-1 px-2">Lehrl.</th><th className="text-right font-medium py-1 px-2">Nutzwert</th><th></th></tr></thead>
-          <tbody>{rows.map((t, i) => t.b.name && (
-            <tr key={i} className={`border-t border-stone-100 align-top ${i === 0 ? "bg-emerald-50/40" : ""}`}>
-              <td className="py-1.5 pr-2">{i === 0 ? "★ 1" : i + 1}</td>
-              <td className="py-1.5 pr-2"><div className="font-medium">{t.b.name}</div>{t.b.bemerkung && <div className="text-xs text-stone-400 max-w-[220px]">{t.b.bemerkung}</div>}</td>
-              <td className="py-1.5 px-2 text-right tabular-nums">{chf(t.brutto)}</td>
-              <td className="py-1.5 px-2 text-xs text-stone-500">{konditionenText(t.b)}</td>
-              <td className="py-1.5 px-2 text-right tabular-nums font-medium">{chf(t.netto)}{t.netto === min && t.netto > 0 && <span className="text-emerald-600 text-xs"> günstigster</span>}</td>
-              <td className="py-1.5 px-2 text-right tabular-nums">{t.pP.toFixed(1)}</td>
-              <td className="py-1.5 px-2 text-right tabular-nums">{Number(t.b.referenzPunkte) || 0}</td>
-              <td className="py-1.5 px-2 text-right tabular-nums">{Number(t.b.lehrlingPunkte) || 0}</td>
-              <td className="py-1.5 px-2 text-right tabular-nums font-semibold">{t.nutz.toFixed(1)}</td>
-              <td className="py-1.5 text-right"><button className="text-orange-800 text-xs hover:underline" onClick={() => vergeben(t.b, t.brutto, t.netto)}>Vergeben →</button></td>
-            </tr>
-          ))}</tbody>
-        </table></div>
+        <div className="mt-3 overflow-x-auto">
+          <table className="text-sm border-separate" style={{ borderSpacing: 0 }}>
+            <thead>
+              <tr>
+                <th className="text-left font-medium text-xs text-stone-500 py-1 pr-3 sticky left-0 bg-white z-10 min-w-[150px]"></th>
+                {named.map((t, i) => (
+                  <th key={i} className={`text-right font-medium py-1 px-3 min-w-[130px] align-bottom ${i === 0 ? "bg-emerald-50/50" : ""}`}>
+                    <div className="text-[10px] text-stone-400 font-normal">{"Rang " + (i + 1) + (i === 0 ? " · bester Nutzwert" : "")}</div>
+                    <div className="text-stone-800">{t.b.name}</div>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {[
+                { l: "Angebot brutto", f: (t) => chf(t.brutto), stark: true },
+                { l: "− Rabatt", f: (t) => Number(t.b.rabattPct) ? `${t.b.rabattPct}%  ${chf(t.brutto * t.b.rabattPct / 100)}` : "–", klein: true },
+                { l: "− Pauschalabzug", f: (t) => Number(t.b.pauschalabzug) ? chf(t.b.pauschalabzug) : "–", klein: true },
+                { l: "− Skonto", f: (t) => Number(t.b.skontoPct) ? `${t.b.skontoPct}%` : "–", klein: true },
+                { l: "− Bauabzüge", f: (t) => Number(t.b.bauabzuegePct) ? `${t.b.bauabzuegePct}%` : "–", klein: true },
+                { l: "± Rundung", f: (t) => Number(t.b.rundung) ? chf(t.b.rundung) : "–", klein: true },
+                { l: "Angebot netto", f: (t) => chf(t.netto), stark: true, linie: true },
+                { l: "gegenüber günstigstem", f: (t) => min > 0 && t.netto > 0 ? (t.netto === min ? "0.0%" : "+" + (100 * (t.netto - min) / min).toFixed(1) + "%") : "–", ampel: true },
+                { l: "Preispunkte", f: (t) => t.pP.toFixed(1), klein: true, linie: true },
+                { l: "Referenzpunkte", f: (t) => String(Number(t.b.referenzPunkte) || 0), klein: true },
+                { l: "Lehrlingspunkte", f: (t) => String(Number(t.b.lehrlingPunkte) || 0), klein: true },
+                { l: "Nutzwert", f: (t) => t.nutz.toFixed(1), stark: true },
+              ].map((zl, ri) => (
+                <tr key={ri} className={zl.linie ? "border-t border-stone-200" : ""}>
+                  <td className={`py-1 pr-3 sticky left-0 bg-white z-10 ${zl.klein ? "text-xs text-stone-500" : "text-stone-700"} ${zl.stark ? "font-semibold" : ""} ${zl.linie ? "border-t border-stone-200" : ""}`}>{zl.l}</td>
+                  {named.map((t, i) => {
+                    let farbe = "";
+                    if (zl.ampel) farbe = t.netto === min && t.netto > 0 ? "text-emerald-700" : "text-red-600";
+                    return <td key={i} className={`py-1 px-3 text-right tabular-nums ${zl.klein ? "text-xs text-stone-500" : ""} ${zl.stark ? "font-semibold" : ""} ${farbe} ${i === 0 ? "bg-emerald-50/50" : ""} ${zl.linie ? "border-t border-stone-200" : ""}`}>{zl.f(t)}</td>;
+                  })}
+                </tr>
+              ))}
+              <tr className="border-t border-stone-200">
+                <td className="py-1.5 pr-3 sticky left-0 bg-white z-10 text-xs text-stone-500 border-t border-stone-200 align-top">Bemerkung</td>
+                {named.map((t, i) => <td key={i} className={`py-1.5 px-3 text-right text-xs text-stone-500 border-t border-stone-200 align-top ${i === 0 ? "bg-emerald-50/50" : ""}`}>{t.b.bemerkung || "–"}</td>)}
+              </tr>
+              <tr>
+                <td className="py-2 sticky left-0 bg-white z-10"></td>
+                {named.map((t, i) => (
+                  <td key={i} className={`py-2 px-3 text-right ${i === 0 ? "bg-emerald-50/50" : ""}`}>
+                    <button className="text-orange-800 text-xs hover:underline" onClick={() => vergeben(t.b, t.brutto, t.netto)}>Vergeben →</button>
+                  </td>
+                ))}
+              </tr>
+            </tbody>
+          </table>
+        </div>
       )}
       {isLv && (a.positionen || []).length > 0 && named.length > 0 && (
         <div className="mt-2">
@@ -3066,18 +3153,76 @@ function AngebotCard({ a, d, dispatch, projektId, projekt, onEdit, db, rollen })
   );
 }
 
-function AngebotEditor({ angebot, positionen, projekt, neuBieter, onClose, onSave }) {
+// Mehrere Firmen aus dem Adressstamm als Bieter übernehmen
+function BieterAusStamm({ firmen, vorhanden, onUebernehmen, onClose }) {
+  const [q, setQ] = useState("");
+  const [ampel, setAmpel] = useState("");
+  const [gewaehlt, setGewaehlt] = useState([]);
+  const liste = useMemo(() => {
+    const t = q.trim().toLowerCase();
+    return [...(firmen || [])]
+      .filter((fa) => !ampel || fa.ampel === ampel)
+      .filter((fa) => !t || [fa.name, fa.ort, fa.bkp].join(" ").toLowerCase().includes(t))
+      .sort((x, y) => x.name.localeCompare(y.name, "de"));
+  }, [firmen, q, ampel]);
+  return (
+    <div className="fixed inset-0 bg-stone-900/50 z-[60] flex items-start justify-center p-6 overflow-y-auto" onClick={onClose}>
+      <div className={`${card} w-full max-w-2xl p-4 space-y-3`} onClick={(e) => e.stopPropagation()}>
+        <div className="font-medium">Bieter aus dem Adressstamm</div>
+        <div className="flex flex-wrap gap-2 items-center">
+          <input className={`${inputCls} max-w-[240px]`} placeholder="Firma, Ort oder Gewerk suchen…" value={q} onChange={(e) => setQ(e.target.value)} />
+          <button className={`px-2.5 py-1.5 rounded-md text-xs border ${!ampel ? "bg-stone-800 text-white border-stone-800" : "border-stone-300 text-stone-600"}`} onClick={() => setAmpel("")}>Alle</button>
+          {Object.entries(AMPEL).map(([k, am]) => (
+            <button key={k} className={`px-2.5 py-1.5 rounded-md text-xs border flex items-center gap-1.5 ${ampel === k ? "bg-stone-800 text-white border-stone-800" : "border-stone-300 text-stone-600"}`} onClick={() => setAmpel(ampel === k ? "" : k)}>
+              <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ background: am.punkt }} />{am.label}
+            </button>
+          ))}
+        </div>
+        <div className="max-h-[50vh] overflow-y-auto divide-y divide-stone-100 border border-stone-200 rounded-lg">
+          {!liste.length ? <div className="p-4 text-sm text-stone-500">Keine Firma gefunden.</div> : liste.map((fa) => {
+            const schon = vorhanden.includes(fa.name.trim().toLowerCase());
+            const an = gewaehlt.some((x) => x.id === fa.id);
+            return (
+              <label key={fa.id} className={`flex items-center gap-3 px-3 py-2 ${schon ? "opacity-50" : "hover:bg-stone-50 cursor-pointer"}`}>
+                <input type="checkbox" disabled={schon} checked={an} onChange={() => setGewaehlt(an ? gewaehlt.filter((x) => x.id !== fa.id) : [...gewaehlt, fa])} />
+                <span className="w-2.5 h-2.5 rounded-full shrink-0 border border-stone-300" style={{ background: AMPEL[fa.ampel]?.punkt || "transparent" }} />
+                <span className="flex-1 min-w-0"><span className="font-medium text-sm">{fa.name}</span><span className="text-xs text-stone-500"> · {[firmaOrt(fa), fa.bkp].filter(Boolean).join(" · ") || "—"}</span></span>
+                {schon ? <span className="text-xs text-stone-400">bereits Bieter</span> : null}
+              </label>
+            );
+          })}
+        </div>
+        <div className="flex justify-end gap-2">
+          <button className={btnGhost} onClick={onClose}>Abbrechen</button>
+          <button className={btnPrimary} disabled={!gewaehlt.length} onClick={() => onUebernehmen(gewaehlt)}>{gewaehlt.length ? `${gewaehlt.length} übernehmen` : "übernehmen"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AngebotEditor({ angebot, positionen, projekt, neuBieter, onClose, onSave, firmen }) {
   const [a, setA] = useState(JSON.parse(JSON.stringify({ modus: "pauschal", positionen: [], bedingungen: "", gewichte: { preis: Number(projekt?.gewichtPreis) || 70, referenzen: Number(projekt?.gewichtReferenzen) || 20, lehrlinge: Number(projekt?.gewichtLehrlinge) || 10 }, ...angebot })));
   const opts = posSelectOptions(positionen);
   const isLv = a.modus === "lv";
   const setB = (bi, k, v) => { const b = [...a.bieter]; b[bi] = { ...b[bi], [k]: v }; setA({ ...a, bieter: b }); };
   const setEp = (bi, code, v) => { const b = [...a.bieter]; b[bi] = { ...b[bi], preise: { ...(b[bi].preise || {}), [code]: v } }; setA({ ...a, bieter: b }); };
+  const [stammOffen, setStammOffen] = useState(false);
+  const bieterAusStamm = (gewaehlte) => {
+    const vorhanden = new Set((a.bieter || []).map((b) => String(b.name || "").trim().toLowerCase()));
+    const neue = gewaehlte.filter((fa) => !vorhanden.has(fa.name.trim().toLowerCase()))
+      .map((fa) => ({ ...neuBieter(), name: fa.name, firmaId: fa.id }));
+    if (neue.length) setA({ ...a, bieter: [...(a.bieter || []).filter((b) => b.name || (a.bieter || []).length <= 1), ...neue] });
+    setStammOffen(false);
+  };
   const delB = (bi) => setA({ ...a, bieter: a.bieter.filter((_, x) => x !== bi) });
   const setW = (k, v) => setA({ ...a, gewichte: { ...a.gewichte, [k]: v } });
   const wSum = (Number(a.gewichte.preis) || 0) + (Number(a.gewichte.referenzen) || 0) + (Number(a.gewichte.lehrlinge) || 0);
   const cell = "w-full text-xs px-1 py-0.5 border border-stone-200 rounded text-right tabular-nums";
   const bruttoOf = (b) => bieterBrutto({ ...b }, a);
   return (
+    <>
+    {stammOffen && <BieterAusStamm firmen={firmen} vorhanden={(a.bieter || []).map((b) => String(b.name || "").trim().toLowerCase())} onUebernehmen={bieterAusStamm} onClose={() => setStammOffen(false)} />}
     <Modal title={angebot.id ? "Ausschreibung bearbeiten" : "Neue Ausschreibung / Angebotsvergleich"} onClose={onClose} wide>
       <div className="space-y-4">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -3094,7 +3239,7 @@ function AngebotEditor({ angebot, positionen, projekt, neuBieter, onClose, onSav
           </div>
         </div>
         <div>
-          <div className="flex items-center justify-between mb-2"><span className="text-xs font-medium text-stone-500 uppercase tracking-wide">Bieter — Stammdaten, Konditionen & Bewertung</span><button className="text-orange-800 text-xs hover:underline" onClick={() => setA({ ...a, bieter: [...a.bieter, neuBieter()] })}>+ Firma hinzufügen</button></div>
+          <div className="flex items-center justify-between mb-2"><span className="text-xs font-medium text-stone-500 uppercase tracking-wide">Bieter — Stammdaten, Konditionen & Bewertung</span><div className="flex gap-3"><button className="text-orange-800 text-xs hover:underline" onClick={() => setStammOffen(true)}>+ Bieter aus Adressstamm</button><button className="text-stone-500 text-xs hover:underline" onClick={() => setA({ ...a, bieter: [...a.bieter, neuBieter()] })}>+ leere Zeile</button></div></div>
           <div className="overflow-x-auto border border-stone-200 rounded-md"><table className="w-full text-sm">
             <thead className="bg-stone-50 text-stone-500 text-xs"><tr>
               <th className="px-2 py-1.5 text-left min-w-[140px]">Firma</th><th className="px-2 py-1.5 text-right min-w-[90px]">Brutto</th><th className="px-2 py-1.5 text-right w-16">Rabatt %</th><th className="px-2 py-1.5 text-right w-20">Pauschal</th><th className="px-2 py-1.5 text-right w-16">Skonto %</th><th className="px-2 py-1.5 text-right w-16">Bauabz. %</th><th className="px-2 py-1.5 text-right w-20">Rundung</th><th className="px-2 py-1.5 text-right min-w-[90px]">Netto</th><th className="px-2 py-1.5 text-right w-16">Ref.</th><th className="px-2 py-1.5 text-right w-16">Lehrl.</th><th className="px-2 py-1.5 text-left min-w-[140px]">Bemerkung</th><th className="px-1 w-8"></th>
@@ -3142,6 +3287,7 @@ function AngebotEditor({ angebot, positionen, projekt, neuBieter, onClose, onSav
         <div className="flex justify-end gap-2"><button className={btnGhost} onClick={onClose}>Abbrechen</button><button className={btnPrimary} disabled={!a.titel} onClick={() => onSave({ ...a, bieter: a.bieter.map((b) => ({ ...b, brutto: parseBetrag(b.brutto), rabattPct: parseBetrag(b.rabattPct), pauschalabzug: parseBetrag(b.pauschalabzug), skontoPct: parseBetrag(b.skontoPct), bauabzuegePct: parseBetrag(b.bauabzuegePct), rundung: parseBetrag(b.rundung), referenzPunkte: parseBetrag(b.referenzPunkte), lehrlingPunkte: parseBetrag(b.lehrlingPunkte) })) })}>Speichern</button></div>
       </div>
     </Modal>
+    </>
   );
 }
 
@@ -3152,10 +3298,6 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen, db,
   const [msg, setMsg] = useState("");
   const [offerFor, setOfferFor] = useState(null);
   const [vergabeFor, setVergabeFor] = useState(null);
-  const [vorschlag, setVorschlag] = useState("");
-  const [antragBusy, setAntragBusy] = useState(false);
-  const [lvBieter, setLvBieter] = useState("");
-  const [lvBusy, setLvBusy] = useState(false);
   const [posForm, setPosForm] = useState({ code: "", bezeichnung: "", einheit: "", menge: "" });
   const [showKond, setShowKond] = useState(false);
   const [showAddPos, setShowAddPos] = useState(false);
@@ -3364,29 +3506,7 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen, db,
               <div className="flex flex-wrap gap-2 items-center">
                 <button className={btnGhost} onClick={() => setShowKond(!showKond)}>{showKond ? "Konditionen & Bewertung ausblenden" : "Konditionen & Bewertung"}</button>
                 <button className={btnGhost} onClick={exportVergleich}>Vergleich als CSV exportieren</button>
-                <select className="text-xs rounded border border-stone-300 px-2 py-1.5 bg-white" title="Vorgeschlagener Unternehmer" value={vorschlag || (nw.rows[0]?.b.name || "")} onChange={(e) => setVorschlag(e.target.value)}>
-                  {nw.rows.map((r) => <option key={r.b.name} value={r.b.name}>Vorschlag: {r.b.name}</option>)}
-                </select>
-                <button className={btnGhost} disabled={!bieter.some((b) => b.name) || antragBusy} onClick={async () => {
-                  setAntragBusy(true);
-                  try {
-                    const bytes = await baueVergabeantragPdf(a, { projekt, rollen, ks, d, vorschlagName: vorschlag || nw.rows[0]?.b.name, db });
-                    pdfSpeichern(bytes, `Vergabeantrag_${(a.titel || "").replace(/[^\w]+/g, "_")}.pdf`);
-                  } catch (e) { window.alert("Der Vergabeantrag konnte nicht erzeugt werden: " + e.message); }
-                  setAntragBusy(false);
-                }}>{antragBusy ? "erzeugt…" : "📄 Vergabeantrag (quer)"}</button>
-                <select className="text-xs rounded border border-stone-300 px-2 py-1.5 bg-white" title="Leistungsverzeichnis ausgeben" value={lvBieter} onChange={(e) => setLvBieter(e.target.value)}>
-                  <option value="">LV ohne Preise (Ausschreibung)</option>
-                  {(a.bieter || []).filter((b) => b.name).map((b) => <option key={b.name} value={b.name}>LV mit Preisen: {b.name}</option>)}
-                </select>
-                <button className={btnGhost} disabled={lvBusy || !(a.positionen || []).length} onClick={async () => {
-                  setLvBusy(true);
-                  try {
-                    const bytes = await baueLvPdf(a, { projekt, rollen, bieterName: lvBieter, db });
-                    pdfSpeichern(bytes, `LV_${(a.titel || "").replace(/[^\w]+/g, "_")}${lvBieter ? "_" + lvBieter.replace(/[^\w]+/g, "_") : "_Ausschreibung"}.pdf`);
-                  } catch (e) { window.alert("Das Leistungsverzeichnis konnte nicht erzeugt werden: " + e.message); }
-                  setLvBusy(false);
-                }}>{lvBusy ? "erzeugt…" : "📄 LV"}</button>
+                
                 <button className={btnGhost} onClick={() => setOfferFor({ aId: a.id, bieterIndex: null })}>+ Offerte importieren</button>
               </div>
               <datalist id="firmenliste-lv">{(firmen || []).map((fa) => <option key={fa.id} value={fa.name} />)}</datalist>
@@ -3655,8 +3775,11 @@ function ErwartungenView({ d, dispatch, projektId, ks }) {
 
 function AbrechnungView({ ks, projekt, d, dispatch, projektId, db }) {
   const rollen = projektRollen(db, projekt);
-  const [zeigeRg, setZeigeRg] = useState(true);
-  const [rgImPdf, setRgImPdf] = useState(false);
+  const ARTEN = [["vertrag", "Verträge / Nachträge"], ["rg", "Rechnungen"], ["erw", "Erwartungen"], ["rap", "Rapporte"], ["umb", "Umbuchungen"], ["mut", "Mutationen"]];
+  // Welche Detailart gehört zu welchem Haken
+  const artVon = (kind) => (kind === "nt" || kind === "teuerung" ? "vertrag" : kind);
+  const [zeigeArt, setZeigeArt] = useState({ vertrag: true, rg: true, erw: true, rap: true, umb: true, mut: true });
+  const [artImPdf, setArtImPdf] = useState({ vertrag: false, rg: false, erw: false, rap: false, umb: false, mut: false });
   const [pdfSpalten, setPdfSpalten] = useState({ kv: true, kvRevidiert: true, beauftragt: true, erwartung: false, prognose: true, bezahlt: true, abwKv: true });
   const [pdfBusy, setPdfBusy] = useState(false);
   const belegRef = useRef(null);
@@ -3715,6 +3838,10 @@ function AbrechnungView({ ks, projekt, d, dispatch, projektId, db }) {
       d.umbuchungen.filter((u) => u.vonPositionId === pos.id).forEach((u) => items.push({ kind: "umb", label: `Umbuchung → ${(d.positionen.find((p) => p.id === u.nachPositionId) || {}).bkp || "?"} · ${u.grund || ""}`, sub: u.datum, col: "kvrev", betrag: -(Number(u.betrag) || 0), signed: true }));
       d.umbuchungen.filter((u) => u.nachPositionId === pos.id).forEach((u) => items.push({ kind: "umb", label: `Umbuchung ← ${(d.positionen.find((p) => p.id === u.vonPositionId) || {}).bkp || "?"} · ${u.grund || ""}`, sub: u.datum, col: "kvrev", betrag: Number(u.betrag) || 0, signed: true }));
       d.erwartungen.filter((e) => e.positionId === pos.id).forEach((e) => items.push({ kind: "erw", label: `Erwartung · ${e.bezeichnung || "—"}`, sub: e.datum, col: "erwartung", betrag: Number(e.betrag) || 0, signed: true }));
+      d.rapporte.filter((r) => vIds.includes(r.vertragId)).forEach((r) => {
+        const v = d.vertraege.find((x) => x.id === r.vertragId);
+        items.push({ kind: "rap", label: `Rapport · ${r.beschrieb || "—"}`, sub: `${r.datum} · ${v ? v.unternehmer : ""}`, col: "beauftragt", betrag: rapportNetto(r, v), muted: true });
+      });
       const eig = ks.ordered.find((z) => z.pos.id === pos.id)?.eigen;
       if (eig && eig.regieUeber > 0) items.push({ kind: "erw", label: "Erwartung · Regieüberschuss (automatisch)", sub: "aus Rapporten", col: "erwartung", betrag: eig.regieUeber, signed: true });
       d.rechnungen.filter((r) => vIds.includes(r.vertragId) || r.positionId === pos.id).forEach((r) => {
@@ -3771,12 +3898,12 @@ function AbrechnungView({ ks, projekt, d, dispatch, projektId, db }) {
         <button className={btnGhost} disabled={pdfBusy} onClick={async () => {
           setPdfBusy(true);
           try {
-            const bytes = await baueAbrechnungPdf({ ks, projekt, rollen, d, db, brutto, spalten: pdfSpalten, mitRechnungen: rgImPdf, details });
+            const bytes = await baueAbrechnungPdf({ ks, projekt, rollen, d, db, brutto, spalten: pdfSpalten, artImPdf, details });
             pdfSpeichern(bytes, `Bauabrechnung_${(projekt?.name || "").replace(/[^\w]+/g, "_")}.pdf`);
           } catch (e) { window.alert("Die Bauabrechnung konnte nicht erzeugt werden: " + e.message); }
           setPdfBusy(false);
         }}>{pdfBusy ? "erzeugt…" : "📄 PDF"}</button>
-        <label className="inline-flex items-center gap-1.5 text-xs text-stone-600"><input type="checkbox" checked={zeigeRg} onChange={(e) => setZeigeRg(e.target.checked)} /> Einzelrechnungen anzeigen</label>
+
         <input ref={belegRef} type="file" accept="application/pdf,.pdf" className="hidden" onChange={(e) => { belegAnhaengen(e.target.files[0]); e.target.value = ""; }} />
         <button className={btnGhost} onClick={() => { setAllOpen(!allOpen); setOpen({}); }}>{allOpen ? "Details zuklappen" : "Alle Details aufklappen"}</button>
         <div className="ml-auto inline-flex rounded-md border border-stone-200 overflow-hidden text-sm">
@@ -3790,7 +3917,20 @@ function AbrechnungView({ ks, projekt, d, dispatch, projektId, db }) {
           {[["kv", "KV"], ["kvRevidiert", "KV revidiert"], ["beauftragt", "Beauftragt"], ["erwartung", "Erwartung"], ["prognose", "Prognose"], ["bezahlt", "Bezahlt"], ["abwKv", "Abweichung"]].map(([k, l]) => (
             <label key={k} className="inline-flex items-center gap-1.5 text-stone-600"><input type="checkbox" checked={!!pdfSpalten[k]} onChange={(e) => setPdfSpalten({ ...pdfSpalten, [k]: e.target.checked })} /> {l}</label>
           ))}
-          <label className="inline-flex items-center gap-1.5 text-stone-600 border-l border-stone-200 pl-4"><input type="checkbox" checked={rgImPdf} onChange={(e) => setRgImPdf(e.target.checked)} /> Einzelrechnungen ins PDF</label>
+        </div>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs mt-2 pt-2 border-t border-stone-100">
+          <span className="text-stone-500 font-medium">Details ins PDF</span>
+          {ARTEN.map(([k, l]) => (
+            <label key={k} className="inline-flex items-center gap-1.5 text-stone-600"><input type="checkbox" checked={!!artImPdf[k]} onChange={(e) => setArtImPdf({ ...artImPdf, [k]: e.target.checked })} /> {l}</label>
+          ))}
+        </div>
+      </div>
+      <div className={`${card} p-3 print:hidden`}>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
+          <span className="text-stone-500 font-medium">Details am Bildschirm</span>
+          {ARTEN.map(([k, l]) => (
+            <label key={k} className="inline-flex items-center gap-1.5 text-stone-600"><input type="checkbox" checked={zeigeArt[k] !== false} onChange={(e) => setZeigeArt({ ...zeigeArt, [k]: e.target.checked })} /> {l}</label>
+          ))}
         </div>
       </div>
       <p className="text-xs text-stone-400 print:hidden">▸ öffnet Detailzeilen (Verträge, Rechnungen, Mutationen, Erwartungen). Doppelklick auf <strong>Erwartung</strong> oder <strong>Prognose</strong> einer Position (ohne Unterpositionen) setzt den Wert direkt — die Differenz wird als Zeile «Anpassung (Bauabrechnung)» in den Erwartungen geführt. Direkteingabe wirkt auf Nettowerte.</p>
@@ -3831,7 +3971,7 @@ function AbrechnungView({ ks, projekt, d, dispatch, projektId, db }) {
                         <td className="px-2 py-1 text-right tabular-nums">{V(z.roll.bezahlt)}</td>
                         <td className="px-2 py-1 text-right"><Abw v={z.roll.abwKv * f} /></td>
                       </tr>
-                      {isOpen(z.pos.id) && det.filter((it) => it.kind !== "rg" || zeigeRg).map((it, i) => {
+                      {isOpen(z.pos.id) && det.filter((it) => zeigeArt[artVon(it.kind)] !== false).map((it, i) => {
                         const cells = Array(8).fill(null);
                         cells[colIdx[it.col] - 1] = it;
                         return (
