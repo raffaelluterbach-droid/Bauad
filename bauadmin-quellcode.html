@@ -283,6 +283,8 @@ function normalize(db) {
   db.positionen = (db.positionen || []).map((p) => ({ parentId: null, ...p }));
   ["mutationen", "umbuchungen", "vertraege", "nachtraege", "rechnungen", "angebote", "rapporte", "erwartungen", "snapshots", "beteiligte", "listen", "vergauftraege"].forEach((c) => { if (!db[c]) db[c] = []; });
   if (!db.firmen) db.firmen = [];
+  if (!db.kataloge) db.kataloge = [];
+  db.angebote = (db.angebote || []).map((a) => ({ ...a, positionen: (a.positionen || []).map((pz) => ({ art: "normal", bemerkung: "", fabrikat: "", ...pz })) }));
   db.vorlage = { logoId: "", logoName: "", logoBreiteHoch: 120, logoBreiteQuer: 150, logoPos: "links", kopf: ["", "", ""], fuss: ["", ""], seitenzahl: true, ...(db.vorlage || {}) };
   db.projekte = db.projekte.map((pr) => ({ ...pr, vorlageEigen: pr.vorlageEigen || false, vorlage: pr.vorlage || null }));
   db.firmen = db.firmen.map((fa) => {
@@ -2226,16 +2228,17 @@ async function baueLvPdf(a, ctx) {
   };
   kopfZeile();
 
-  let total = 0;
+  let total = 0, ausserhalb = 0;
   (a.positionen || []).forEach((pz) => {
     if (bl.y - 18 < RAND + 50) { bl.neueSeite(); pdfKopf(bl, "Leistungsverzeichnis", projekt, rollen, "Fortsetzung", vorlage); kopfZeile(); }
     const menge = Number(pz.menge) || 0;
     const ep = mitPreisen ? parseBetrag((bieter.preise || {})[pz.code]) || 0 : null;
     const betrag = mitPreisen ? menge * ep : null;
-    if (mitPreisen) total += betrag;
+    if (mitPreisen) { if (istGewertet(pz)) total += betrag; else ausserhalb += betrag; }
     bl.text(pz.npk || pz.code || "", { x: sp.code, size: 8 });
-    const zln = bl.umbruch(pz.bezeichnung || "", sp.menge - sp.bez - 50, 8.5);
-    bl.text(zln[0] || "", { x: sp.bez, size: 8.5 });
+    const kurz = (POSARTEN.find((x) => x.k === (pz.art || "normal")) || {}).kurz;
+    const zln = bl.umbruch((kurz ? kurz + " · " : "") + (pz.bezeichnung || ""), sp.menge - sp.bez - 50, 8.5);
+    bl.text(zln[0] || "", { x: sp.bez, size: 8.5, fett: !!kurz });
     bl.text(menge ? menge.toLocaleString("de-CH") : "", { rechts: sp.menge, size: 8.5 });
     bl.text(pz.einheit || "", { x: sp.einheit, size: 8 });
     if (mitPreisen) {
@@ -2248,14 +2251,21 @@ async function baueLvPdf(a, ctx) {
     }
     bl.y -= 12;
     if (zln[1]) { bl.text(zln[1], { x: sp.bez, size: 7.5, farbe: grau }); bl.y -= 10; }
+    (pz.langtext || []).filter(Boolean).forEach((lt) => bl.umbruch(lt, sp.menge - sp.bez - 50, 7).forEach((t) => { bl.platz(10); bl.text(t, { x: sp.bez, size: 7, farbe: grau }); bl.y -= 9; }));
+    if (pz.fabrikat) { bl.platz(10); bl.text("Fabrikat / Typ: " + pz.fabrikat, { x: sp.bez, size: 7, farbe: grau }); bl.y -= 9; }
     bl.linie(RAND, rechts, bl.y + 4, 0.25, PDFLib.rgb(0.93, 0.92, 0.91));
   });
 
   bl.platz(50);
   bl.y -= 6; bl.linie(RAND, rechts, bl.y, 1.2, PDFLib.rgb(0.13, 0.12, 0.11)); bl.y -= 16;
   if (mitPreisen) {
-    bl.text("Total netto", { size: 10.5, fett: true });
+    bl.text("Total netto (gewertete Positionen)", { size: 10.5, fett: true });
     bl.text("CHF " + chfPdf(total), { rechts, size: 10.5, fett: true });
+    if (ausserhalb) {
+      bl.y -= 15;
+      bl.text("Eventual- und Per-Positionen (nicht im Total)", { size: 9, farbe: grau });
+      bl.text("CHF " + chfPdf(ausserhalb), { rechts, size: 9, farbe: grau });
+    }
   } else {
     bl.text("Total netto", { size: 10.5, fett: true });
     bl.linie(rechts - 120, rechts, bl.y - 2, 0.5);
@@ -2973,8 +2983,20 @@ function RechnungenView({ d, dispatch, projektId, projekt, db }) {
   );
 }
 
+// Eventual- und Per-Positionen werden bepreist, zählen aber nicht ins Vergleichstotal
+function istGewertet(pz) { return (pz.art || "normal") === "normal"; }
+const POSARTEN = [
+  { k: "normal", l: "Normal", kurz: "", hilfe: "zählt ins Vergleichstotal" },
+  { k: "eventual", l: "Eventual", kurz: "Ev", hilfe: "bepreist, ausserhalb des Totals" },
+  { k: "per", l: "Per", kurz: "Per", hilfe: "Preis pro Einheit, ausserhalb des Totals" },
+];
+const posArtLabel = (k) => (POSARTEN.find((x) => x.k === (k || "normal")) || POSARTEN[0]).l;
+function bieterNichtGewertet(b, a) {
+  if (!a || a.modus !== "lv") return 0;
+  return (a.positionen || []).filter((p) => !istGewertet(p)).reduce((s, p) => s + (Number(p.menge) || 0) * (parseBetrag((b.preise || {})[p.code]) || 0), 0);
+}
 function bieterBrutto(b, a) {
-  if (a && a.modus === "lv") return (a.positionen || []).reduce((s, p) => s + (Number(p.menge) || 0) * (parseBetrag((b.preise || {})[p.code]) || 0), 0);
+  if (a && a.modus === "lv") return (a.positionen || []).filter(istGewertet).reduce((s, p) => s + (Number(p.menge) || 0) * (parseBetrag((b.preise || {})[p.code]) || 0), 0);
   return Number(b.brutto) || 0;
 }
 function bieterNetto(b, a) { return konditionenNetto(bieterBrutto(b, a), b, true); }
@@ -3201,6 +3223,124 @@ function BieterAusStamm({ firmen, vorhanden, onUebernehmen, onClose }) {
   );
 }
 
+// ---------- NPK-Katalog: importieren, durchsuchen, Positionen übernehmen ----------
+// Positionen aus einem Katalog oder einer früheren Ausschreibung wählen
+function PositionsWaehler({ db, d, dispatch, aufnehmen, onClose }) {
+  // Immer mit der Katalogansicht starten — nur dort lässt sich der erste Katalog importieren
+  const [quelle, setQuelle] = useState("katalog");
+  const [katId, setKatId] = useState((db.kataloge || [])[0]?.id || "");
+  const [angebotId, setAngebotId] = useState("");
+  const [q, setQ] = useState("");
+  const [gewaehlt, setGewaehlt] = useState({});
+  const [busy, setBusy] = useState(false);
+  const dateiRef = useRef(null);
+
+  const kataloge = db.kataloge || [];
+  const katalog = kataloge.find((k) => k.id === katId) || null;
+
+  const quellPositionen = useMemo(() => {
+    if (quelle === "katalog") return katalog?.positionen || [];
+    const a = d.angebote.find((x) => x.id === angebotId);
+    return a?.positionen || [];
+  }, [quelle, katalog, angebotId, d.angebote]);
+
+  const treffer = useMemo(() => {
+    const t = q.trim().toLowerCase();
+    if (!t) return quellPositionen.slice(0, 400);
+    return quellPositionen.filter((pz) => [pz.npk, pz.code, pz.bezeichnung, ...(pz.langtext || [])].join(" ").toLowerCase().includes(t)).slice(0, 400);
+  }, [quellPositionen, q]);
+
+  const katalogImportieren = async (datei) => {
+    if (!datei) return;
+    setBusy(true);
+    try {
+      const parsed = parseSia451(await unzipCrbx(await datei.arrayBuffer()));
+      if (!parsed.positionen.length) { window.alert("In dieser Datei wurden keine Positionen gefunden."); setBusy(false); return; }
+      const kats = [...new Set(parsed.positionen.map((pz) => pz.catalog))];
+      const id = uid();
+      dispatch({ type: "add", coll: "kataloge", item: { id, name: datei.name.replace(/\.crbx$/i, ""), npk: kats.join(", "), datum: today(), positionen: parsed.positionen, bedingungen: parsed.bedingungen || [] } });
+      setKatId(id); setQuelle("katalog");
+    } catch (e) { window.alert("Der Katalog konnte nicht gelesen werden: " + e.message); }
+    setBusy(false);
+  };
+
+  const anzahl = Object.values(gewaehlt).filter(Boolean).length;
+  const uebernehmen = () => {
+    const gewaehlte = treffer.filter((pz) => gewaehlt[pz.code]);
+    if (!gewaehlte.length) return;
+    aufnehmen(gewaehlte.map((pz) => ({ ...pz, id: uid(), art: "normal", bemerkung: "", fabrikat: "", menge: Number(pz.menge) || 0 })));
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 bg-stone-900/50 z-[60] flex items-start justify-center p-6 overflow-y-auto" onClick={onClose}>
+      <div className={`${card} w-full max-w-4xl p-4 space-y-3`} onClick={(e) => e.stopPropagation()}>
+        <div className="font-medium">Positionen aufnehmen</div>
+
+        <div className="flex flex-wrap gap-2 items-end">
+          <Field label="Quelle">
+            <select className={inputCls} value={quelle} onChange={(e) => { setQuelle(e.target.value); setGewaehlt({}); }}>
+              <option value="katalog">NPK-Katalog</option>
+              <option value="fruehere">frühere Ausschreibung</option>
+            </select>
+          </Field>
+          {quelle === "katalog" ? (
+            <>
+              <Field label="Katalog">
+                <select className={inputCls} value={katId} onChange={(e) => { setKatId(e.target.value); setGewaehlt({}); }}>
+                  {!kataloge.length ? <option value="">— noch keiner importiert —</option> : null}
+                  {kataloge.map((k) => <option key={k.id} value={k.id}>{k.name} · NPK {k.npk} · {k.positionen.length} Pos.</option>)}
+                </select>
+              </Field>
+              <input ref={dateiRef} type="file" accept=".crbx" className="hidden" onChange={(e) => { katalogImportieren(e.target.files[0]); e.target.value = ""; }} />
+              <button className={btnGhost} disabled={busy} onClick={() => dateiRef.current?.click()}>{busy ? "liest…" : "+ Katalog (.crbx)"}</button>
+              {katalog ? <button className="text-red-600 text-xs hover:underline pb-2" onClick={() => { if (window.confirm(`Katalog «${katalog.name}» entfernen? Bereits aufgenommene Positionen bleiben bestehen.`)) { dispatch({ type: "remove", coll: "kataloge", id: katalog.id }); setKatId((kataloge.find((k) => k.id !== katalog.id) || {}).id || ""); } }}>Katalog entfernen</button> : null}
+            </>
+          ) : (
+            <Field label="Ausschreibung">
+              <select className={inputCls} value={angebotId} onChange={(e) => { setAngebotId(e.target.value); setGewaehlt({}); }}>
+                <option value="">— wählen —</option>
+                {d.angebote.filter((a) => (a.positionen || []).length).map((a) => <option key={a.id} value={a.id}>{a.titel} · {(a.positionen || []).length} Pos.</option>)}
+              </select>
+            </Field>
+          )}
+          <input className={`${inputCls} max-w-[240px]`} placeholder="NPK-Code oder Stichwort…" value={q} onChange={(e) => setQ(e.target.value)} />
+        </div>
+
+        {!quellPositionen.length ? (
+          <Empty text={quelle === "katalog" ? "Noch kein Katalog importiert. Lade eine .crbx-Datei aus CRB oder Messerli — sie bleibt für alle Projekte verfügbar." : "Wähle eine frühere Ausschreibung mit Positionen."} />
+        ) : (
+          <>
+            <div className="flex items-center gap-3 text-xs text-stone-500">
+              <span>{treffer.length} von {quellPositionen.length} Positionen{treffer.length === 400 ? " (Anzeige begrenzt — bitte suchen)" : ""}</span>
+              <button className="text-orange-800 hover:underline" onClick={() => { const alle = {}; treffer.forEach((pz) => alle[pz.code] = true); setGewaehlt(alle); }}>alle anzeigen wählen</button>
+              {anzahl ? <button className="text-stone-500 hover:underline" onClick={() => setGewaehlt({})}>Auswahl leeren</button> : null}
+            </div>
+            <div className="max-h-[46vh] overflow-y-auto border border-stone-200 rounded-lg divide-y divide-stone-100">
+              {treffer.map((pz) => (
+                <label key={pz.code} className="flex items-start gap-3 px-3 py-1.5 hover:bg-stone-50 cursor-pointer">
+                  <input type="checkbox" className="mt-1" checked={!!gewaehlt[pz.code]} onChange={() => setGewaehlt({ ...gewaehlt, [pz.code]: !gewaehlt[pz.code] })} />
+                  <span className="tabular-nums text-xs text-stone-500 w-[64px] shrink-0 mt-0.5">{pz.npk}</span>
+                  <span className="flex-1 min-w-0">
+                    <span className="text-sm">{pz.bezeichnung}</span>
+                    {(pz.langtext || []).length ? <span className="block text-xs text-stone-400 truncate">{(pz.langtext || []).join(" · ")}</span> : null}
+                  </span>
+                  <span className="text-xs text-stone-500 shrink-0 mt-0.5">{pz.einheit}</span>
+                </label>
+              ))}
+            </div>
+          </>
+        )}
+
+        <div className="flex justify-end gap-2">
+          <button className={btnGhost} onClick={onClose}>Abbrechen</button>
+          <button className={btnPrimary} disabled={!anzahl} onClick={uebernehmen}>{anzahl ? `${anzahl} Position${anzahl === 1 ? "" : "en"} aufnehmen` : "aufnehmen"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AngebotEditor({ angebot, positionen, projekt, neuBieter, onClose, onSave, firmen }) {
   const [a, setA] = useState(JSON.parse(JSON.stringify({ modus: "pauschal", positionen: [], bedingungen: "", gewichte: { preis: Number(projekt?.gewichtPreis) || 70, referenzen: Number(projekt?.gewichtReferenzen) || 20, lehrlinge: Number(projekt?.gewichtLehrlinge) || 10 }, ...angebot })));
   const opts = posSelectOptions(positionen);
@@ -3299,6 +3439,15 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen, db,
   const [offerFor, setOfferFor] = useState(null);
   const [vergabeFor, setVergabeFor] = useState(null);
   const [posForm, setPosForm] = useState({ code: "", bezeichnung: "", einheit: "", menge: "" });
+  const [waehlerOffen, setWaehlerOffen] = useState(false);
+  // Gewählte Katalogpositionen ans Ende der Ausschreibung hängen (Dubletten überspringen)
+  const positionenAufnehmen = (neue) => {
+    if (!a) return;
+    const da = new Set((a.positionen || []).map((x) => x.code));
+    const frisch = neue.filter((x) => !da.has(x.code));
+    if (!frisch.length) { window.alert("Alle gewählten Positionen sind bereits enthalten."); return; }
+    dispatch({ type: "update", coll: "angebote", id: a.id, patch: { positionen: [...(a.positionen || []), ...frisch] } });
+  };
   const [showKond, setShowKond] = useState(false);
   const [showAddPos, setShowAddPos] = useState(false);
   const [detail, setDetail] = useState(null);
@@ -3417,6 +3566,7 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen, db,
               <span className="text-xs text-stone-500">② An Unternehmer senden:</span>
               <button className={btnGhost} disabled={!positionen.length} onClick={() => exportLeer("csv")}>CSV</button>
               <button className={btnGhost} disabled={!positionen.length} onClick={() => exportLeer("crbx")}>.crbx</button>
+              <button className={btnPrimary} onClick={() => setWaehlerOffen(true)}>+ Positionen aus Katalog</button>
               <span className="ml-auto text-xs text-stone-500">{positionen.length} Positionen · {[...new Set(positionen.map((p) => "NPK " + p.catalog))].join(", ") || "—"}</span>
             </div>
             {showAddPos && (
@@ -3438,6 +3588,7 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen, db,
                     <tr className="bg-stone-100">
                       <th className="sticky left-0 z-30 bg-stone-100 text-left px-2 py-2 border-b border-stone-200 min-w-[70px]">NPK</th>
                       <th className="text-left px-2 py-2 border-b border-stone-200 min-w-[150px]">Bezeichnung</th>
+                      <th className="text-left px-2 py-2 border-b border-stone-200">Art</th>
                       <th className="text-left px-2 py-2 border-b border-stone-200">Einh.</th>
                       <th className="text-right px-2 py-2 border-b border-stone-200">Menge</th>
                       {bieter.map((b, bi) => (
@@ -3464,11 +3615,19 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen, db,
                       const eps = bieter.map((b) => parseBetrag((b.preise || {})[p.code]) || 0);
                       const valid = eps.filter((x) => x > 0); const minEp = valid.length ? Math.min(...valid) : 0;
                       return (
-                        <tr key={p.code} className="border-b border-stone-100 hover:bg-stone-50/60">
+                        <tr key={p.code} className={`border-b border-stone-100 hover:bg-stone-50/60 ${istGewertet(p) ? "" : "bg-amber-50/40"}`}>
                           <td className="sticky left-0 z-10 bg-white px-2 py-1 tabular-nums whitespace-nowrap">{p.npk}</td>
                           <td className="px-2 py-1">
                             <span>{p.bezeichnung || <span className="text-stone-300">—</span>}</span>
-                            {p.langtext?.length ? <button className="ml-1 text-orange-700 text-[10px] hover:underline align-top" title="Langtext" onClick={() => setDetail(p)}>ⓘ</button> : null}
+                            <button className="ml-1 text-orange-700 text-[10px] hover:underline align-top" title="Langtext, Bemerkung und Fabrikat bearbeiten" onClick={() => setDetail(p)}>ⓘ</button>
+                            {p.fabrikat ? <span className="block text-[10px] text-stone-400">Fabrikat: {p.fabrikat}</span> : null}
+                            {p.bemerkung ? <span className="block text-[10px] text-amber-700">{p.bemerkung}</span> : null}
+                          </td>
+                          <td className="px-2 py-1">
+                            <select className="text-[11px] rounded border border-stone-200 px-1 py-0.5 bg-white" value={p.art || "normal"} title={(POSARTEN.find((x) => x.k === (p.art || "normal")) || {}).hilfe}
+                              onChange={(e) => dispatch({ type: "update", coll: "angebote", id: a.id, patch: { positionen: a.positionen.map((x) => x.code === p.code ? { ...x, art: e.target.value } : x) } })}>
+                              {POSARTEN.map((ar) => <option key={ar.k} value={ar.k}>{ar.l}</option>)}
+                            </select>
                           </td>
                           <td className="px-2 py-1 text-stone-500 whitespace-nowrap">{p.einheit}</td>
                           <td className="px-2 py-1 text-right"><ZahlZelle className="w-16 text-xs text-right tabular-nums bg-transparent border-b border-transparent hover:border-stone-200 focus:border-orange-600 focus:outline-none" wert={p.menge} onSpeichern={(n) => dispatch({ type: "update", coll: "angebote", id: a.id, patch: { positionen: a.positionen.map((x) => x.code === p.code ? { ...x, menge: n } : x) } })} /></td>
@@ -3547,12 +3706,34 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen, db,
 
       {detail && (
         <Modal title={detail.npk + " " + (detail.bezeichnung || "")} onClose={() => setDetail(null)} wide>
-          <div className="text-sm text-stone-600 whitespace-pre-wrap">{(detail.langtext || []).join("\n") || "Kein Langtext."}</div>
-          <div className="mt-3 text-xs text-stone-500">Einheit {detail.einheit || "—"} · Menge {detail.menge}</div>
+          {(() => {
+            const speichern = (patch) => {
+              dispatch({ type: "update", coll: "angebote", id: a.id, patch: { positionen: a.positionen.map((x) => x.code === detail.code ? { ...x, ...patch } : x) } });
+              setDetail({ ...detail, ...patch });
+            };
+            return (
+              <div className="space-y-3">
+                <div className="flex flex-wrap gap-4 text-xs text-stone-500">
+                  <span>Einheit {detail.einheit || "—"}</span><span>Menge {detail.menge}</span>
+                  <span>Art: <span className="font-medium text-stone-700">{posArtLabel(detail.art)}</span>{istGewertet(detail) ? "" : " — bepreist, aber ausserhalb des Vergleichstotals"}</span>
+                </div>
+                <Field label="Langtext / Beschrieb">
+                  <textarea className={`${inputCls} min-h-[130px] font-mono text-xs`} value={(detail.langtext || []).join("\n")}
+                    onChange={(e) => speichern({ langtext: e.target.value.split("\n") })} placeholder="Beschrieb aus dem Katalog — hier ergänzbar" />
+                </Field>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <Field label="Fabrikat / Typ"><input className={inputCls} value={detail.fabrikat || ""} onChange={(e) => speichern({ fabrikat: e.target.value })} placeholder="z.B. Swisspor EPS 30 oder gleichwertig" /></Field>
+                  <Field label="Bemerkung (intern)"><input className={inputCls} value={detail.bemerkung || ""} onChange={(e) => speichern({ bemerkung: e.target.value })} placeholder="Notiz zur Position" /></Field>
+                </div>
+                <p className="text-xs text-stone-400">Langtext und Fabrikat erscheinen im Leistungsverzeichnis-PDF unter der Position; die Bemerkung bleibt intern.</p>
+              </div>
+            );
+          })()}
         </Modal>
       )}
       {offerFor && <OfferteImportModal a={d.angebote.find((x) => x.id === offerFor.aId)} bieterIndex={offerFor.bieterIndex} dispatch={dispatch} onClose={() => setOfferFor(null)} />}
       {vergabeFor && <VergabeModal info={vergabeFor} vertraege={d.vertraege} dispatch={dispatch} projektId={projektId} onClose={() => setVergabeFor(null)} db={db} rollen={rollen} />}
+      {waehlerOffen && <PositionsWaehler db={db} d={d} dispatch={dispatch} aufnehmen={positionenAufnehmen} onClose={() => setWaehlerOffen(false)} />}
     </div>
   );
 }
