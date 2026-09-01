@@ -506,28 +506,31 @@ async function pdfVorlage(doc, db, projekt) {
 // Kopfzeile für die von der App erzeugten PDF-Seiten
 function pdfKopf(bl, titel, projekt, rollen, zusatz, vorlage) {
   const v = vorlage || {};
-  // Freie Kopfzeilen der Vorlage zuerst, dann der Dokumentkopf
-  const kopfZeilen = (v.kopf || []).filter(Boolean);
-  if (kopfZeilen.length) {
-    const rechtsK = bl.format.breite - RAND;
-    kopfZeilen.forEach((zl, i) => bl.text(zl, { rechts: rechtsK, y: bl.y - i * 10, size: 7.5, farbe: PDFLib.rgb(0.55, 0.52, 0.50) }));
-    bl.y -= kopfZeilen.length * 10 + 6;
-  }
-  bl.text(titel.toUpperCase(), { size: 8, farbe: PDFLib.rgb(0.45, 0.42, 0.40) });
-  bl.y -= 16;
-  bl.text(projekt?.name || "", { size: 15, fett: true });
-  bl.y -= 13;
-  bl.text([projekt?.strasse, projekt?.plzOrt || projekt?.ort].filter(Boolean).join(", "), { size: 8.5, farbe: PDFLib.rgb(0.42, 0.40, 0.38) });
+  const grau = PDFLib.rgb(0.45, 0.42, 0.40), hell = PDFLib.rgb(0.55, 0.52, 0.50);
   const rechts = bl.format.breite - RAND;
-  bl.text(today(), { size: 8.5, rechts, y: bl.format.hoehe - RAND });
-  if (rollen?.bauherr) bl.text("Bauherr: " + rollen.bauherr, { size: 8.5, rechts, y: bl.format.hoehe - RAND - 13, farbe: PDFLib.rgb(0.42, 0.40, 0.38) });
-  if (rollen?.bauleitung) bl.text("Bauleitung: " + rollen.bauleitung, { size: 8.5, rechts, y: bl.format.hoehe - RAND - 25, farbe: PDFLib.rgb(0.42, 0.40, 0.38) });
-  if (zusatz) { bl.y -= 13; bl.text(zusatz, { size: 9, fett: true }); }
-  bl.y -= 10;
-  bl.linie(RAND, rechts, bl.y, 1.2, PDFLib.rgb(0.13, 0.12, 0.11));
-  bl.y -= 18;
-}
+  // bl.y liegt bereits unterhalb des Logos — beide Kopfspalten starten auf dieser Höhe,
+  // damit sich Logo, Angaben und Vorlagenzeilen nicht überlagern.
+  const oben = bl.y;
 
+  // Rechte Spalte: Datum, Beteiligte, danach die freien Zeilen der Vorlage
+  let yR = oben;
+  bl.text(today(), { size: 8.5, rechts, y: yR }); yR -= 12;
+  if (rollen?.bauherr) { bl.text("Bauherr: " + rollen.bauherr, { size: 8.5, rechts, y: yR, farbe: grau }); yR -= 12; }
+  if (rollen?.bauleitung) { bl.text("Bauleitung: " + rollen.bauleitung, { size: 8.5, rechts, y: yR, farbe: grau }); yR -= 12; }
+  (v.kopf || []).filter(Boolean).forEach((zl, i) => { if (i === 0) yR -= 3; bl.text(zl, { rechts, y: yR, size: 7.5, farbe: hell }); yR -= 10; });
+
+  // Linke Spalte: Dokumenttitel und Projekt
+  let yL = oben;
+  bl.text(titel.toUpperCase(), { size: 8, farbe: grau, y: yL }); yL -= 16;
+  bl.text(projekt?.name || "", { size: 15, fett: true, y: yL }); yL -= 13;
+  bl.text([projekt?.strasse, projekt?.plzOrt || projekt?.ort].filter(Boolean).join(", "), { size: 8.5, farbe: PDFLib.rgb(0.42, 0.40, 0.38), y: yL });
+  if (zusatz) { yL -= 13; bl.text(zusatz, { size: 9, fett: true, y: yL }); }
+
+  // Trennlinie unter die tiefere der beiden Spalten
+  bl.y = Math.min(yL, yR) - 12;
+  bl.linie(RAND, rechts, bl.y, 1.2, PDFLib.rgb(0.13, 0.12, 0.11));
+  bl.y -= 20;
+}
 // PDF im Browser speichern
 function pdfSpeichern(bytes, dateiname) {
   download(new Blob([bytes], { type: "application/pdf" }), dateiname);
@@ -1367,9 +1370,10 @@ function App() {
 
   const navGlobal = [["adressstamm", "Adressstamm"], ["vorlage", "PDF-Vorlage"]];
   const nav = [
-    ["projekt", "Projekt"], ["beteiligte", "Beteiligte"], ["listen", "Listen"], ["dashboard", "Kostenübersicht"], ["kv", "KV / BKP-Positionen"],
-    ["mutationen", "Mutationen"], ["umbuchungen", "Umbuchungen"], ["vertraege", "Verträge & Nachträge"],
-    ["rechnungen", "Rechnungen"], ["vergauftraege", "Vergütungsaufträge"], ["lv", "Leistungsverzeichnisse"], ["angebote", "Angebotsvergleich und Vergabeanträge"], ["rapporte", "Rapporte"],
+    ["projekt", "Projekt"], ["beteiligte", "Beteiligte"], ["listen", "Listen"],
+    ["dashboard", "Kostenübersicht"], ["kv", "KV / BKP-Positionen"], ["mutationen", "Mutationen"], ["umbuchungen", "Umbuchungen"],
+    ["lv", "Leistungsverzeichnisse"], ["angebote", "Angebotsvergleich und Vergabeanträge"], ["vertraege", "Verträge & Nachträge"],
+    ["rapporte", "Rapporte"], ["rechnungen", "Rechnungen"], ["vergauftraege", "Vergütungsaufträge"],
     ["erwartungen", "Erwartungen"], ["abrechnung", "Bauabrechnung"],
   ];
 
@@ -1966,7 +1970,7 @@ function pdfStaffel(bl, zeilen, breite) {
   const rechts = breite - RAND;
   zeilen.forEach((z) => {
     bl.platz(18);
-    if (z.trenner) { bl.linie(RAND, rechts, bl.y + 10, z.dick ? 1.2 : 0.4, z.dick ? PDFLib.rgb(0.13, 0.12, 0.11) : undefined); }
+    if (z.trenner) { bl.y -= 4; bl.linie(RAND, rechts, bl.y + 13, z.dick ? 1.2 : 0.4, z.dick ? PDFLib.rgb(0.13, 0.12, 0.11) : undefined); }
     bl.text(z.l, { size: z.fett ? 10 : 9, fett: z.fett, farbe: z.grau ? PDFLib.rgb(0.45, 0.42, 0.40) : undefined });
     if (z.wert !== undefined) bl.text((z.neg ? "- " : "") + chfPdf(z.wert), { rechts, size: z.fett ? 10 : 9, fett: z.fett, farbe: z.grau ? PDFLib.rgb(0.45, 0.42, 0.40) : undefined });
     else if (z.text !== undefined) bl.text(z.text, { rechts, size: 9 });
@@ -2105,11 +2109,11 @@ async function baueListePdf(liste, ctx) {
   const grau = PDFLib.rgb(0.45, 0.42, 0.40);
   const bl = pdfBlatt(doc, schriften, A4, vorlage, logoBild);
   const rechts = A4.breite - RAND;
-  pdfKopf(bl, liste.name, projekt, rollen, vorlage);
+  pdfKopf(bl, liste.name, projekt, rollen, "", vorlage);
   if (!zeilen.length) { bl.text("Diese Liste ist leer.", { size: 9.5, farbe: grau }); bl.abschliessen(); return doc.save(); }
   const gruppen = [];
   zeilen.forEach((z) => { const g = gruppen.find((x) => x.rolle === z.rolle); if (g) g.zeilen.push(z); else gruppen.push({ rolle: z.rolle, zeilen: [z] }); });
-  const sp = { firma: RAND, person: RAND + 210, tel: RAND + 340, mail: RAND + 430 };
+  const sp = { firma: RAND, person: RAND + 200, tel: RAND + 320, mail: rechts };
   gruppen.forEach((g) => {
     bl.platz(50);
     bl.y -= 6;
@@ -2120,7 +2124,7 @@ async function baueListePdf(liste, ctx) {
       bl.text(z.name, { x: sp.firma, size: 9, fett: true });
       bl.text(personName(z.person) || "—", { x: sp.person, size: 9 });
       bl.text([z.mobile, z.festnetz].filter(Boolean).join(" / ") || "—", { x: sp.tel, size: 8.5 });
-      bl.text(z.email || "—", { x: sp.mail, size: 8 });
+      bl.text(z.email || "—", { rechts: sp.mail, size: 8 });
       bl.y -= 11;
       bl.text(z.adresse || "—", { x: sp.firma, size: 7.5, farbe: grau });
       if (z.person?.funktion) bl.text(z.person.funktion, { x: sp.person, size: 7.5, farbe: grau });
@@ -2165,7 +2169,7 @@ async function baueKvPdf(ctx) {
 
   const kopfZeile = () => {
     spalten.forEach((c, i) => bl.text(c.l, { rechts: spX(i) - 4, size: 7.5, farbe: grau }));
-    bl.y -= 5; bl.linie(RAND, rechts, bl.y, 0.8, PDFLib.rgb(0.55, 0.52, 0.50)); bl.y -= 12;
+    bl.y -= 9; bl.linie(RAND, rechts, bl.y, 0.8, PDFLib.rgb(0.55, 0.52, 0.50)); bl.y -= 14;
   };
   kopfZeile();
 
@@ -2187,7 +2191,7 @@ async function baueKvPdf(ctx) {
 
   // Summen
   bl.platz(60);
-  bl.y -= 4; bl.linie(RAND, rechts, bl.y, 1.2, PDFLib.rgb(0.13, 0.12, 0.11)); bl.y -= 15;
+  bl.y -= 8; bl.linie(RAND, rechts, bl.y, 1.2, PDFLib.rgb(0.13, 0.12, 0.11)); bl.y -= 17;
   bl.text("Total", { size: 10, fett: true });
   spalten.forEach((c, i) => bl.text(c.f({ roll: ks.total, pos: {}, depth: 0 }), { rechts: spX(i) - 4, size: 10, fett: true }));
   bl.y -= 20;
@@ -2224,7 +2228,7 @@ async function baueLvPdf(a, ctx) {
     bl.text("Einh.", { x: sp.einheit, size: 7.5, farbe: grau });
     bl.text("Einheitspreis", { rechts: sp.ep, size: 7.5, farbe: grau });
     bl.text("Betrag", { rechts: sp.betrag, size: 7.5, farbe: grau });
-    bl.y -= 5; bl.linie(RAND, rechts, bl.y, 0.8, PDFLib.rgb(0.55, 0.52, 0.50)); bl.y -= 12;
+    bl.y -= 9; bl.linie(RAND, rechts, bl.y, 0.8, PDFLib.rgb(0.55, 0.52, 0.50)); bl.y -= 14;
   };
   kopfZeile();
 
@@ -2310,7 +2314,7 @@ async function baueVergabeantragPdf(a, ctx) {
     { l: "Bauabzüge", f: (r) => Number(r.b.bauabzuegePct) ? r.b.bauabzuegePct + "%" : "–", klein: true },
     { l: "Rundung", f: (r) => Number(r.b.rundung) ? chfPdf(r.b.rundung) : "–", klein: true },
     { l: "Angebot netto", f: (r) => chfPdf(r.netto), fett: true, linieVor: true, kv: kv ? chfPdf(kv) : "–" },
-    { l: "gegenüber Bestbieter", f: (r) => guenstigst > 0 && r.netto > 0 ? pct(100 * (r.netto - guenstigst) / guenstigst) : "–", ampel: true },
+    { l: "gegenüber günstigstem", f: (r) => guenstigst > 0 && r.netto > 0 ? pct(100 * (r.netto - guenstigst) / guenstigst) : "–", ampel: true },
     { l: "gegenüber KV revidiert", f: (r) => kv > 0 && r.netto > 0 ? chfPdf(r.netto - kv) : "–", ampelBetrag: true },
     { l: "Referenzpunkte", f: (r) => String(Number(r.b.referenzPunkte) || 0), klein: true, linieVor: true },
     { l: "Lehrlingspunkte", f: (r) => String(Number(r.b.lehrlingPunkte) || 0), klein: true },
@@ -2327,7 +2331,7 @@ async function baueVergabeantragPdf(a, ctx) {
     const bl = pdfBlatt(doc, schriften, A4Q, vorlage, logoBild);
     blaetter.push(bl);
     const rechts = A4Q.breite - RAND;
-    pdfKopf(bl, "Vergabeantrag", projekt, rollen, a.titel + (gruppen.length > 1 ? `  (Blatt ${gi + 1} von ${gruppen.length})` : ""));
+    pdfKopf(bl, "Vergabeantrag", projekt, rollen, a.titel + (gruppen.length > 1 ? `  (Blatt ${gi + 1} von ${gruppen.length})` : ""), vorlage);
 
     const labelB = 165, kvB = kv ? 95 : 0;
     const start = RAND + labelB + kvB;
@@ -2341,12 +2345,12 @@ async function baueVergabeantragPdf(a, ctx) {
       const nameZeilen = bl.umbruch(r.b.name, spB - 10, 8.5, true).slice(0, 2);
       nameZeilen.forEach((zl, k) => bl.text(zl, { rechts: spX(i), y: kopfY - k * 10, size: 8.5, fett: true }));
     });
-    bl.y = kopfY - 24;
-    bl.linie(RAND, rechts, bl.y + 6, 0.8, PDFLib.rgb(0.55, 0.52, 0.50));
+    bl.y = kopfY - 30;
+    bl.linie(RAND, rechts, bl.y + 12, 0.8, PDFLib.rgb(0.55, 0.52, 0.50));
 
     // Zeilen
     zeilen.forEach((zl) => {
-      if (zl.linieVor) { bl.y -= 3; bl.linie(RAND, rechts, bl.y + 8, 0.4); }
+      if (zl.linieVor) { bl.y -= 6; bl.linie(RAND, rechts, bl.y + 13, 0.4); }
       bl.platz(16);
       const size = zl.klein ? 8 : 9;
       bl.text(zl.l, { size, fett: zl.fett, farbe: zl.klein ? grau : undefined });
@@ -2417,13 +2421,13 @@ async function bauePositionsvergleichPdf(a, ctx) {
     const spR = (i) => RAND + labelB + i * spB + spB - 8;
 
     const kopf = (fortsetzung) => {
-      pdfKopf(bl, "Positionsvergleich", projekt, rollen, a.titel + (gruppen.length > 1 ? `  (Blatt ${gi + 1} von ${gruppen.length})` : "") + (fortsetzung ? "  ·  Fortsetzung" : ""));
+      pdfKopf(bl, "Positionsvergleich", projekt, rollen, a.titel + (gruppen.length > 1 ? `  (Blatt ${gi + 1} von ${gruppen.length})` : "") + (fortsetzung ? "  ·  Fortsetzung" : ""), vorlage);
       const y0 = bl.y;
       bl.text("NPK · Bezeichnung", { size: 7.5, farbe: grau, y: y0 });
       bl.text("Menge", { rechts: RAND + labelB - 8, size: 7.5, farbe: grau, y: y0 });
       gruppe.forEach((b, i) => bl.umbruch(b.name, spB - 10, 8, true).slice(0, 2).forEach((zl, k) => bl.text(zl, { rechts: spR(i), y: y0 - k * 9, size: 8, fett: true })));
-      bl.y = y0 - 22;
-      bl.linie(RAND, rechts, bl.y + 6, 0.8, PDFLib.rgb(0.55, 0.52, 0.50));
+      bl.y = y0 - 28;
+      bl.linie(RAND, rechts, bl.y + 12, 0.8, PDFLib.rgb(0.55, 0.52, 0.50));
     };
     kopf(false);
 
@@ -2450,7 +2454,7 @@ async function bauePositionsvergleichPdf(a, ctx) {
     });
 
     bl.platz(46);
-    bl.y -= 4; bl.linie(RAND, rechts, bl.y, 1.2, PDFLib.rgb(0.13, 0.12, 0.11)); bl.y -= 16;
+    bl.y -= 8; bl.linie(RAND, rechts, bl.y, 1.2, PDFLib.rgb(0.13, 0.12, 0.11)); bl.y -= 18;
     const gueltigT = totale.filter((x) => x > 0);
     const minTotal = gueltigT.length ? Math.min(...gueltigT) : 0;
     bl.text("Total netto", { size: 10, fett: true });
@@ -2498,7 +2502,7 @@ async function baueAbrechnungPdf(ctx) {
   const kopf = (fortsetzung) => {
     pdfKopf(bl, "Bauabrechnung", projekt, rollen, (brutto ? `alle Beträge inkl. MwSt ${satz}%` : "alle Beträge exkl. MwSt") + (fortsetzung ? "  ·  Fortsetzung" : ""), vorlage);
     cols.forEach((c, i) => bl.text(c.l, { rechts: spR(i), size: 7.5, farbe: grau }));
-    bl.y -= 5; bl.linie(RAND, rechts, bl.y, 0.8, PDFLib.rgb(0.55, 0.52, 0.50)); bl.y -= 12;
+    bl.y -= 9; bl.linie(RAND, rechts, bl.y, 0.8, PDFLib.rgb(0.55, 0.52, 0.50)); bl.y -= 14;
   };
   kopf(false);
 
@@ -2537,7 +2541,7 @@ async function baueAbrechnungPdf(ctx) {
 
   // Summen
   bl.platz(70);
-  bl.y -= 4; bl.linie(RAND, rechts, bl.y, 1.2, PDFLib.rgb(0.13, 0.12, 0.11)); bl.y -= 16;
+  bl.y -= 8; bl.linie(RAND, rechts, bl.y, 1.2, PDFLib.rgb(0.13, 0.12, 0.11)); bl.y -= 18;
   bl.text("Total", { size: 10, fett: true });
   cols.forEach((c, i) => {
     const v = (Number(c.g({ roll: ks.total })) || 0) * f;
