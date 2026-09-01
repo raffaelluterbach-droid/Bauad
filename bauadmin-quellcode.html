@@ -273,6 +273,9 @@ function belegTx(modus, arbeit) {
   }));
 }
 const belegSpeichern = (id, blob) => belegTx("readwrite", (s) => s.put(blob, id));
+// Das Firmenlogo liegt in derselben Ablage wie die Belege
+const logoSpeichern = (id, blob) => belegTx("readwrite", (s) => s.put(blob, id));
+const logoLaden = (id) => belegTx("readonly", (s) => s.get(id));
 const belegLaden = (id) => belegTx("readonly", (s) => s.get(id));
 const belegLoeschen = (id) => belegTx("readwrite", (s) => s.delete(id));
 function normalize(db) {
@@ -280,6 +283,8 @@ function normalize(db) {
   db.positionen = (db.positionen || []).map((p) => ({ parentId: null, ...p }));
   ["mutationen", "umbuchungen", "vertraege", "nachtraege", "rechnungen", "angebote", "rapporte", "erwartungen", "snapshots", "beteiligte", "listen", "vergauftraege"].forEach((c) => { if (!db[c]) db[c] = []; });
   if (!db.firmen) db.firmen = [];
+  db.vorlage = { logoId: "", logoName: "", logoBreiteHoch: 120, logoBreiteQuer: 150, logoPos: "links", kopf: ["", "", ""], fuss: ["", ""], seitenzahl: true, ...(db.vorlage || {}) };
+  db.projekte = db.projekte.map((pr) => ({ ...pr, vorlageEigen: pr.vorlageEigen || false, vorlage: pr.vorlage || null }));
   db.firmen = db.firmen.map((fa) => {
     const n = { strasse: "", plz: "", ort: "", land: "Schweiz", email: "", website: "", mwstNr: "", bkp: "", ampel: "", personen: [], ...fa };
     if (!n.strasse && fa.adresse) n.strasse = fa.adresse;
@@ -359,6 +364,7 @@ function reducer(db, a) {
   switch (a.type) {
     case "load": return a.db;
     case "setAktiv": return { ...db, aktiv: a.id };
+    case "setVorlage": return { ...db, vorlage: a.vorlage };
     case "add": return { ...db, [a.coll]: [...db[a.coll], a.item] };
     case "addMany": return { ...db, [a.coll]: [...db[a.coll], ...a.items] };
     case "update": return { ...db, [a.coll]: db[a.coll].map((x) => (x.id === a.id ? { ...x, ...a.patch } : x)) };
@@ -389,17 +395,46 @@ function chfPdf(n) { return (Math.round((Number(n) || 0) * 100) / 100).toLocaleS
 function pct(n, stellen) { const v = Number(n) || 0; return (v > 0 ? "+" : "") + v.toFixed(stellen === undefined ? 1 : stellen) + "%"; }
 
 // Kleiner Zeichenhelfer: hält die aktuelle Schreibposition und legt bei Bedarf eine neue Seite an
-function pdfBlatt(doc, schriften, format) {
+function pdfBlatt(doc, schriften, format, vorlage, logoBild) {
   const f = format || A4;
+  const quer = f.breite > f.hoehe;
+  const v = vorlage || {};
+  const fussHoehe = ((v.fuss || []).filter(Boolean).length ? 12 : 0) + (v.seitenzahl === false ? 0 : 11);
+  const untenRand = RAND + fussHoehe;
+  // Platz für das Logo auf jeder Seite freihalten
+  const logoBreite = logoBild ? (Number(quer ? v.logoBreiteQuer : v.logoBreiteHoch) || 120) : 0;
+  const logoHoehe = logoBild ? logoBreite * (logoBild.height / logoBild.width) : 0;
+  const obenRand = f.hoehe - RAND - (logoHoehe ? logoHoehe + 10 : 0);
   let seite = doc.addPage([f.breite, f.hoehe]);
-  let y = f.hoehe - RAND;
+  const seiten = [seite];
+  let y = obenRand;
   const api = {
     get seite() { return seite; },
     get y() { return y; },
     set y(v) { y = v; },
     format: f,
-    neueSeite() { seite = doc.addPage([f.breite, f.hoehe]); y = f.hoehe - RAND; return seite; },
-    platz(hoehe) { if (y - hoehe < RAND) api.neueSeite(); return y; },
+    neueSeite() { seite = doc.addPage([f.breite, f.hoehe]); seiten.push(seite); y = obenRand; return seite; },
+    platz(hoehe) { if (y - hoehe < untenRand) api.neueSeite(); return y; },
+    get untenRand() { return untenRand; },
+    get seiten() { return seiten; },
+    // Logo und Fusszeilen erst am Schluss auf alle Seiten legen
+    abschliessen() {
+      const fussZeilen = (v.fuss || []).filter(Boolean);
+      seiten.forEach((sp, i) => {
+        if (logoBild) {
+          const x = v.logoPos === "rechts" ? f.breite - RAND - logoBreite : (v.logoPos === "mitte" ? (f.breite - logoBreite) / 2 : RAND);
+          sp.drawImage(logoBild, { x, y: f.hoehe - RAND + 8 - logoHoehe, width: logoBreite, height: logoHoehe });
+        }
+        let fy = RAND - 4;
+        if (v.seitenzahl !== false) {
+          const t = pdfText(`Seite ${i + 1} von ${seiten.length}`);
+          sp.drawText(t, { x: f.breite - RAND - schriften.normal.widthOfTextAtSize(t, 7.5), y: fy, size: 7.5, font: schriften.normal, color: PDFLib.rgb(0.55, 0.52, 0.50) });
+        }
+        fussZeilen.forEach((zl, k) => {
+          sp.drawText(pdfText(zl), { x: RAND, y: fy + (fussZeilen.length - 1 - k) * 10, size: 7.5, font: schriften.normal, color: PDFLib.rgb(0.55, 0.52, 0.50) });
+        });
+      });
+    },
     text(t, opt) {
       const o = opt || {};
       const size = o.size || 9;
@@ -431,8 +466,34 @@ function pdfBlatt(doc, schriften, format) {
   return api;
 }
 
+// Vorlage samt eingebettetem Logo für ein PDF vorbereiten
+async function pdfVorlage(doc, db, projekt) {
+  const v = aktiveVorlage(db, projekt);
+  let logoBild = null;
+  if (v.logoId) {
+    try {
+      const blob = await logoLaden(v.logoId);
+      if (blob) {
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        logoBild = blob.type === "image/jpeg" || /\.jpe?g$/i.test(v.logoName || "")
+          ? await doc.embedJpg(bytes)
+          : await doc.embedPng(bytes);
+      }
+    } catch (e) { logoBild = null; }
+  }
+  return { v, logoBild };
+}
+
 // Kopfzeile für die von der App erzeugten PDF-Seiten
-function pdfKopf(bl, titel, projekt, rollen, zusatz) {
+function pdfKopf(bl, titel, projekt, rollen, zusatz, vorlage) {
+  const v = vorlage || {};
+  // Freie Kopfzeilen der Vorlage zuerst, dann der Dokumentkopf
+  const kopfZeilen = (v.kopf || []).filter(Boolean);
+  if (kopfZeilen.length) {
+    const rechtsK = bl.format.breite - RAND;
+    kopfZeilen.forEach((zl, i) => bl.text(zl, { rechts: rechtsK, y: bl.y - i * 10, size: 7.5, farbe: PDFLib.rgb(0.55, 0.52, 0.50) }));
+    bl.y -= kopfZeilen.length * 10 + 6;
+  }
   bl.text(titel.toUpperCase(), { size: 8, farbe: PDFLib.rgb(0.45, 0.42, 0.40) });
   bl.y -= 16;
   bl.text(projekt?.name || "", { size: 15, fett: true });
@@ -671,6 +732,12 @@ function naechsteBuchungsNr(rechnungen, projektId) {
 function vaFuerRechnung(vergauftraege, rechnungId) {
   return (vergauftraege || []).find((a) => (a.rechnungIds || []).includes(rechnungId)) || null;
 }
+// Wirksame PDF-Vorlage: eine eigene Projektvorlage schlägt die globale
+function aktiveVorlage(db, projekt) {
+  const g = db?.vorlage || {};
+  if (projekt?.vorlageEigen && projekt.vorlage) return { ...g, ...projekt.vorlage };
+  return g;
+}
 const GARANTIEARTEN = [
   { k: "", l: "— keine —" },
   { k: "rueckbehalt", l: "Rückbehalt" },
@@ -780,6 +847,116 @@ function KostenverlaufChart({ punkte }) {
 // =========================================================================
 //  UNTERNEHMER-ADRESSSTAMM
 // =========================================================================
+// ---------- PDF-Vorlage: Logo, Kopf- und Fusszeilen ----------
+function VorlageEditor({ wert, onAendern, titel, hinweis }) {
+  const v = wert || {};
+  const ref = useRef(null);
+  const [logoUrl, setLogoUrl] = useState("");
+  const setzen = (patch) => onAendern({ ...v, ...patch });
+
+  useEffect(() => {
+    let tot = false, url = "";
+    if (v.logoId) logoLaden(v.logoId).then((blob) => { if (blob && !tot) { url = URL.createObjectURL(blob); setLogoUrl(url); } }).catch(() => {});
+    else setLogoUrl("");
+    return () => { tot = true; if (url) URL.revokeObjectURL(url); };
+  }, [v.logoId]);
+
+  const logoWaehlen = async (datei) => {
+    if (!datei) return;
+    if (!/^image\/(png|jpeg)$/.test(datei.type)) { window.alert("Bitte ein PNG oder JPG wählen."); return; }
+    if (datei.size > 4 * 1024 * 1024) { window.alert("Das Logo ist grösser als 4 MB. Bitte verkleinern."); return; }
+    try {
+      const id = v.logoId || uid();
+      await logoSpeichern(id, datei);
+      setzen({ logoId: id, logoName: datei.name });
+    } catch (e) { window.alert("Logo konnte nicht gespeichert werden: " + e.message); }
+  };
+
+  const zeile = (feld, i, platzhalter) => (
+    <input key={feld + i} className={inputCls} value={(v[feld] || [])[i] || ""} placeholder={platzhalter}
+      onChange={(e) => { const arr = [...(v[feld] || [])]; arr[i] = e.target.value; setzen({ [feld]: arr }); }} />
+  );
+
+  return (
+    <div className={`${card} p-4 space-y-4`}>
+      <div>
+        <div className="font-medium text-sm">{titel}</div>
+        {hinweis ? <p className="text-xs text-stone-500 mt-0.5">{hinweis}</p> : null}
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4">
+        <div>
+          <div className="text-xs text-stone-500 mb-1.5">Firmenlogo</div>
+          <div className="border border-dashed border-stone-300 rounded-lg p-3 bg-stone-50 flex items-center justify-center h-[90px] overflow-hidden"
+            onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); logoWaehlen(e.dataTransfer.files[0]); }}>
+            {logoUrl ? <img src={logoUrl} alt="Logo" className="max-h-[74px] max-w-full object-contain" /> : <span className="text-xs text-stone-400 text-center">PNG oder JPG<br />hierher ziehen</span>}
+          </div>
+          <input ref={ref} type="file" accept="image/png,image/jpeg" className="hidden" onChange={(e) => { logoWaehlen(e.target.files[0]); e.target.value = ""; }} />
+          <div className="flex gap-2 mt-1.5">
+            <button className={btnGhost} onClick={() => ref.current?.click()}>{v.logoId ? "Ersetzen" : "Logo wählen"}</button>
+            {v.logoId ? <button className="text-red-600 text-xs hover:underline" onClick={() => setzen({ logoId: "", logoName: "" })}>Entfernen</button> : null}
+          </div>
+        </div>
+
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+            <Field label="Position"><select className={inputCls} value={v.logoPos || "links"} onChange={(e) => setzen({ logoPos: e.target.value })}><option value="links">links</option><option value="mitte">mitte</option><option value="rechts">rechts</option></select></Field>
+            <Field label="Breite Hochformat (mm)"><input className={inputCls} value={Math.round((Number(v.logoBreiteHoch) || 120) / 2.835)} onChange={(e) => setzen({ logoBreiteHoch: parseBetrag(e.target.value) * 2.835 })} /></Field>
+            <Field label="Breite Querformat (mm)"><input className={inputCls} value={Math.round((Number(v.logoBreiteQuer) || 150) / 2.835)} onChange={(e) => setzen({ logoBreiteQuer: parseBetrag(e.target.value) * 2.835 })} /></Field>
+          </div>
+          <div>
+            <div className="text-xs text-stone-500 mb-1.5">Kopfzeilen (rechts oben, bis zu drei)</div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2">{[0, 1, 2].map((i) => zeile("kopf", i, i === 0 ? "BauPlan Architekten GmbH" : i === 1 ? "Bahnhofstrasse 1, 8001 Zürich" : "044 200 10 20 · info@bauplan.ch"))}</div>
+          </div>
+          <div>
+            <div className="text-xs text-stone-500 mb-1.5">Fusszeilen (links unten, bis zu zwei)</div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">{[0, 1].map((i) => zeile("fuss", i, i === 0 ? "BauPlan Architekten GmbH · www.bauplan.ch" : "Erstellt mit BauAdmin"))}</div>
+          </div>
+          <label className="inline-flex items-center gap-2 text-sm"><input type="checkbox" checked={v.seitenzahl !== false} onChange={(e) => setzen({ seitenzahl: e.target.checked })} /> Seitenzahl «Seite X von Y» unten rechts</label>
+        </div>
+      </div>
+
+      <VorlageVorschau v={v} logoUrl={logoUrl} />
+    </div>
+  );
+}
+
+// Zeigt Hoch- und Querformat nebeneinander
+function VorlageVorschau({ v, logoUrl }) {
+  const Blatt = ({ quer }) => {
+    const b = quer ? 210 : 148, h = quer ? 148 : 210;
+    const logoB = ((Number(quer ? v.logoBreiteQuer : v.logoBreiteHoch) || 120) / (quer ? 841.89 : 595.28)) * b;
+    const just = v.logoPos === "rechts" ? "flex-end" : v.logoPos === "mitte" ? "center" : "flex-start";
+    return (
+      <div className="border border-stone-300 bg-white shadow-sm relative" style={{ width: b, height: h }}>
+        <div className="absolute inset-0 p-2 flex flex-col">
+          <div className="flex" style={{ justifyContent: just }}>
+            {logoUrl ? <img src={logoUrl} alt="" style={{ width: logoB, maxHeight: 26, objectFit: "contain" }} /> : <div className="text-[6px] text-stone-300 border border-dashed border-stone-300 px-1" style={{ width: logoB }}>Logo</div>}
+          </div>
+          <div className="text-right text-[5px] text-stone-400 leading-[1.5] mt-0.5">{(v.kopf || []).filter(Boolean).map((z, i) => <div key={i}>{z}</div>)}</div>
+          <div className="mt-1 text-[5px] text-stone-400">DOKUMENTTITEL</div>
+          <div className="text-[8px] font-bold text-stone-700 leading-tight">Projektname</div>
+          <div className="border-b border-stone-800 mt-1" />
+          <div className="flex-1 mt-1 space-y-[3px]">{[...Array(quer ? 5 : 8)].map((_, i) => <div key={i} className="h-[2px] bg-stone-100" />)}</div>
+          <div className="flex justify-between items-end text-[5px] text-stone-400">
+            <div className="leading-[1.5]">{(v.fuss || []).filter(Boolean).map((z, i) => <div key={i}>{z}</div>)}</div>
+            {v.seitenzahl !== false ? <div>Seite 1 von 2</div> : null}
+          </div>
+        </div>
+      </div>
+    );
+  };
+  return (
+    <div className="border-t border-stone-100 pt-3">
+      <div className="text-xs text-stone-500 mb-2">Vorschau</div>
+      <div className="flex gap-4 flex-wrap items-start">
+        <div><Blatt quer={false} /><div className="text-[10px] text-stone-400 text-center mt-1">Hochformat</div></div>
+        <div><Blatt quer /><div className="text-[10px] text-stone-400 text-center mt-1">Querformat</div></div>
+      </div>
+    </div>
+  );
+}
+
 function AdressstammView({ firmen, db, dispatch }) {
   const [sel, setSel] = useState(null);
   const [q, setQ] = useState("");
@@ -1034,7 +1211,7 @@ function ListenView({ db, dispatch, projektId, projekt, d }) {
             <div className="flex gap-2">
               <button className={btnGhost} onClick={async () => {
                 try {
-                  const bytes = await baueListePdf(aktiv, { zeilen: listenZeilen(aktiv, db, d, projektId), projekt, rollen: projektRollen(db, projekt) });
+                  const bytes = await baueListePdf(aktiv, { zeilen: listenZeilen(aktiv, db, d, projektId), projekt, rollen: projektRollen(db, projekt), db });
                   pdfSpeichern(bytes, `${(aktiv.name || "Liste").replace(/[^\w]+/g, "_")}.pdf`);
                 } catch (e) { window.alert("Die Liste konnte nicht erzeugt werden: " + e.message); }
               }}>📄 PDF</button>
@@ -1169,7 +1346,7 @@ function App() {
   const ks = useKostenStand(d, projekt);
   const rollen = projektRollen(db, projekt);
 
-  const navGlobal = [["adressstamm", "Adressstamm"]];
+  const navGlobal = [["adressstamm", "Adressstamm"], ["vorlage", "PDF-Vorlage"]];
   const nav = [
     ["projekt", "Projekt"], ["beteiligte", "Beteiligte"], ["listen", "Listen"], ["dashboard", "Kostenübersicht"], ["kv", "KV / BKP-Positionen"],
     ["mutationen", "Mutationen"], ["umbuchungen", "Umbuchungen"], ["vertraege", "Verträge & Nachträge"],
@@ -1217,8 +1394,9 @@ function App() {
               : <p className="text-sm text-stone-500">{projekt?.name}{rollen.bauherr ? ` · ${rollen.bauherr}` : ""} · {projekt?.plzOrt || projekt?.ort} · MwSt {ks.satz}%</p>}
           </div>
           {hilfe && <HilfeBox view={view} />}
-          {view === "projekt" && <ProjektView projekt={projekt} dispatch={dispatch} />}
+          {view === "projekt" && <ProjektView projekt={projekt} dispatch={dispatch} db={db} />}
           {view === "adressstamm" && <AdressstammView firmen={firmen} db={db} dispatch={dispatch} />}
+          {view === "vorlage" && <VorlageEditor wert={db.vorlage} titel="Vorlage für alle PDF-Dokumente" hinweis="Logo, Kopf- und Fusszeilen gelten projektübergreifend. Im Reiter «Projekt» lässt sich für ein einzelnes Projekt eine abweichende Vorlage setzen." onAendern={(v) => dispatch({ type: "setVorlage", vorlage: v })} />}
           {view === "beteiligte" && <ProjektBeteiligteView db={db} dispatch={dispatch} projektId={db.aktiv} firmen={firmen} />}
           {view === "listen" && <ListenView db={db} dispatch={dispatch} projektId={db.aktiv} projekt={projekt} d={d} />}
           {view === "dashboard" && <Dashboard ks={ks} d={d} dispatch={dispatch} projektId={db.aktiv} />}
@@ -1266,7 +1444,7 @@ function ProjektNeu({ dispatch, setView }) {
   );
 }
 
-function ProjektView({ projekt, dispatch }) {
+function ProjektView({ projekt, dispatch, db }) {
   const [f, setF] = useState({ ...projekt });
   const [saved, setSaved] = useState(false);
   useEffect(() => { setF({ ...projekt }); setSaved(false); }, [projekt?.id]);
@@ -1310,6 +1488,14 @@ function ProjektView({ projekt, dispatch }) {
         </div>
         <p className="text-xs text-stone-400">Gilt als Vorgabe für neue Ausschreibungen; pro Ausschreibung übersteuerbar. Punkte 1–100, Preispunkte = 100 × günstigste Nettosumme ÷ Nettosumme.</p>
       </div>
+      <div className={`${card} p-4`}>
+        <label className="inline-flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={!!f.vorlageEigen} onChange={(e) => setF({ ...f, vorlageEigen: e.target.checked, vorlage: e.target.checked ? (f.vorlage || { ...(db?.vorlage || {}) }) : f.vorlage })} />
+          Eigene PDF-Vorlage für dieses Projekt
+        </label>
+        <p className="text-xs text-stone-500 mt-1">Ohne Häkchen gilt die globale Vorlage aus dem Bereich «PDF-Vorlage». Setze das Häkchen, wenn dieses Projekt ein anderes Logo oder andere Kopfzeilen braucht — etwa bei einem Auftrag im Namen eines fremden Büros.</p>
+      </div>
+      {f.vorlageEigen ? <VorlageEditor wert={f.vorlage || {}} titel="Vorlage nur für dieses Projekt" hinweis="Gilt für alle PDF-Dokumente dieses Projekts und übersteuert die globale Vorlage." onAendern={(v) => setF({ ...f, vorlage: v })} /> : null}
       <div className="flex items-center gap-3">
         <button className={btnPrimary} onClick={save}>Speichern</button>
         {saved && <span className="text-sm text-emerald-600">✓ gespeichert</span>}
@@ -1408,7 +1594,7 @@ function KvView({ d, dispatch, projektId, ks, projekt, db }) {
           <button className={btnGhost} disabled={kvBusy || !ks.ordered.length} onClick={async () => {
             setKvBusy(true);
             try {
-              const bytes = await baueKvPdf({ ks, projekt, rollen, umfang: kvUmfang, mitMwst: kvMwst });
+              const bytes = await baueKvPdf({ ks, projekt, rollen, umfang: kvUmfang, mitMwst: kvMwst, db });
               pdfSpeichern(bytes, `${kvUmfang === "voll" ? "Kostenuebersicht" : "Kostenvoranschlag"}_${(projekt?.name || "").replace(/[^\w]+/g, "_")}.pdf`);
             } catch (e) { window.alert("Das PDF konnte nicht erzeugt werden: " + e.message); }
             setKvBusy(false);
@@ -1621,7 +1807,7 @@ function VertraegeView({ d, dispatch, projektId, projekt, firmen, db }) {
           <div className="flex items-center justify-between mb-2"><span className="text-xs font-medium text-stone-500 uppercase tracking-wide">Nachträge <span className="normal-case font-normal text-stone-400">(erben %-Konditionen)</span></span>
             <div className="flex gap-3"><button className="text-stone-600 text-xs hover:underline" onClick={async () => {
               try {
-                const bytes = await baueWerkvertragPdf(v, { pos: d.positionen.find((x) => x.id === v.positionId), projekt, rollen, firma: findFirma(firmen, v.firmaId, v.unternehmer), d });
+                const bytes = await baueWerkvertragPdf(v, { pos: d.positionen.find((x) => x.id === v.positionId), projekt, rollen, firma: findFirma(firmen, v.firmaId, v.unternehmer), d, db });
                 pdfSpeichern(bytes, `Werkvertrag_${(v.nr || v.unternehmer || "").replace(/[^\w.]+/g, "_")}.pdf`);
               } catch (e) { window.alert("Der Werkvertrag konnte nicht erzeugt werden: " + e.message); }
             }}>📄 Werkvertrag</button><button className="text-stone-500 text-xs hover:underline" title="Die im Vertrag eingefrorenen Firmenangaben durch den heutigen Stand aus dem Adressstamm ersetzen" onClick={() => { const fa = findFirma(firmen, v.firmaId, v.unternehmer); if (!fa) { window.alert("Diese Firma steht nicht (mehr) im Adressstamm."); return; } const bet = (db.beteiligte || []).find((x) => x.projektId === projektId && x.firmaId === fa.id); if (window.confirm(`Firmenangaben im Vertrag durch den heutigen Stand von «${fa.name}» ersetzen?`)) dispatch({ type: "update", coll: "vertraege", id: v.id, patch: { firmaId: fa.id, unternehmer: fa.name, firmaSnap: firmaSnapshot(fa, bet?.hauptpersonId) } }); }}>Adresse aktualisieren</button><button className="text-orange-800 text-xs hover:underline" onClick={() => setNtFor({ vertragId: v.id, _v: v, bezeichnung: "", betrag: "", status: "pendent", datum: today() })}>+ Nachtrag</button><button className="text-orange-800 text-xs hover:underline" onClick={() => setVForm(v)}>Bearbeiten</button><button className="text-red-600 text-xs hover:underline" onClick={() => dispatch({ type: "remove", coll: "vertraege", id: v.id })}>Löschen</button></div>
@@ -1782,13 +1968,14 @@ function pdfPaare(bl, paare, breite) {
 }
 
 async function baueWerkvertragPdf(v, ctx) {
-  const { pos, projekt, rollen, firma, d } = ctx;
+  const { pos, projekt, rollen, firma, d, db: ctxDb } = ctx;
   const doc = await PDFLib.PDFDocument.create();
   const schriften = { normal: await doc.embedFont(PDFLib.StandardFonts.Helvetica), fett: await doc.embedFont(PDFLib.StandardFonts.HelveticaBold) };
+  const { v: vorlage, logoBild } = await pdfVorlage(doc, ctxDb, projekt);
   const grau = PDFLib.rgb(0.45, 0.42, 0.40);
-  const bl = pdfBlatt(doc, schriften, A4);
+  const bl = pdfBlatt(doc, schriften, A4, vorlage, logoBild);
   const rechts = A4.breite - RAND;
-  pdfKopf(bl, v.pauschal ? "Werkvertrag (Pauschalvertrag)" : "Werkvertrag", projekt, rollen, `${v.nr || ""}  ·  ${v.datum || ""}`);
+  pdfKopf(bl, v.pauschal ? "Werkvertrag (Pauschalvertrag)" : "Werkvertrag", projekt, rollen, `${v.nr || ""}  ·  ${v.datum || ""}`, vorlage);
 
   // Parteien
   const snap = v.firmaSnap || null;
@@ -1854,16 +2041,18 @@ async function baueWerkvertragPdf(v, ctx) {
   bl.linie(RAND + uB + 40, rechts, bl.y);
   bl.text("Bauherrschaft: " + (bh.bauherr || ""), { size: 8, farbe: grau, y: bl.y - 12 });
   bl.text("Unternehmer: " + uName, { x: RAND + uB + 40, size: 8, farbe: grau, y: bl.y - 12 });
+  bl.abschliessen();
   return doc.save();
 }
 
 async function baueZahlungsfreigabePdf(r, ctx) {
-  const { v, posLabel, projekt, rollen, soll, faktTotal, bezahltTotal } = ctx;
+  const { v, posLabel, projekt, rollen, soll, faktTotal, bezahltTotal, db: ctxDb } = ctx;
   const doc = await PDFLib.PDFDocument.create();
   const schriften = { normal: await doc.embedFont(PDFLib.StandardFonts.Helvetica), fett: await doc.embedFont(PDFLib.StandardFonts.HelveticaBold) };
+  const { v: vorlage, logoBild } = await pdfVorlage(doc, ctxDb, projekt);
   const grau = PDFLib.rgb(0.45, 0.42, 0.40);
-  const bl = pdfBlatt(doc, schriften, A4);
-  pdfKopf(bl, "Zahlungsfreigabe", projekt, rollen, `Buchung ${r.buchungsNr || "–"}  ·  ${RTYP[r.typ] || "Rechnung"} ${r.nr || ""}  ·  ${r.datum || ""}`);
+  const bl = pdfBlatt(doc, schriften, A4, vorlage, logoBild);
+  pdfKopf(bl, "Zahlungsfreigabe", projekt, rollen, `Buchung ${r.buchungsNr || "–"}  ·  ${RTYP[r.typ] || "Rechnung"} ${r.nr || ""}  ·  ${r.datum || ""}`, vorlage);
   pdfPaare(bl, [
     ["Buchungsnummer", r.buchungsNr || "—"],
     ["Unternehmer", v ? v.unternehmer : "—"],
@@ -1884,18 +2073,20 @@ async function baueZahlungsfreigabePdf(r, ctx) {
   bl.linie(RAND, RAND + uB, bl.y); bl.linie(RAND + uB + 40, rechts, bl.y);
   bl.text("Geprüft Bauleitung: " + (rollen?.bauleitung || ""), { size: 8, farbe: grau, y: bl.y - 12 });
   bl.text("Freigabe Bauherrschaft: " + (rollen?.bauherr || ""), { x: RAND + uB + 40, size: 8, farbe: grau, y: bl.y - 12 });
+  bl.abschliessen();
   return doc.save();
 }
 
 async function baueListePdf(liste, ctx) {
-  const { zeilen, projekt, rollen } = ctx;
+  const { zeilen, projekt, rollen, db: ctxDb } = ctx;
   const doc = await PDFLib.PDFDocument.create();
   const schriften = { normal: await doc.embedFont(PDFLib.StandardFonts.Helvetica), fett: await doc.embedFont(PDFLib.StandardFonts.HelveticaBold) };
+  const { v: vorlage, logoBild } = await pdfVorlage(doc, ctxDb, projekt);
   const grau = PDFLib.rgb(0.45, 0.42, 0.40);
-  const bl = pdfBlatt(doc, schriften, A4);
+  const bl = pdfBlatt(doc, schriften, A4, vorlage, logoBild);
   const rechts = A4.breite - RAND;
-  pdfKopf(bl, liste.name, projekt, rollen);
-  if (!zeilen.length) { bl.text("Diese Liste ist leer.", { size: 9.5, farbe: grau }); return doc.save(); }
+  pdfKopf(bl, liste.name, projekt, rollen, vorlage);
+  if (!zeilen.length) { bl.text("Diese Liste ist leer.", { size: 9.5, farbe: grau }); bl.abschliessen(); return doc.save(); }
   const gruppen = [];
   zeilen.forEach((z) => { const g = gruppen.find((x) => x.rolle === z.rolle); if (g) g.zeilen.push(z); else gruppen.push({ rolle: z.rolle, zeilen: [z] }); });
   const sp = { firma: RAND, person: RAND + 210, tel: RAND + 340, mail: RAND + 430 };
@@ -1919,23 +2110,25 @@ async function baueListePdf(liste, ctx) {
   });
   bl.y -= 8;
   bl.text(`${zeilen.length} Einträge · Stand ${today()}`, { size: 7.5, farbe: grau });
+  bl.abschliessen();
   return doc.save();
 }
 
 // ---------- Kostenvoranschlag als PDF ----------
 async function baueKvPdf(ctx) {
-  const { ks, projekt, rollen, umfang, mitMwst } = ctx;
+  const { ks, projekt, rollen, umfang, mitMwst, db: ctxDb } = ctx;
   const voll = umfang === "voll";
   const doc = await PDFLib.PDFDocument.create();
   const schriften = { normal: await doc.embedFont(PDFLib.StandardFonts.Helvetica), fett: await doc.embedFont(PDFLib.StandardFonts.HelveticaBold) };
+  const { v: vorlage, logoBild } = await pdfVorlage(doc, ctxDb, projekt);
   const grau = PDFLib.rgb(0.45, 0.42, 0.40), rot = PDFLib.rgb(0.86, 0.15, 0.15), gruen = PDFLib.rgb(0.08, 0.50, 0.24);
   const format = voll ? A4Q : A4;
-  const bl = pdfBlatt(doc, schriften, format);
+  const bl = pdfBlatt(doc, schriften, format, vorlage, logoBild);
   const rechts = format.breite - RAND;
   const satz = Number(ks.satz) || 8.1;
   const f = (n) => mitMwst ? (Number(n) || 0) * (1 + satz / 100) : (Number(n) || 0);
   pdfKopf(bl, voll ? "Kostenübersicht" : "Kostenvoranschlag", projekt, rollen,
-    mitMwst ? `alle Beträge inkl. MwSt ${satz}%` : "alle Beträge exkl. MwSt");
+    mitMwst ? `alle Beträge inkl. MwSt ${satz}%` : "alle Beträge exkl. MwSt", vorlage);
 
   // Spalten
   const spalten = voll
@@ -1957,7 +2150,7 @@ async function baueKvPdf(ctx) {
   kopfZeile();
 
   ks.ordered.forEach((z) => {
-    if (bl.y - 16 < RAND + 40) { bl.neueSeite(); pdfKopf(bl, voll ? "Kostenübersicht" : "Kostenvoranschlag", projekt, rollen, "Fortsetzung"); kopfZeile(); }
+    if (bl.y - 16 < RAND + 40) { bl.neueSeite(); pdfKopf(bl, voll ? "Kostenübersicht" : "Kostenvoranschlag", projekt, rollen, "Fortsetzung", vorlage); kopfZeile(); }
     const gruppe = z.hasChildren;
     const size = gruppe ? 9 : 8.5;
     bl.text(z.pos.bkp, { x: RAND + 4 + z.depth * 12, size, fett: gruppe });
@@ -1986,20 +2179,22 @@ async function baueKvPdf(ctx) {
     bl.text("Total inkl. MwSt", { size: 10, fett: true });
     bl.text("CHF " + chfPdf(basis * (1 + satz / 100)), { rechts, size: 10, fett: true });
   }
+  bl.abschliessen();
   return doc.save();
 }
 
 // ---------- Leistungsverzeichnis als PDF ----------
 async function baueLvPdf(a, ctx) {
-  const { projekt, rollen, bieterName } = ctx;
+  const { projekt, rollen, bieterName, db: ctxDb } = ctx;
   const bieter = bieterName ? (a.bieter || []).find((b) => b.name === bieterName) : null;
   const mitPreisen = !!bieter;
   const doc = await PDFLib.PDFDocument.create();
   const schriften = { normal: await doc.embedFont(PDFLib.StandardFonts.Helvetica), fett: await doc.embedFont(PDFLib.StandardFonts.HelveticaBold) };
+  const { v: vorlage, logoBild } = await pdfVorlage(doc, ctxDb, projekt);
   const grau = PDFLib.rgb(0.45, 0.42, 0.40);
-  const bl = pdfBlatt(doc, schriften, A4);
+  const bl = pdfBlatt(doc, schriften, A4, vorlage, logoBild);
   const rechts = A4.breite - RAND;
-  pdfKopf(bl, "Leistungsverzeichnis", projekt, rollen, a.titel + (mitPreisen ? `  ·  ${bieter.name}` : "  ·  Ausschreibungsexemplar"));
+  pdfKopf(bl, "Leistungsverzeichnis", projekt, rollen, a.titel + (mitPreisen ? `  ·  ${bieter.name}` : "  ·  Ausschreibungsexemplar"), vorlage);
 
   const sp = { code: RAND, bez: RAND + 62, menge: RAND + 330, einheit: RAND + 372, ep: RAND + 445, betrag: rechts };
   const kopfZeile = () => {
@@ -2015,7 +2210,7 @@ async function baueLvPdf(a, ctx) {
 
   let total = 0;
   (a.positionen || []).forEach((pz) => {
-    if (bl.y - 18 < RAND + 50) { bl.neueSeite(); pdfKopf(bl, "Leistungsverzeichnis", projekt, rollen, "Fortsetzung"); kopfZeile(); }
+    if (bl.y - 18 < RAND + 50) { bl.neueSeite(); pdfKopf(bl, "Leistungsverzeichnis", projekt, rollen, "Fortsetzung", vorlage); kopfZeile(); }
     const menge = Number(pz.menge) || 0;
     const ep = mitPreisen ? parseBetrag((bieter.preise || {})[pz.code]) || 0 : null;
     const betrag = mitPreisen ? menge * ep : null;
@@ -2057,6 +2252,7 @@ async function baueLvPdf(a, ctx) {
       bl.umbruch(abs, rechts - RAND, 8).forEach((t) => { bl.platz(12); bl.text(t, { size: 8, farbe: grau }); bl.y -= 10; });
     });
   }
+  bl.abschliessen();
   return doc.save();
 }
 
@@ -2064,9 +2260,10 @@ async function baueLvPdf(a, ctx) {
 const VA_MAX_SPALTEN = 6;
 
 async function baueVergabeantragPdf(a, ctx) {
-  const { projekt, rollen, ks, d, vorschlagName } = ctx;
+  const { projekt, rollen, ks, d, vorschlagName, db: ctxDb } = ctx;
   const doc = await PDFLib.PDFDocument.create();
   const schriften = { normal: await doc.embedFont(PDFLib.StandardFonts.Helvetica), fett: await doc.embedFont(PDFLib.StandardFonts.HelveticaBold) };
+  const { v: vorlage, logoBild } = await pdfVorlage(doc, ctxDb, projekt);
   const grau = PDFLib.rgb(0.45, 0.42, 0.40), rot = PDFLib.rgb(0.86, 0.15, 0.15), gruen = PDFLib.rgb(0.08, 0.50, 0.24);
 
   const nw = nutzwerte(a, projekt);
@@ -2092,13 +2289,15 @@ async function baueVergabeantragPdf(a, ctx) {
     { l: "Nutzwert", f: (r) => (Number(r.nutz) || 0).toFixed(1), fett: true },
   ];
 
+  const blaetter = [];
   const gruppen = [];
   for (let i = 0; i < reihen.length; i += VA_MAX_SPALTEN) gruppen.push(reihen.slice(i, i + VA_MAX_SPALTEN));
   if (!gruppen.length) gruppen.push([]);
 
   for (let gi = 0; gi < gruppen.length; gi++) {
     const gruppe = gruppen[gi];
-    const bl = pdfBlatt(doc, schriften, A4Q);
+    const bl = pdfBlatt(doc, schriften, A4Q, vorlage, logoBild);
+    blaetter.push(bl);
     const rechts = A4Q.breite - RAND;
     pdfKopf(bl, "Vergabeantrag", projekt, rollen, a.titel + (gruppen.length > 1 ? `  (Blatt ${gi + 1} von ${gruppen.length})` : ""));
 
@@ -2163,24 +2362,28 @@ async function baueVergabeantragPdf(a, ctx) {
       }
     }
   }
+  blaetter.forEach((b) => b.abschliessen());
   return doc.save();
 }
 
 // ---------- Positionsvergleich (Querformat) ----------
 async function bauePositionsvergleichPdf(a, ctx) {
-  const { projekt, rollen } = ctx;
+  const { projekt, rollen, db: ctxDb } = ctx;
   const doc = await PDFLib.PDFDocument.create();
   const schriften = { normal: await doc.embedFont(PDFLib.StandardFonts.Helvetica), fett: await doc.embedFont(PDFLib.StandardFonts.HelveticaBold) };
+  const { v: vorlage, logoBild } = await pdfVorlage(doc, ctxDb, projekt);
   const grau = PDFLib.rgb(0.45, 0.42, 0.40), rot = PDFLib.rgb(0.86, 0.15, 0.15), gruen = PDFLib.rgb(0.08, 0.50, 0.24);
   const bieter = (a.bieter || []).filter((b) => b.name);
   const positionen = a.positionen || [];
+  const blaetter = [];
   const gruppen = [];
   for (let i = 0; i < bieter.length; i += VA_MAX_SPALTEN) gruppen.push(bieter.slice(i, i + VA_MAX_SPALTEN));
   if (!gruppen.length) gruppen.push([]);
 
   for (let gi = 0; gi < gruppen.length; gi++) {
     const gruppe = gruppen[gi];
-    const bl = pdfBlatt(doc, schriften, A4Q);
+    const bl = pdfBlatt(doc, schriften, A4Q, vorlage, logoBild);
+    blaetter.push(bl);
     const rechts = A4Q.breite - RAND;
     const labelB = 250, spB = Math.max(95, (rechts - RAND - labelB) / Math.max(gruppe.length, 1));
     const spR = (i) => RAND + labelB + i * spB + spB - 8;
@@ -2233,18 +2436,20 @@ async function bauePositionsvergleichPdf(a, ctx) {
     bl.y -= 26;
     bl.text("Prozentwerte je Position gegenüber dem günstigsten Angebot dieser Position.", { size: 7.5, farbe: grau });
   }
+  blaetter.forEach((b) => b.abschliessen());
   return doc.save();
 }
 
 // ---------- Bauabrechnung als PDF (Querformat, Spalten wählbar) ----------
 async function baueAbrechnungPdf(ctx) {
-  const { ks, projekt, rollen, brutto, spalten, mitRechnungen, details } = ctx;
+  const { ks, projekt, rollen, brutto, spalten, mitRechnungen, details, db: ctxDb } = ctx;
   const doc = await PDFLib.PDFDocument.create();
   const schriften = { normal: await doc.embedFont(PDFLib.StandardFonts.Helvetica), fett: await doc.embedFont(PDFLib.StandardFonts.HelveticaBold) };
+  const { v: vorlage, logoBild } = await pdfVorlage(doc, ctxDb, projekt);
   const grau = PDFLib.rgb(0.45, 0.42, 0.40), rot = PDFLib.rgb(0.86, 0.15, 0.15), gruen = PDFLib.rgb(0.08, 0.50, 0.24);
   const satz = Number(ks.satz) || 8.1;
   const f = brutto ? 1 + satz / 100 : 1;
-  const bl = pdfBlatt(doc, schriften, A4Q);
+  const bl = pdfBlatt(doc, schriften, A4Q, vorlage, logoBild);
   const rechts = A4Q.breite - RAND;
 
   const moegliche = [
@@ -2261,7 +2466,7 @@ async function baueAbrechnungPdf(ctx) {
   const spR = (i) => RAND + textB + (i + 1) * spW - 6;
 
   const kopf = (fortsetzung) => {
-    pdfKopf(bl, "Bauabrechnung", projekt, rollen, (brutto ? `alle Beträge inkl. MwSt ${satz}%` : "alle Beträge exkl. MwSt") + (fortsetzung ? "  ·  Fortsetzung" : ""));
+    pdfKopf(bl, "Bauabrechnung", projekt, rollen, (brutto ? `alle Beträge inkl. MwSt ${satz}%` : "alle Beträge exkl. MwSt") + (fortsetzung ? "  ·  Fortsetzung" : ""), vorlage);
     cols.forEach((c, i) => bl.text(c.l, { rechts: spR(i), size: 7.5, farbe: grau }));
     bl.y -= 5; bl.linie(RAND, rechts, bl.y, 0.8, PDFLib.rgb(0.55, 0.52, 0.50)); bl.y -= 12;
   };
@@ -2315,6 +2520,7 @@ async function baueAbrechnungPdf(ctx) {
     bl.text("Prognose inkl. MwSt", { size: 10, fett: true });
     bl.text("CHF " + chfPdf(ks.total.prognose * (1 + satz / 100)), { rechts, size: 10, fett: true });
   }
+  bl.abschliessen();
   return doc.save();
 }
 
@@ -2338,15 +2544,16 @@ function belegStaffel(r, d, ks) {
 
 // Baut das Gesamtdokument: Startseite, dann je Rechnung Deckblatt + angehängtes Unternehmer-PDF
 async function baueVergauftragPdf(auftrag, rechnungen, ctx) {
-  const { d, ks, projekt, rollen, firmen, satz } = ctx;
+  const { d, ks, projekt, rollen, firmen, satz, db: ctxDb } = ctx;
   const doc = await PDFLib.PDFDocument.create();
   const schriften = { normal: await doc.embedFont(PDFLib.StandardFonts.Helvetica), fett: await doc.embedFont(PDFLib.StandardFonts.HelveticaBold) };
+  const { v: vorlage, logoBild } = await pdfVorlage(doc, ctxDb, projekt);
   const grau = PDFLib.rgb(0.45, 0.42, 0.40);
   const rechts = A4.breite - RAND;
 
   // ---- Startseite: schlanke Zusammenstellung ----
-  const bl = pdfBlatt(doc, schriften, A4);
-  pdfKopf(bl, "Vergütungsauftrag", projekt, rollen, `${auftrag.nr || ""}  ·  ${auftrag.datum || today()}`);
+  const bl = pdfBlatt(doc, schriften, A4, vorlage, logoBild);
+  pdfKopf(bl, "Vergütungsauftrag", projekt, rollen, `${auftrag.nr || ""}  ·  ${auftrag.datum || today()}`, vorlage);
 
   const sp = { bnr: RAND, datum: RAND + 52, firma: RAND + 112, nr: RAND + 268, netto: RAND + 375, mwst: RAND + 448, brutto: rechts };
   bl.text("Buchung", { x: sp.bnr, size: 7.5, farbe: grau });
@@ -2395,8 +2602,8 @@ async function baueVergauftragPdf(auftrag, rechnungen, ctx) {
     const st = belegStaffel(r, d, ks);
     const firma = st.v ? findFirma(firmen, st.v.firmaId, st.v.unternehmer) : null;
     const snap = st.v?.firmaSnap || null;
-    const db2 = pdfBlatt(doc, schriften, A4);
-    pdfKopf(db2, "Rechnungsdeckblatt", projekt, rollen, `${auftrag.nr || ""}  ·  Buchung ${r.buchungsNr || "–"}  ·  ${RTYP[r.typ] || "Rechnung"} ${r.nr || ""}`);
+    const db2 = pdfBlatt(doc, schriften, A4, vorlage, logoBild);
+    pdfKopf(db2, "Rechnungsdeckblatt", projekt, rollen, `${auftrag.nr || ""}  ·  Buchung ${r.buchungsNr || "–"}  ·  ${RTYP[r.typ] || "Rechnung"} ${r.nr || ""}`, vorlage);
 
     // Empfänger: Adresse aus dem Adressstamm, dazu der Vertragsname
     db2.text("Unternehmer", { size: 7.5, farbe: grau }); db2.y -= 12;
@@ -2467,6 +2674,7 @@ async function baueVergauftragPdf(auftrag, rechnungen, ctx) {
     }
   }
 
+  bl.abschliessen();
   return doc.save();
 }
 
@@ -2729,7 +2937,7 @@ function RechnungenView({ d, dispatch, projektId, projekt, db }) {
                     const v = d.vertraege.find((x) => x.id === r.vertragId);
                     const pv = r.vertragId ? proVertrag[r.vertragId] : null;
                     const bez = r.vertragId ? d.rechnungen.filter((x) => x.vertragId === r.vertragId && x.status === "bezahlt").reduce((s2, x) => s2 + (Number(x.betrag) || 0), 0) : 0;
-                    const bytes = await baueZahlungsfreigabePdf(r, { v, posLabel: v ? posLabel(v.positionId) : posLabel(r.positionId), projekt, rollen, soll: pv ? pv.soll : 0, faktTotal: pv ? pv.fakt : Number(r.betrag) || 0, bezahltTotal: bez });
+                    const bytes = await baueZahlungsfreigabePdf(r, { v, posLabel: v ? posLabel(v.positionId) : posLabel(r.positionId), projekt, rollen, soll: pv ? pv.soll : 0, faktTotal: pv ? pv.fakt : Number(r.betrag) || 0, bezahltTotal: bez, db });
                     pdfSpeichern(bytes, `Zahlungsfreigabe_${(r.nr || "").replace(/[^\w.]+/g, "_") || "Rechnung"}.pdf`);
                   } catch (e) { window.alert("Die Zahlungsfreigabe konnte nicht erzeugt werden: " + e.message); }
                 }}>📄</button><button className="text-red-600 text-xs hover:underline" onClick={() => dispatch({ type: "remove", coll: "rechnungen", id: r.id })}>Lö.</button></td>
@@ -2833,7 +3041,7 @@ function AngebotCard({ a, d, dispatch, projektId, projekt, onEdit, db, rollen })
           <button className="text-orange-800 text-xs hover:underline ml-3" disabled={posBusy || !(a.positionen || []).length} onClick={async () => {
             setPosBusy(true);
             try {
-              const bytes = await bauePositionsvergleichPdf(a, { projekt, rollen });
+              const bytes = await bauePositionsvergleichPdf(a, { projekt, rollen, db });
               pdfSpeichern(bytes, `Positionsvergleich_${(a.titel || "").replace(/[^\w]+/g, "_")}.pdf`);
             } catch (e) { window.alert("Der Positionsvergleich konnte nicht erzeugt werden: " + e.message); }
             setPosBusy(false);
@@ -3162,7 +3370,7 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen, db,
                 <button className={btnGhost} disabled={!bieter.some((b) => b.name) || antragBusy} onClick={async () => {
                   setAntragBusy(true);
                   try {
-                    const bytes = await baueVergabeantragPdf(a, { projekt, rollen, ks, d, vorschlagName: vorschlag || nw.rows[0]?.b.name });
+                    const bytes = await baueVergabeantragPdf(a, { projekt, rollen, ks, d, vorschlagName: vorschlag || nw.rows[0]?.b.name, db });
                     pdfSpeichern(bytes, `Vergabeantrag_${(a.titel || "").replace(/[^\w]+/g, "_")}.pdf`);
                   } catch (e) { window.alert("Der Vergabeantrag konnte nicht erzeugt werden: " + e.message); }
                   setAntragBusy(false);
@@ -3174,7 +3382,7 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen, db,
                 <button className={btnGhost} disabled={lvBusy || !(a.positionen || []).length} onClick={async () => {
                   setLvBusy(true);
                   try {
-                    const bytes = await baueLvPdf(a, { projekt, rollen, bieterName: lvBieter });
+                    const bytes = await baueLvPdf(a, { projekt, rollen, bieterName: lvBieter, db });
                     pdfSpeichern(bytes, `LV_${(a.titel || "").replace(/[^\w]+/g, "_")}${lvBieter ? "_" + lvBieter.replace(/[^\w]+/g, "_") : "_Ausschreibung"}.pdf`);
                   } catch (e) { window.alert("Das Leistungsverzeichnis konnte nicht erzeugt werden: " + e.message); }
                   setLvBusy(false);
