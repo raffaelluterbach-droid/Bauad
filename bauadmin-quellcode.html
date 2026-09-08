@@ -386,6 +386,7 @@ function reducer(db, a) {
     case "setAktiv": return { ...db, aktiv: a.id };
     case "setVorlage": return { ...db, vorlage: a.vorlage };
     case "setBkpKatalog": return { ...db, bkpKatalog: a.katalog };
+    case "positionenZurueck": return { ...db, positionen: [...db.positionen.filter((x) => x.projektId !== a.projektId), ...a.items] };
     case "add": return { ...db, [a.coll]: [...db[a.coll], a.item] };
     case "addMany": return { ...db, [a.coll]: [...db[a.coll], ...a.items] };
     case "update": return { ...db, [a.coll]: db[a.coll].map((x) => (x.id === a.id ? { ...x, ...a.patch } : x)) };
@@ -718,7 +719,9 @@ const HILFE = {
   beteiligte: ["Hier ordnest du Firmen aus dem Adressstamm diesem Projekt zu — mit frei wählbarer Rolle.", "Je Firma bestimmst du die Hauptperson für dieses Projekt; sie erscheint auf Verträgen und Listen.", "Dieselbe Firma kann in einem anderen Projekt eine andere Rolle und Person haben."],
   listen: ["Aus den Beteiligten entstehen beliebig viele Listen — Unternehmerliste, Planerliste oder eine eigene.", "Die Submittentenliste zieht die Anbieter aus einer Ausschreibung statt aus den Beteiligten.", "Jede Liste lässt sich drucken — nach Rolle gruppiert, mit Person, Telefon und E-Mail."],
   dashboard: ["Hier siehst du den aktuellen Kostenstand: KV revidiert (Budget), beauftragt, Prognose und bezahlt.", "Mit «Kostenstand festhalten» speicherst du den heutigen Stand — so entsteht die Verlaufskurve über die Bauzeit.", "Rot = über Budget, grün = im Budget."],
-  kv: ["① KV importieren (CSV mit BKP; Bezeichnung; Betrag) oder Positionen einzeln erfassen.", "② Unterpositionen (z.B. 211.1) werden automatisch der Hauptposition (211) zugeordnet.", "Das KV ist die Budget-Basis — alle anderen Reiter bauen darauf auf."],
+  kv: ["① KV importieren (CSV mit BKP; Bezeichnung; Betrag), Positionen einzeln erfassen — oder den BKP-Katalog einblenden und dort Preise eintippen (auch 0).",
+    "«+ Bem.» hinterlegt je Position eine interne Bemerkung zur Herleitung des Betrags — sie erscheint auf keinem Druckdokument.",
+    "«↶ Rückgängig» nimmt die letzten Schritte zurück; Änderungen und Löschungen werden vorher abgefragt.", "② Unterpositionen (z.B. 211.1) werden automatisch der Hauptposition (211) zugeordnet.", "Das KV ist die Budget-Basis — alle anderen Reiter bauen darauf auf."],
   mutationen: ["Mutationen ändern das Budget einer Position (+/−), z.B. bei Projektänderungen.", "Für Verschiebungen zwischen zwei BKP nutze «Umbuchungen» — dann bleibt das Gesamtbudget gleich."],
   umbuchungen: ["Budget von einer BKP-Position in eine andere verschieben.", "Das Gesamtbudget bleibt unverändert."],
   vertraege: ["① Vertrag erfassen (oder aus einer Ausschreibung vergeben) — mit Konditionen, Rückbehalt und Garantie.", "② Nachträge direkt am Vertrag erfassen; sie erben die %-Konditionen.", "③ Werkvertrag drucken über den Knopf am Vertrag.", "Die Garantie-Übersicht oben zeigt ablaufende Fristen und Rückbehalte."],
@@ -2633,7 +2636,7 @@ function Dashboard({ ks, d, dispatch, projektId }) {
 }
 
 // Katalogbereich: BKP wählen, Preis eintippen (auch 0) — die Position wandert in den KV
-function BkpKatalogPanel({ db, d, dispatch, projektId, onSchliessen }) {
+function BkpKatalogPanel({ db, d, dispatch, projektId, onSchliessen, merken }) {
   const [q, setQ] = useState("");
   const [zu, setZu] = useState({});
   const dateiRef = useRef(null);
@@ -2676,7 +2679,7 @@ function BkpKatalogPanel({ db, d, dispatch, projektId, onSchliessen }) {
       neue.push({ id, projektId, bkp: code, bezeichnung: kat ? kat.bez : code, kv: code === eintrag.code ? kv : 0, notiz: "", parentId: eltern ? (idVon.get(eltern) || null) : null });
       idVon.set(code, id);
     });
-    if (neue.length) dispatch({ type: "addMany", coll: "positionen", items: neue });
+    if (neue.length) { merken(); dispatch({ type: "addMany", coll: "positionen", items: neue }); }
   };
 
   const csvErsetzen = async (datei) => {
@@ -2744,6 +2747,15 @@ function KatalogPreis({ onAufnehmen }) {
 
 function KvView({ d, dispatch, projektId, ks, projekt, db }) {
   const rollen = projektRollen(db, projekt);
+  // Rückgängig: vor jeder Änderung den bisherigen Stand der Projektpositionen merken
+  const [historie, setHistorie] = useState([]);
+  const merken = () => setHistorie((h) => [...h.slice(-24), d.positionen.map((x) => ({ ...x }))]);
+  const zurueck = () => {
+    if (!historie.length) return;
+    const stand = historie[historie.length - 1];
+    setHistorie((h) => h.slice(0, -1));
+    dispatch({ type: "positionenZurueck", projektId, items: stand });
+  };
   const [katalogOffen, setKatalogOffen] = useState(false);
   const [notizFuer, setNotizFuer] = useState(null);
   const [kvUmfang, setKvUmfang] = useState("kv");
@@ -2757,6 +2769,7 @@ function KvView({ d, dispatch, projektId, ks, projekt, db }) {
         <button className={btnPrimary} onClick={() => setEdit({ bkp: "", bezeichnung: "", kv: "", parentId: null })}>+ Hauptposition</button>
         <button className={btnGhost} onClick={() => setImportOpen(true)}>KV importieren (CSV)</button>
         <button className={katalogOffen ? btnPrimary : btnGhost} onClick={() => setKatalogOffen(!katalogOffen)}>{katalogOffen ? "BKP-Katalog ausblenden" : "BKP-Katalog einblenden"}</button>
+        <button className={btnGhost} disabled={!historie.length} title={historie.length ? `${historie.length} Schritte rückgängig möglich` : "Nichts rückgängig zu machen"} onClick={zurueck}>↶ Rückgängig{historie.length ? ` (${historie.length})` : ""}</button>
         <div className="flex items-center gap-2 ml-auto">
           <select className="text-xs rounded border border-stone-300 px-2 py-1.5 bg-white" value={kvUmfang} onChange={(e) => setKvUmfang(e.target.value)}>
             <option value="kv">Kostenvoranschlag</option>
@@ -2774,7 +2787,7 @@ function KvView({ d, dispatch, projektId, ks, projekt, db }) {
         </div>
       </div>
       <div className={katalogOffen ? "grid grid-cols-1 xl:grid-cols-[minmax(380px,460px)_1fr] gap-4 items-start" : ""}>
-      {katalogOffen ? <BkpKatalogPanel db={db} d={d} dispatch={dispatch} projektId={projektId} onSchliessen={() => setKatalogOffen(false)} /> : null}
+      {katalogOffen ? <BkpKatalogPanel db={db} d={d} dispatch={dispatch} projektId={projektId} merken={merken} onSchliessen={() => setKatalogOffen(false)} /> : null}
       <div className="min-w-0 space-y-4">
       {!ks.ordered.length ? <Empty text={katalogOffen ? "Noch keine Positionen. Tippe links im Katalog einen Preis ein oder klicke eine Zeile doppelt." : "Noch keine BKP-Positionen. Blende den BKP-Katalog ein, importiere den KV oder erfasse Positionen einzeln."} /> : (
         <div className={`${card} overflow-x-auto`}>
@@ -2799,7 +2812,14 @@ function KvView({ d, dispatch, projektId, ks, projekt, db }) {
                   <td className="px-3 py-2 text-right whitespace-nowrap">
                     <button className="text-stone-500 hover:underline text-xs mr-2" onClick={() => setEdit({ bkp: "", bezeichnung: "", kv: "", parentId: z.pos.id })}>+ Unter</button>
                     <button className="text-orange-800 hover:underline text-xs mr-2" onClick={() => setEdit(z.pos)}>Bearb.</button>
-                    <button className="text-red-600 hover:underline text-xs" onClick={() => dispatch({ type: "remove", coll: "positionen", id: z.pos.id })}>Lö.</button>
+                    {!z.hasChildren ? <button className={`hover:underline text-xs mr-2 ${z.pos.notiz ? "text-orange-800" : "text-stone-500"}`} title={z.pos.notiz || "Interne Bemerkung zur Herleitung des Betrags"} onClick={() => setNotizFuer(z.pos)}>{z.pos.notiz ? "✎ Bem." : "+ Bem."}</button> : null}
+                    <button className="text-red-600 hover:underline text-xs" onClick={() => {
+                      const kinder = (function zaehle(id) { const k = d.positionen.filter((x) => x.parentId === id); return k.length + k.reduce((s2, x) => s2 + zaehle(x.id), 0); })(z.pos.id);
+                      const frage = kinder
+                        ? `BKP ${z.pos.bkp} ${z.pos.bezeichnung} und ${kinder} Unterposition${kinder === 1 ? "" : "en"} löschen?`
+                        : `BKP ${z.pos.bkp} ${z.pos.bezeichnung} (${chf(z.roll.kv)}) löschen?`;
+                      if (window.confirm(frage)) { merken(); dispatch({ type: "remove", coll: "positionen", id: z.pos.id }); }
+                    }}>Lö.</button>
                   </td>
                 </tr>
               ))}
@@ -2822,8 +2842,17 @@ function KvView({ d, dispatch, projektId, ks, projekt, db }) {
           <div className="flex justify-end mt-3"><button className={btnPrimary} onClick={() => setNotizFuer(null)}>Fertig</button></div>
         </Modal>
       )}
-      {edit && <PositionEditor pos={edit} positionen={d.positionen} onClose={() => setEdit(null)} onSave={(pp) => { if (pp.id) dispatch({ type: "update", coll: "positionen", id: pp.id, patch: pp }); else dispatch({ type: "add", coll: "positionen", item: { id: uid(), projektId, ...pp } }); setEdit(null); }} />}
-      {importOpen && <KvImport onClose={() => setImportOpen(false)} onImport={(rows) => { dispatch({ type: "addMany", coll: "positionen", items: nestImported(rows, projektId) }); setImportOpen(false); }} />}
+      {edit && <PositionEditor pos={edit} positionen={d.positionen} onClose={() => setEdit(null)} onSave={(pp) => {
+        if (pp.id) {
+          const alt = d.positionen.find((x) => x.id === pp.id);
+          const neuKv = parseBetrag(pp.kv), altKv = Number(alt?.kv) || 0;
+          if (alt && neuKv !== altKv && !window.confirm(`KV-Betrag von BKP ${alt.bkp} ${alt.bezeichnung} von ${chf(altKv)} auf ${chf(neuKv)} ändern?`)) return;
+          merken();
+          dispatch({ type: "update", coll: "positionen", id: pp.id, patch: pp });
+        } else { merken(); dispatch({ type: "add", coll: "positionen", item: { id: uid(), projektId, ...pp } }); }
+        setEdit(null);
+      }} />}
+      {importOpen && <KvImport onClose={() => setImportOpen(false)} onImport={(rows) => { merken(); dispatch({ type: "addMany", coll: "positionen", items: nestImported(rows, projektId) }); setImportOpen(false); }} />}
     </div>
   );
 }

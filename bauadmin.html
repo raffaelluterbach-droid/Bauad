@@ -1050,6 +1050,11 @@ function reducer(db, a) {
         ...db,
         bkpKatalog: a.katalog
       };
+    case "positionenZurueck":
+      return {
+        ...db,
+        positionen: [...db.positionen.filter(x => x.projektId !== a.projektId), ...a.items]
+      };
     case "add":
       return {
         ...db,
@@ -1780,7 +1785,7 @@ const HILFE = {
   beteiligte: ["Hier ordnest du Firmen aus dem Adressstamm diesem Projekt zu — mit frei wählbarer Rolle.", "Je Firma bestimmst du die Hauptperson für dieses Projekt; sie erscheint auf Verträgen und Listen.", "Dieselbe Firma kann in einem anderen Projekt eine andere Rolle und Person haben."],
   listen: ["Aus den Beteiligten entstehen beliebig viele Listen — Unternehmerliste, Planerliste oder eine eigene.", "Die Submittentenliste zieht die Anbieter aus einer Ausschreibung statt aus den Beteiligten.", "Jede Liste lässt sich drucken — nach Rolle gruppiert, mit Person, Telefon und E-Mail."],
   dashboard: ["Hier siehst du den aktuellen Kostenstand: KV revidiert (Budget), beauftragt, Prognose und bezahlt.", "Mit «Kostenstand festhalten» speicherst du den heutigen Stand — so entsteht die Verlaufskurve über die Bauzeit.", "Rot = über Budget, grün = im Budget."],
-  kv: ["① KV importieren (CSV mit BKP; Bezeichnung; Betrag) oder Positionen einzeln erfassen.", "② Unterpositionen (z.B. 211.1) werden automatisch der Hauptposition (211) zugeordnet.", "Das KV ist die Budget-Basis — alle anderen Reiter bauen darauf auf."],
+  kv: ["① KV importieren (CSV mit BKP; Bezeichnung; Betrag), Positionen einzeln erfassen — oder den BKP-Katalog einblenden und dort Preise eintippen (auch 0).", "«+ Bem.» hinterlegt je Position eine interne Bemerkung zur Herleitung des Betrags — sie erscheint auf keinem Druckdokument.", "«↶ Rückgängig» nimmt die letzten Schritte zurück; Änderungen und Löschungen werden vorher abgefragt.", "② Unterpositionen (z.B. 211.1) werden automatisch der Hauptposition (211) zugeordnet.", "Das KV ist die Budget-Basis — alle anderen Reiter bauen darauf auf."],
   mutationen: ["Mutationen ändern das Budget einer Position (+/−), z.B. bei Projektänderungen.", "Für Verschiebungen zwischen zwei BKP nutze «Umbuchungen» — dann bleibt das Gesamtbudget gleich."],
   umbuchungen: ["Budget von einer BKP-Position in eine andere verschieben.", "Das Gesamtbudget bleibt unverändert."],
   vertraege: ["① Vertrag erfassen (oder aus einer Ausschreibung vergeben) — mit Konditionen, Rückbehalt und Garantie.", "② Nachträge direkt am Vertrag erfassen; sie erben die %-Konditionen.", "③ Werkvertrag drucken über den Knopf am Vertrag.", "Die Garantie-Übersicht oben zeigt ablaufende Fristen und Rückbehalte."],
@@ -4908,7 +4913,8 @@ function BkpKatalogPanel({
   d,
   dispatch,
   projektId,
-  onSchliessen
+  onSchliessen,
+  merken
 }) {
   const [q, setQ] = useState("");
   const [zu, setZu] = useState({});
@@ -4969,11 +4975,14 @@ function BkpKatalogPanel({
       });
       idVon.set(code, id);
     });
-    if (neue.length) dispatch({
-      type: "addMany",
-      coll: "positionen",
-      items: neue
-    });
+    if (neue.length) {
+      merken();
+      dispatch({
+        type: "addMany",
+        coll: "positionen",
+        items: neue
+      });
+    }
   };
   const csvErsetzen = async datei => {
     if (!datei) return;
@@ -5108,6 +5117,21 @@ function KvView({
   db
 }) {
   const rollen = projektRollen(db, projekt);
+  // Rückgängig: vor jeder Änderung den bisherigen Stand der Projektpositionen merken
+  const [historie, setHistorie] = useState([]);
+  const merken = () => setHistorie(h => [...h.slice(-24), d.positionen.map(x => ({
+    ...x
+  }))]);
+  const zurueck = () => {
+    if (!historie.length) return;
+    const stand = historie[historie.length - 1];
+    setHistorie(h => h.slice(0, -1));
+    dispatch({
+      type: "positionenZurueck",
+      projektId,
+      items: stand
+    });
+  };
   const [katalogOffen, setKatalogOffen] = useState(false);
   const [notizFuer, setNotizFuer] = useState(null);
   const [kvUmfang, setKvUmfang] = useState("kv");
@@ -5133,7 +5157,12 @@ function KvView({
   }, "KV importieren (CSV)"), /*#__PURE__*/React.createElement("button", {
     className: katalogOffen ? btnPrimary : btnGhost,
     onClick: () => setKatalogOffen(!katalogOffen)
-  }, katalogOffen ? "BKP-Katalog ausblenden" : "BKP-Katalog einblenden"), /*#__PURE__*/React.createElement("div", {
+  }, katalogOffen ? "BKP-Katalog ausblenden" : "BKP-Katalog einblenden"), /*#__PURE__*/React.createElement("button", {
+    className: btnGhost,
+    disabled: !historie.length,
+    title: historie.length ? `${historie.length} Schritte rückgängig möglich` : "Nichts rückgängig zu machen",
+    onClick: zurueck
+  }, "↶ Rückgängig", historie.length ? ` (${historie.length})` : ""), /*#__PURE__*/React.createElement("div", {
     className: "flex items-center gap-2 ml-auto"
   }, /*#__PURE__*/React.createElement("select", {
     className: "text-xs rounded border border-stone-300 px-2 py-1.5 bg-white",
@@ -5176,6 +5205,7 @@ function KvView({
     d: d,
     dispatch: dispatch,
     projektId: projektId,
+    merken: merken,
     onSchliessen: () => setKatalogOffen(false)
   }) : null, /*#__PURE__*/React.createElement("div", {
     className: "min-w-0 space-y-4"
@@ -5259,13 +5289,27 @@ function KvView({
   }, "+ Unter"), /*#__PURE__*/React.createElement("button", {
     className: "text-orange-800 hover:underline text-xs mr-2",
     onClick: () => setEdit(z.pos)
-  }, "Bearb."), /*#__PURE__*/React.createElement("button", {
+  }, "Bearb."), !z.hasChildren ? /*#__PURE__*/React.createElement("button", {
+    className: `hover:underline text-xs mr-2 ${z.pos.notiz ? "text-orange-800" : "text-stone-500"}`,
+    title: z.pos.notiz || "Interne Bemerkung zur Herleitung des Betrags",
+    onClick: () => setNotizFuer(z.pos)
+  }, z.pos.notiz ? "✎ Bem." : "+ Bem.") : null, /*#__PURE__*/React.createElement("button", {
     className: "text-red-600 hover:underline text-xs",
-    onClick: () => dispatch({
-      type: "remove",
-      coll: "positionen",
-      id: z.pos.id
-    })
+    onClick: () => {
+      const kinder = function zaehle(id) {
+        const k = d.positionen.filter(x => x.parentId === id);
+        return k.length + k.reduce((s2, x) => s2 + zaehle(x.id), 0);
+      }(z.pos.id);
+      const frage = kinder ? `BKP ${z.pos.bkp} ${z.pos.bezeichnung} und ${kinder} Unterposition${kinder === 1 ? "" : "en"} löschen?` : `BKP ${z.pos.bkp} ${z.pos.bezeichnung} (${chf(z.roll.kv)}) löschen?`;
+      if (window.confirm(frage)) {
+        merken();
+        dispatch({
+          type: "remove",
+          coll: "positionen",
+          id: z.pos.id
+        });
+      }
+    }
   }, "Lö."))))), /*#__PURE__*/React.createElement("tfoot", null, /*#__PURE__*/React.createElement("tr", {
     className: "border-t-2 border-stone-300 font-semibold bg-stone-50"
   }, /*#__PURE__*/React.createElement("td", {
@@ -5331,25 +5375,36 @@ function KvView({
     positionen: d.positionen,
     onClose: () => setEdit(null),
     onSave: pp => {
-      if (pp.id) dispatch({
-        type: "update",
-        coll: "positionen",
-        id: pp.id,
-        patch: pp
-      });else dispatch({
-        type: "add",
-        coll: "positionen",
-        item: {
-          id: uid(),
-          projektId,
-          ...pp
-        }
-      });
+      if (pp.id) {
+        const alt = d.positionen.find(x => x.id === pp.id);
+        const neuKv = parseBetrag(pp.kv),
+          altKv = Number(alt?.kv) || 0;
+        if (alt && neuKv !== altKv && !window.confirm(`KV-Betrag von BKP ${alt.bkp} ${alt.bezeichnung} von ${chf(altKv)} auf ${chf(neuKv)} ändern?`)) return;
+        merken();
+        dispatch({
+          type: "update",
+          coll: "positionen",
+          id: pp.id,
+          patch: pp
+        });
+      } else {
+        merken();
+        dispatch({
+          type: "add",
+          coll: "positionen",
+          item: {
+            id: uid(),
+            projektId,
+            ...pp
+          }
+        });
+      }
       setEdit(null);
     }
   }), importOpen && /*#__PURE__*/React.createElement(KvImport, {
     onClose: () => setImportOpen(false),
     onImport: rows => {
+      merken();
       dispatch({
         type: "addMany",
         coll: "positionen",
