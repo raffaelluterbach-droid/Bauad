@@ -748,7 +748,11 @@ function normalize(db) {
     gewichtPreis: 70,
     gewichtReferenzen: 20,
     gewichtLehrlinge: 10,
-    ...p
+    ...p,
+    kond: {
+      ...LEERE_KOND,
+      ...(p.kond || {})
+    }
   }));
   db.positionen = (db.positionen || []).map(p => ({
     parentId: null,
@@ -760,6 +764,8 @@ function normalize(db) {
   if (!db.firmen) db.firmen = [];
   if (!db.kataloge) db.kataloge = [];
   db.angebote = (db.angebote || []).map(a => ({
+    kondEigen: false,
+    kond: null,
     ...a,
     positionen: (a.positionen || []).map(pz => ({
       art: "normal",
@@ -1819,6 +1825,62 @@ function aktiveVorlage(db, projekt) {
   };
   return g;
 }
+// Konditionsvorgabe: gilt je Projekt, je Ausschreibung übersteuerbar, beim Anlegen
+// einmal in Vertrag bzw. Bieter kopiert — bestehende bleiben davon unberührt.
+const LEERE_KOND = {
+  rabattPct: 0,
+  skontoPct: 0,
+  bauabzuegePct: 0,
+  rueckbehaltPct: 0,
+  garantieJahre: 0,
+  garantieArt: ""
+};
+const KOND_FELDER = [{
+  k: "rabattPct",
+  l: "Rabatt %",
+  nurVertrag: false
+}, {
+  k: "skontoPct",
+  l: "Skonto %",
+  nurVertrag: false
+}, {
+  k: "bauabzuegePct",
+  l: "Allg. Bauabzüge %",
+  nurVertrag: false
+}, {
+  k: "rueckbehaltPct",
+  l: "Rückbehalt %",
+  nurVertrag: true
+}, {
+  k: "garantieJahre",
+  l: "Garantie (Jahre)",
+  nurVertrag: true
+}, {
+  k: "garantieArt",
+  l: "Garantieart",
+  nurVertrag: true,
+  auswahl: true
+}];
+// Wirksame Vorgabe: Ausschreibung schlägt Projekt
+function kondVorgabe(projekt, angebot) {
+  const basis = {
+    ...LEERE_KOND,
+    ...(projekt?.kond || {})
+  };
+  if (angebot?.kondEigen && angebot.kond) return {
+    ...basis,
+    ...angebot.kond
+  };
+  return basis;
+}
+// Nur die Felder, die für Bieter gelten (ohne Rückbehalt und Garantie)
+function kondFuerBieter(v) {
+  return {
+    rabattPct: v.rabattPct || 0,
+    skontoPct: v.skontoPct || 0,
+    bauabzuegePct: v.bauabzuegePct || 0
+  };
+}
 const GARANTIEARTEN = [{
   k: "",
   l: "— keine —"
@@ -2042,6 +2104,42 @@ function KostenverlaufChart({
 //  UNTERNEHMER-ADRESSSTAMM
 // =========================================================================
 // ---------- PDF-Vorlage: Logo, Kopf- und Fusszeilen ----------
+// Eingabeblock für Konditionen — je Projekt oder je Ausschreibung
+function KonditionsFelder({
+  wert,
+  onAendern,
+  nurBieterfelder
+}) {
+  const k = {
+    ...LEERE_KOND,
+    ...(wert || {})
+  };
+  const felder = KOND_FELDER.filter(f => !nurBieterfelder || !f.nurVertrag);
+  return /*#__PURE__*/React.createElement("div", {
+    className: "grid grid-cols-2 md:grid-cols-3 gap-3"
+  }, felder.map(f => /*#__PURE__*/React.createElement(Field, {
+    key: f.k,
+    label: f.l
+  }, f.auswahl ? /*#__PURE__*/React.createElement("select", {
+    className: inputCls,
+    value: k[f.k] || "",
+    onChange: e => onAendern({
+      ...k,
+      [f.k]: e.target.value
+    })
+  }, GARANTIEARTEN.map(g => /*#__PURE__*/React.createElement("option", {
+    key: g.k,
+    value: g.k
+  }, g.l))) : /*#__PURE__*/React.createElement("input", {
+    className: inputCls,
+    value: k[f.k] ?? "",
+    onChange: e => onAendern({
+      ...k,
+      [f.k]: parseBetrag(e.target.value)
+    }),
+    placeholder: "0"
+  }))));
+}
 function VorlageEditor({
   wert,
   onAendern,
@@ -3531,6 +3629,18 @@ function ProjektView({
   }))), /*#__PURE__*/React.createElement("p", {
     className: "text-xs text-stone-400"
   }, "Gilt als Vorgabe für neue Ausschreibungen; pro Ausschreibung übersteuerbar. Punkte 1–100, Preispunkte = 100 × günstigste Nettosumme ÷ Nettosumme.")), /*#__PURE__*/React.createElement("div", {
+    className: `${card} p-4 space-y-3`
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    className: "text-xs font-medium text-stone-500 uppercase tracking-wide"
+  }, "Konditionen — Vorgabe für dieses Projekt"), /*#__PURE__*/React.createElement("p", {
+    className: "text-xs text-stone-500 mt-1"
+  }, "Diese Werte füllen neue Verträge und neue Bieter beim Anlegen aus und lassen sich dort jederzeit überschreiben. Bereits erfasste Verträge bleiben unverändert. Pauschalabzug, Rundung, Teuerung und Regiebudget trägst du weiterhin je Vertrag ein.")), /*#__PURE__*/React.createElement(KonditionsFelder, {
+    wert: f.kond,
+    onAendern: k => setF({
+      ...f,
+      kond: k
+    })
+  })), /*#__PURE__*/React.createElement("div", {
     className: `${card} p-4`
   }, /*#__PURE__*/React.createElement("label", {
     className: "inline-flex items-center gap-2 text-sm"
@@ -4629,20 +4739,26 @@ function VertraegeView({
     className: "flex items-center justify-between flex-wrap gap-2"
   }, /*#__PURE__*/React.createElement("button", {
     className: btnPrimary,
-    onClick: () => setVForm({
-      positionId: "",
-      unternehmer: "",
-      nr: "",
-      betrag: "",
-      rabattPct: "",
-      pauschalabzug: "",
-      skontoPct: "",
-      bauabzuegePct: "",
-      rundung: "",
-      regieBudget: "",
-      teuerung: "",
-      datum: today()
-    })
+    onClick: () => {
+      const k = kondVorgabe(projekt, null);
+      setVForm({
+        positionId: "",
+        unternehmer: "",
+        nr: "",
+        betrag: "",
+        pauschalabzug: "",
+        rundung: "",
+        regieBudget: "",
+        teuerung: "",
+        datum: today(),
+        rabattPct: k.rabattPct || "",
+        skontoPct: k.skontoPct || "",
+        bauabzuegePct: k.bauabzuegePct || "",
+        rueckbehaltPct: k.rueckbehaltPct || "",
+        garantieJahre: k.garantieJahre || "",
+        garantieArt: k.garantieArt || ""
+      });
+    }
   }, "+ Vertrag"), d.vertraege.length > 0 && /*#__PURE__*/React.createElement("div", {
     className: "text-sm text-stone-500"
   }, d.vertraege.length, " Verträge · Total beauftragt ", /*#__PURE__*/React.createElement("span", {
@@ -7579,19 +7695,23 @@ function AngeboteView({
 }) {
   const rollen = projektRollen(db, projekt);
   const [edit, setEdit] = useState(null);
-  const neuBieter = () => ({
-    name: "",
-    brutto: "",
-    rabattPct: "",
-    pauschalabzug: "",
-    skontoPct: "",
-    bauabzuegePct: "",
-    rundung: "",
-    referenzPunkte: "",
-    lehrlingPunkte: "",
-    bemerkung: "",
-    preise: {}
-  });
+  // Neue Bieter übernehmen die wirksame Konditionsvorgabe (Ausschreibung schlägt Projekt)
+  const neuBieter = angebot => {
+    const k = kondFuerBieter(kondVorgabe(projekt, angebot));
+    return {
+      name: "",
+      brutto: "",
+      pauschalabzug: "",
+      rundung: "",
+      referenzPunkte: "",
+      lehrlingPunkte: "",
+      bemerkung: "",
+      preise: {},
+      rabattPct: k.rabattPct || "",
+      skontoPct: k.skontoPct || "",
+      bauabzuegePct: k.bauabzuegePct || ""
+    };
+  };
   return /*#__PURE__*/React.createElement("div", {
     className: "space-y-4"
   }, /*#__PURE__*/React.createElement("button", {
@@ -7608,7 +7728,7 @@ function AngeboteView({
         referenzen: Number(projekt?.gewichtReferenzen) || 20,
         lehrlinge: Number(projekt?.gewichtLehrlinge) || 10
       },
-      bieter: [neuBieter(), neuBieter()]
+      bieter: [neuBieter(null), neuBieter(null)]
     })
   }, "+ Ausschreibung / Vergleich"), /*#__PURE__*/React.createElement("p", {
     className: "text-xs text-stone-400"
@@ -7683,6 +7803,7 @@ function AngebotCard({
       alert("Bitte zuerst eine BKP-Position der Ausschreibung zuordnen (Bearbeiten).");
       return;
     }
+    const kv = kondVorgabe(projekt, a);
     dispatch({
       type: "add",
       coll: "vertraege",
@@ -7701,6 +7822,9 @@ function AngebotCard({
         regieBudget: 0,
         teuerung: 0,
         datum: today(),
+        rueckbehaltPct: kv.rueckbehaltPct || 0,
+        garantieJahre: kv.garantieJahre || 2,
+        garantieArt: kv.garantieArt || "",
         firmaId: (findFirma(db.firmen, b.firmaId, b.name) || {}).id || "",
         firmaSnap: firmaSnapshot(findFirma(db.firmen, b.firmaId, b.name), ""),
         bauherrSnap: {
@@ -8316,7 +8440,7 @@ function AngebotEditor({
   const bieterAusStamm = gewaehlte => {
     const vorhanden = new Set((a.bieter || []).map(b => String(b.name || "").trim().toLowerCase()));
     const neue = gewaehlte.filter(fa => !vorhanden.has(fa.name.trim().toLowerCase())).map(fa => ({
-      ...neuBieter(),
+      ...neuBieter(a),
       name: fa.name,
       firmaId: fa.id
     }));
@@ -8409,7 +8533,37 @@ function AngebotEditor({
     className: inputCls,
     value: a.gewichte.lehrlinge,
     onChange: e => setW("lehrlinge", e.target.value)
-  })))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+  })))), /*#__PURE__*/React.createElement("div", {
+    className: `${card} p-3 bg-stone-50/60`
+  }, /*#__PURE__*/React.createElement("label", {
+    className: "inline-flex items-center gap-2 text-xs font-medium text-stone-500 uppercase tracking-wide mb-2"
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "checkbox",
+    checked: !!a.kondEigen,
+    onChange: e => setA({
+      ...a,
+      kondEigen: e.target.checked,
+      kond: e.target.checked ? a.kond || {
+        ...LEERE_KOND,
+        ...(projekt?.kond || {})
+      } : a.kond
+    })
+  }), "Eigene Konditionen für diese Ausschreibung"), a.kondEigen ? /*#__PURE__*/React.createElement(KonditionsFelder, {
+    wert: a.kond,
+    onAendern: k => setA({
+      ...a,
+      kond: k
+    })
+  }) : /*#__PURE__*/React.createElement("p", {
+    className: "text-xs text-stone-500"
+  }, "Neue Bieter übernehmen die Konditionen aus dem Projekt: ", (() => {
+    const k = {
+      ...LEERE_KOND,
+      ...(projekt?.kond || {})
+    };
+    const t = KOND_FELDER.filter(f => !f.nurVertrag && Number(k[f.k])).map(f => `${f.l.replace(" %", "")} ${k[f.k]}%`);
+    return t.length ? t.join(" · ") : "keine hinterlegt";
+  })())), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     className: "flex items-center justify-between mb-2"
   }, /*#__PURE__*/React.createElement("span", {
     className: "text-xs font-medium text-stone-500 uppercase tracking-wide"
@@ -8422,7 +8576,7 @@ function AngebotEditor({
     className: "text-stone-500 text-xs hover:underline",
     onClick: () => setA({
       ...a,
-      bieter: [...a.bieter, neuBieter()]
+      bieter: [...a.bieter, neuBieter(a)]
     })
   }, "+ leere Zeile"))), /*#__PURE__*/React.createElement("div", {
     className: "overflow-x-auto border border-stone-200 rounded-md"
@@ -9549,6 +9703,7 @@ function VergabeModal({
   db,
   rollen
 }) {
+  const kvVorgabe = kondVorgabe((db.projekte || []).find(x => x.id === projektId), info?.a || null);
   const {
     a,
     b,
@@ -9581,6 +9736,9 @@ function VergabeModal({
           regieBudget: 0,
           teuerung: 0,
           datum: today(),
+          rueckbehaltPct: kvVorgabe.rueckbehaltPct || 0,
+          garantieJahre: kvVorgabe.garantieJahre || 2,
+          garantieArt: kvVorgabe.garantieArt || "",
           ausschreibungen: [a.titel],
           firmaId: (findFirma(db.firmen, b.firmaId, b.name) || {}).id || "",
           firmaSnap: firmaSnapshot(findFirma(db.firmen, b.firmaId, b.name), ""),

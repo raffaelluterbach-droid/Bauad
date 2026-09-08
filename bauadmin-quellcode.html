@@ -279,12 +279,12 @@ const logoLaden = (id) => belegTx("readonly", (s) => s.get(id));
 const belegLaden = (id) => belegTx("readonly", (s) => s.get(id));
 const belegLoeschen = (id) => belegTx("readwrite", (s) => s.delete(id));
 function normalize(db) {
-  db.projekte = db.projekte.map((p) => ({ mwstSatz: 8.1, teuerungsReserve: 0, strasse: "", plzOrt: "", bauherrAdresse: "", bauleitung: "", gewichtPreis: 70, gewichtReferenzen: 20, gewichtLehrlinge: 10, ...p }));
+  db.projekte = db.projekte.map((p) => ({ mwstSatz: 8.1, teuerungsReserve: 0, strasse: "", plzOrt: "", bauherrAdresse: "", bauleitung: "", gewichtPreis: 70, gewichtReferenzen: 20, gewichtLehrlinge: 10, ...p, kond: { ...LEERE_KOND, ...(p.kond || {}) } }));
   db.positionen = (db.positionen || []).map((p) => ({ parentId: null, ...p }));
   ["mutationen", "umbuchungen", "vertraege", "nachtraege", "rechnungen", "angebote", "rapporte", "erwartungen", "snapshots", "beteiligte", "listen", "vergauftraege"].forEach((c) => { if (!db[c]) db[c] = []; });
   if (!db.firmen) db.firmen = [];
   if (!db.kataloge) db.kataloge = [];
-  db.angebote = (db.angebote || []).map((a) => ({ ...a, positionen: (a.positionen || []).map((pz) => ({ art: "normal", bemerkung: "", fabrikat: "", ...pz })) }));
+  db.angebote = (db.angebote || []).map((a) => ({ kondEigen: false, kond: null, ...a, positionen: (a.positionen || []).map((pz) => ({ art: "normal", bemerkung: "", fabrikat: "", ...pz })) }));
   db.vorlage = { logoId: "", logoName: "", logoBreiteHoch: 120, logoBreiteQuer: 150, logoPos: "links", kopf: ["", "", ""], fuss: ["", ""], seitenzahl: true, ...(db.vorlage || {}) };
   db.projekte = db.projekte.map((pr) => ({ ...pr, vorlageEigen: pr.vorlageEigen || false, vorlage: pr.vorlage || null }));
   db.firmen = db.firmen.map((fa) => {
@@ -760,6 +760,27 @@ function aktiveVorlage(db, projekt) {
   if (projekt?.vorlageEigen && projekt.vorlage) return { ...g, ...projekt.vorlage };
   return g;
 }
+// Konditionsvorgabe: gilt je Projekt, je Ausschreibung übersteuerbar, beim Anlegen
+// einmal in Vertrag bzw. Bieter kopiert — bestehende bleiben davon unberührt.
+const LEERE_KOND = { rabattPct: 0, skontoPct: 0, bauabzuegePct: 0, rueckbehaltPct: 0, garantieJahre: 0, garantieArt: "" };
+const KOND_FELDER = [
+  { k: "rabattPct", l: "Rabatt %", nurVertrag: false },
+  { k: "skontoPct", l: "Skonto %", nurVertrag: false },
+  { k: "bauabzuegePct", l: "Allg. Bauabzüge %", nurVertrag: false },
+  { k: "rueckbehaltPct", l: "Rückbehalt %", nurVertrag: true },
+  { k: "garantieJahre", l: "Garantie (Jahre)", nurVertrag: true },
+  { k: "garantieArt", l: "Garantieart", nurVertrag: true, auswahl: true },
+];
+// Wirksame Vorgabe: Ausschreibung schlägt Projekt
+function kondVorgabe(projekt, angebot) {
+  const basis = { ...LEERE_KOND, ...(projekt?.kond || {}) };
+  if (angebot?.kondEigen && angebot.kond) return { ...basis, ...angebot.kond };
+  return basis;
+}
+// Nur die Felder, die für Bieter gelten (ohne Rückbehalt und Garantie)
+function kondFuerBieter(v) {
+  return { rabattPct: v.rabattPct || 0, skontoPct: v.skontoPct || 0, bauabzuegePct: v.bauabzuegePct || 0 };
+}
 const GARANTIEARTEN = [
   { k: "", l: "— keine —" },
   { k: "rueckbehalt", l: "Rückbehalt" },
@@ -870,6 +891,23 @@ function KostenverlaufChart({ punkte }) {
 //  UNTERNEHMER-ADRESSSTAMM
 // =========================================================================
 // ---------- PDF-Vorlage: Logo, Kopf- und Fusszeilen ----------
+// Eingabeblock für Konditionen — je Projekt oder je Ausschreibung
+function KonditionsFelder({ wert, onAendern, nurBieterfelder }) {
+  const k = { ...LEERE_KOND, ...(wert || {}) };
+  const felder = KOND_FELDER.filter((f) => !nurBieterfelder || !f.nurVertrag);
+  return (
+    <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+      {felder.map((f) => (
+        <Field key={f.k} label={f.l}>
+          {f.auswahl
+            ? <select className={inputCls} value={k[f.k] || ""} onChange={(e) => onAendern({ ...k, [f.k]: e.target.value })}>{GARANTIEARTEN.map((g) => <option key={g.k} value={g.k}>{g.l}</option>)}</select>
+            : <input className={inputCls} value={k[f.k] ?? ""} onChange={(e) => onAendern({ ...k, [f.k]: parseBetrag(e.target.value) })} placeholder="0" />}
+        </Field>
+      ))}
+    </div>
+  );
+}
+
 function VorlageEditor({ wert, onAendern, titel, hinweis }) {
   const v = wert || {};
   const ref = useRef(null);
@@ -1511,6 +1549,13 @@ function ProjektView({ projekt, dispatch, db }) {
         </div>
         <p className="text-xs text-stone-400">Gilt als Vorgabe für neue Ausschreibungen; pro Ausschreibung übersteuerbar. Punkte 1–100, Preispunkte = 100 × günstigste Nettosumme ÷ Nettosumme.</p>
       </div>
+      <div className={`${card} p-4 space-y-3`}>
+        <div>
+          <div className="text-xs font-medium text-stone-500 uppercase tracking-wide">Konditionen — Vorgabe für dieses Projekt</div>
+          <p className="text-xs text-stone-500 mt-1">Diese Werte füllen neue Verträge und neue Bieter beim Anlegen aus und lassen sich dort jederzeit überschreiben. Bereits erfasste Verträge bleiben unverändert. Pauschalabzug, Rundung, Teuerung und Regiebudget trägst du weiterhin je Vertrag ein.</p>
+        </div>
+        <KonditionsFelder wert={f.kond} onAendern={(k) => setF({ ...f, kond: k })} />
+      </div>
       <div className={`${card} p-4`}>
         <label className="inline-flex items-center gap-2 text-sm">
           <input type="checkbox" checked={!!f.vorlageEigen} onChange={(e) => setF({ ...f, vorlageEigen: e.target.checked, vorlage: e.target.checked ? (f.vorlage || { ...(db?.vorlage || {}) }) : f.vorlage })} />
@@ -1855,7 +1900,7 @@ function VertraegeView({ d, dispatch, projektId, projekt, firmen, db }) {
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between flex-wrap gap-2">
-        <button className={btnPrimary} onClick={() => setVForm({ positionId: "", unternehmer: "", nr: "", betrag: "", rabattPct: "", pauschalabzug: "", skontoPct: "", bauabzuegePct: "", rundung: "", regieBudget: "", teuerung: "", datum: today() })}>+ Vertrag</button>
+        <button className={btnPrimary} onClick={() => { const k = kondVorgabe(projekt, null); setVForm({ positionId: "", unternehmer: "", nr: "", betrag: "", pauschalabzug: "", rundung: "", regieBudget: "", teuerung: "", datum: today(), rabattPct: k.rabattPct || "", skontoPct: k.skontoPct || "", bauabzuegePct: k.bauabzuegePct || "", rueckbehaltPct: k.rueckbehaltPct || "", garantieJahre: k.garantieJahre || "", garantieArt: k.garantieArt || "" }); }}>+ Vertrag</button>
         {d.vertraege.length > 0 && <div className="text-sm text-stone-500">{d.vertraege.length} Verträge · Total beauftragt <span className="font-semibold tabular-nums text-stone-700">{chf(totalBeauftragt)}</span></div>}
       </div>
       {garantieRows.length > 0 && (
@@ -3019,10 +3064,11 @@ function nutzwerte(a, projekt) {
 function AngeboteView({ d, dispatch, projektId, projekt, db, ks }) {
   const rollen = projektRollen(db, projekt);
   const [edit, setEdit] = useState(null);
-  const neuBieter = () => ({ name: "", brutto: "", rabattPct: "", pauschalabzug: "", skontoPct: "", bauabzuegePct: "", rundung: "", referenzPunkte: "", lehrlingPunkte: "", bemerkung: "", preise: {} });
+  // Neue Bieter übernehmen die wirksame Konditionsvorgabe (Ausschreibung schlägt Projekt)
+  const neuBieter = (angebot) => { const k = kondFuerBieter(kondVorgabe(projekt, angebot)); return { name: "", brutto: "", pauschalabzug: "", rundung: "", referenzPunkte: "", lehrlingPunkte: "", bemerkung: "", preise: {}, rabattPct: k.rabattPct || "", skontoPct: k.skontoPct || "", bauabzuegePct: k.bauabzuegePct || "" }; };
   return (
     <div className="space-y-4">
-      <button className={btnPrimary} onClick={() => setEdit({ id: null, titel: "", positionId: "", modus: "pauschal", positionen: [], bedingungen: "", gewichte: { preis: Number(projekt?.gewichtPreis) || 70, referenzen: Number(projekt?.gewichtReferenzen) || 20, lehrlinge: Number(projekt?.gewichtLehrlinge) || 10 }, bieter: [neuBieter(), neuBieter()] })}>+ Ausschreibung / Vergleich</button>
+      <button className={btnPrimary} onClick={() => setEdit({ id: null, titel: "", positionId: "", modus: "pauschal", positionen: [], bedingungen: "", gewichte: { preis: Number(projekt?.gewichtPreis) || 70, referenzen: Number(projekt?.gewichtReferenzen) || 20, lehrlinge: Number(projekt?.gewichtLehrlinge) || 10 }, bieter: [neuBieter(null), neuBieter(null)] })}>+ Ausschreibung / Vergleich</button>
       <p className="text-xs text-stone-400">Tipp: Leistungsverzeichnisse (NPK) importierst du im Reiter «Leistungsverzeichnisse» — dort kannst du auch mehrere NPK-Kataloge zu einer Ausschreibung zusammenführen. Hier bepreisen die Bieter die Positionen und du vergleichst.</p>
       {!d.angebote.length ? <Empty text="Keine Angebote erstellt." /> : d.angebote.map((a) => <AngebotCard key={a.id} a={a} d={d} dispatch={dispatch} projektId={projektId} projekt={projekt} onEdit={() => setEdit(a)} db={db} rollen={rollen} ks={ks} />)}
       {edit && <AngebotEditor angebot={edit} positionen={d.positionen} projekt={projekt} neuBieter={neuBieter} firmen={db.firmen} onClose={() => setEdit(null)} onSave={(a) => { if (a.id) dispatch({ type: "update", coll: "angebote", id: a.id, patch: a }); else dispatch({ type: "add", coll: "angebote", item: { ...a, id: uid(), projektId } }); setEdit(null); }} />}
@@ -3042,7 +3088,8 @@ function AngebotCard({ a, d, dispatch, projektId, projekt, onEdit, db, rollen, k
   const posLabel = (() => { const x = d.positionen.find((p) => p.id === a.positionId); return x ? `${x.bkp} ${x.bezeichnung}` : "ohne BKP-Zuordnung"; })();
   function vergeben(b, brutto, netto) {
     if (!a.positionId) { alert("Bitte zuerst eine BKP-Position der Ausschreibung zuordnen (Bearbeiten)."); return; }
-    dispatch({ type: "add", coll: "vertraege", item: { id: uid(), projektId, positionId: a.positionId, unternehmer: b.name, nr: a.titel, betrag: brutto, rabattPct: Number(b.rabattPct) || 0, pauschalabzug: Number(b.pauschalabzug) || 0, skontoPct: Number(b.skontoPct) || 0, bauabzuegePct: Number(b.bauabzuegePct) || 0, rundung: Number(b.rundung) || 0, regieBudget: 0, teuerung: 0, datum: today() , firmaId: (findFirma(db.firmen, b.firmaId, b.name) || {}).id || "", firmaSnap: firmaSnapshot(findFirma(db.firmen, b.firmaId, b.name), ""), bauherrSnap: { bauherr: rollen.bauherr, bauherrAdresse: rollen.bauherrAdresse, bauherrPerson: rollen.bauherrPerson } } });
+    const kv = kondVorgabe(projekt, a);
+    dispatch({ type: "add", coll: "vertraege", item: { id: uid(), projektId, positionId: a.positionId, unternehmer: b.name, nr: a.titel, betrag: brutto, rabattPct: Number(b.rabattPct) || 0, pauschalabzug: Number(b.pauschalabzug) || 0, skontoPct: Number(b.skontoPct) || 0, bauabzuegePct: Number(b.bauabzuegePct) || 0, rundung: Number(b.rundung) || 0, regieBudget: 0, teuerung: 0, datum: today(), rueckbehaltPct: kv.rueckbehaltPct || 0, garantieJahre: kv.garantieJahre || 2, garantieArt: kv.garantieArt || "", firmaId: (findFirma(db.firmen, b.firmaId, b.name) || {}).id || "", firmaSnap: firmaSnapshot(findFirma(db.firmen, b.firmaId, b.name), ""), bauherrSnap: { bauherr: rollen.bauherr, bauherrAdresse: rollen.bauherrAdresse, bauherrPerson: rollen.bauherrPerson } } });
     alert(`Vertrag mit ${b.name} erstellt: brutto CHF ${chf(brutto)} → netto CHF ${chf(netto)}. Konditionen übernommen; Regiebudget unter «Verträge» ergänzen.`);
   }
   const named = rows.filter((r) => r.b.name);
@@ -3355,7 +3402,7 @@ function AngebotEditor({ angebot, positionen, projekt, neuBieter, onClose, onSav
   const bieterAusStamm = (gewaehlte) => {
     const vorhanden = new Set((a.bieter || []).map((b) => String(b.name || "").trim().toLowerCase()));
     const neue = gewaehlte.filter((fa) => !vorhanden.has(fa.name.trim().toLowerCase()))
-      .map((fa) => ({ ...neuBieter(), name: fa.name, firmaId: fa.id }));
+      .map((fa) => ({ ...neuBieter(a), name: fa.name, firmaId: fa.id }));
     if (neue.length) setA({ ...a, bieter: [...(a.bieter || []).filter((b) => b.name || (a.bieter || []).length <= 1), ...neue] });
     setStammOffen(false);
   };
@@ -3382,8 +3429,17 @@ function AngebotEditor({ angebot, positionen, projekt, neuBieter, onClose, onSav
             <Field label="Lehrlingsausbildung %"><input className={inputCls} value={a.gewichte.lehrlinge} onChange={(e) => setW("lehrlinge", e.target.value)} /></Field>
           </div>
         </div>
+        <div className={`${card} p-3 bg-stone-50/60`}>
+          <label className="inline-flex items-center gap-2 text-xs font-medium text-stone-500 uppercase tracking-wide mb-2">
+            <input type="checkbox" checked={!!a.kondEigen} onChange={(e) => setA({ ...a, kondEigen: e.target.checked, kond: e.target.checked ? (a.kond || { ...LEERE_KOND, ...(projekt?.kond || {}) }) : a.kond })} />
+            Eigene Konditionen für diese Ausschreibung
+          </label>
+          {a.kondEigen
+            ? <KonditionsFelder wert={a.kond} onAendern={(k) => setA({ ...a, kond: k })} />
+            : <p className="text-xs text-stone-500">Neue Bieter übernehmen die Konditionen aus dem Projekt: {(() => { const k = { ...LEERE_KOND, ...(projekt?.kond || {}) }; const t = KOND_FELDER.filter((f) => !f.nurVertrag && Number(k[f.k])).map((f) => `${f.l.replace(" %", "")} ${k[f.k]}%`); return t.length ? t.join(" · ") : "keine hinterlegt"; })()}</p>}
+        </div>
         <div>
-          <div className="flex items-center justify-between mb-2"><span className="text-xs font-medium text-stone-500 uppercase tracking-wide">Bieter — Stammdaten, Konditionen & Bewertung</span><div className="flex gap-3"><button className="text-orange-800 text-xs hover:underline" onClick={() => setStammOffen(true)}>+ Bieter aus Adressstamm</button><button className="text-stone-500 text-xs hover:underline" onClick={() => setA({ ...a, bieter: [...a.bieter, neuBieter()] })}>+ leere Zeile</button></div></div>
+          <div className="flex items-center justify-between mb-2"><span className="text-xs font-medium text-stone-500 uppercase tracking-wide">Bieter — Stammdaten, Konditionen & Bewertung</span><div className="flex gap-3"><button className="text-orange-800 text-xs hover:underline" onClick={() => setStammOffen(true)}>+ Bieter aus Adressstamm</button><button className="text-stone-500 text-xs hover:underline" onClick={() => setA({ ...a, bieter: [...a.bieter, neuBieter(a)] })}>+ leere Zeile</button></div></div>
           <div className="overflow-x-auto border border-stone-200 rounded-md"><table className="w-full text-sm">
             <thead className="bg-stone-50 text-stone-500 text-xs"><tr>
               <th className="px-2 py-1.5 text-left min-w-[140px]">Firma</th><th className="px-2 py-1.5 text-right min-w-[90px]">Brutto</th><th className="px-2 py-1.5 text-right w-16">Rabatt %</th><th className="px-2 py-1.5 text-right w-20">Pauschal</th><th className="px-2 py-1.5 text-right w-16">Skonto %</th><th className="px-2 py-1.5 text-right w-16">Bauabz. %</th><th className="px-2 py-1.5 text-right w-20">Rundung</th><th className="px-2 py-1.5 text-right min-w-[90px]">Netto</th><th className="px-2 py-1.5 text-right w-16">Ref.</th><th className="px-2 py-1.5 text-right w-16">Lehrl.</th><th className="px-2 py-1.5 text-left min-w-[140px]">Bemerkung</th><th className="px-1 w-8"></th>
@@ -3800,13 +3856,14 @@ function OfferteImportModal({ a, bieterIndex, dispatch, onClose }) {
 }
 
 function VergabeModal({ info, vertraege, dispatch, projektId, onClose, db, rollen }) {
+  const kvVorgabe = kondVorgabe((db.projekte || []).find((x) => x.id === projektId), info?.a || null);
   const { a, b, brutto, netto } = info;
   const [modus, setModus] = useState("neu");
   const [vertragId, setVertragId] = useState("");
   function vergeben() {
     if (!a.positionId) { alert("Bitte zuerst eine BKP-Position der Ausschreibung zuordnen."); return; }
     if (modus === "neu") {
-      dispatch({ type: "add", coll: "vertraege", item: { id: uid(), projektId, positionId: a.positionId, unternehmer: b.name, nr: a.titel, betrag: brutto, rabattPct: Number(b.rabattPct) || 0, pauschalabzug: Number(b.pauschalabzug) || 0, skontoPct: Number(b.skontoPct) || 0, bauabzuegePct: Number(b.bauabzuegePct) || 0, rundung: Number(b.rundung) || 0, regieBudget: 0, teuerung: 0, datum: today(), ausschreibungen: [a.titel], firmaId: (findFirma(db.firmen, b.firmaId, b.name) || {}).id || "", firmaSnap: firmaSnapshot(findFirma(db.firmen, b.firmaId, b.name), ""), bauherrSnap: { bauherr: rollen.bauherr, bauherrAdresse: rollen.bauherrAdresse, bauherrPerson: rollen.bauherrPerson } } });
+      dispatch({ type: "add", coll: "vertraege", item: { id: uid(), projektId, positionId: a.positionId, unternehmer: b.name, nr: a.titel, betrag: brutto, rabattPct: Number(b.rabattPct) || 0, pauschalabzug: Number(b.pauschalabzug) || 0, skontoPct: Number(b.skontoPct) || 0, bauabzuegePct: Number(b.bauabzuegePct) || 0, rundung: Number(b.rundung) || 0, regieBudget: 0, teuerung: 0, datum: today(), rueckbehaltPct: kvVorgabe.rueckbehaltPct || 0, garantieJahre: kvVorgabe.garantieJahre || 2, garantieArt: kvVorgabe.garantieArt || "", ausschreibungen: [a.titel], firmaId: (findFirma(db.firmen, b.firmaId, b.name) || {}).id || "", firmaSnap: firmaSnapshot(findFirma(db.firmen, b.firmaId, b.name), ""), bauherrSnap: { bauherr: rollen.bauherr, bauherrAdresse: rollen.bauherrAdresse, bauherrPerson: rollen.bauherrPerson } } });
     } else {
       const v = vertraege.find((x) => x.id === vertragId); if (!v) return;
       dispatch({ type: "update", coll: "vertraege", id: v.id, patch: { betrag: (Number(v.betrag) || 0) + brutto, nr: [v.nr, a.titel].filter(Boolean).join(" + "), ausschreibungen: [...(v.ausschreibungen || []), a.titel] } });
