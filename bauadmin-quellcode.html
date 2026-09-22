@@ -197,6 +197,102 @@ function makeCrbxBlob(text) {
   const eocd = [...u32(0x06054b50), ...u16(0), ...u16(0), ...u16(1), ...u16(1), ...u32(cdir.length), ...u32(cdOff), ...u16(0)];
   return new Blob([new Uint8Array([...local, ...cdir, ...eocd])], { type: "application/octet-stream" });
 }
+// ZIP ohne Kompression (Methode «store») — reicht für Excel-Dateien und bleibt ohne Zusatzbibliothek
+function zipStore(dateien) {
+  const enc = new TextEncoder();
+  const u16 = (v) => [v & 255, (v >> 8) & 255]; const u32 = (v) => [v & 255, (v >> 8) & 255, (v >> 16) & 255, (v >> 24) & 255];
+  const teile = [], zentral = []; let off = 0;
+  dateien.forEach(({ name, inhalt }) => {
+    const n = enc.encode(name); const data = typeof inhalt === "string" ? enc.encode(inhalt) : inhalt;
+    const crc = crc32(data), sz = data.length;
+    const kopf = new Uint8Array([...u32(0x04034b50), ...u16(20), ...u16(0x0800), ...u16(0), ...u16(0), ...u16(0x21), ...u32(crc), ...u32(sz), ...u32(sz), ...u16(n.length), ...u16(0), ...n]);
+    zentral.push(new Uint8Array([...u32(0x02014b50), ...u16(20), ...u16(20), ...u16(0x0800), ...u16(0), ...u16(0), ...u16(0x21), ...u32(crc), ...u32(sz), ...u32(sz), ...u16(n.length), ...u16(0), ...u16(0), ...u16(0), ...u16(0), ...u32(0), ...u32(off), ...n]));
+    teile.push(kopf, data); off += kopf.length + sz;
+  });
+  const cdLaenge = zentral.reduce((s, z) => s + z.length, 0);
+  const ende = new Uint8Array([...u32(0x06054b50), ...u16(0), ...u16(0), ...u16(dateien.length), ...u16(dateien.length), ...u32(cdLaenge), ...u32(off), ...u16(0)]);
+  return new Blob([...teile, ...zentral, ende]);
+}
+
+// Excel-Arbeitsmappe (.xlsx) aus einfachen Tabellen.
+// blatt = { name, titel, spalten: [{ t: Titel, b: Breite, typ: "text"|"chf"|"zahl"|"datum" }], zeilen: [{ w: [Werte], fett, einzug }] }
+const XLSX_STIL = { text: 0, kopf: 1, chf: 2, chfFett: 3, textFett: 4, datum: 5, titel: 6, zahl: 7, zahlFett: 8, grau: 9 };
+function xmlEsc(s) { return String(s).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
+function xlsxSpalte(i) { let s = ""; i += 1; while (i > 0) { const m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); } return s; }
+function xlsxDatum(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || "")); if (!m) return null;
+  return (Date.UTC(+m[1], +m[2] - 1, +m[3]) - Date.UTC(1899, 11, 30)) / 86400000;
+}
+function xlsxBlattName(n, schon) {
+  let s = String(n || "Blatt").replace(/[\\/?*[\]:]/g, " ").trim().slice(0, 31) || "Blatt";
+  let k = s, i = 2; while (schon.has(k.toLowerCase())) { k = s.slice(0, 28) + " " + i++; } schon.add(k.toLowerCase()); return k;
+}
+function baueXlsx(blaetter) {
+  const namen = new Set();
+  const liste = blaetter.map((b) => ({ ...b, name: xlsxBlattName(b.name, namen) }));
+  const definiert = [];
+  const sheets = liste.map((b, bi) => {
+    const zeilenXml = [];
+    let r = 0;
+    const zelle = (ci, wert, stil, typ) => {
+      const ref = xlsxSpalte(ci) + r;
+      if (wert === null || wert === undefined || wert === "") return stil ? `<c r="${ref}" s="${stil}"/>` : "";
+      if (typ === "datum") { const z = xlsxDatum(wert); if (z !== null) return `<c r="${ref}" s="${XLSX_STIL.datum}"><v>${z}</v></c>`; }
+      if (typeof wert === "number" && isFinite(wert)) return `<c r="${ref}" s="${stil}"><v>${Math.round(wert * 100) / 100}</v></c>`;
+      return `<c r="${ref}" t="inlineStr" s="${stil}"><is><t xml:space="preserve">${xmlEsc(wert)}</t></is></c>`;
+    };
+    let kopfZeile = 1;
+    if (b.titel) {
+      r++; zeilenXml.push(`<row r="${r}">${zelle(0, b.titel, XLSX_STIL.titel)}</row>`);
+      if (b.untertitel) { r++; zeilenXml.push(`<row r="${r}">${zelle(0, b.untertitel, XLSX_STIL.grau)}</row>`); }
+      r++; zeilenXml.push(`<row r="${r}"/>`);
+      kopfZeile = r + 1;
+    }
+    r++; zeilenXml.push(`<row r="${r}">${b.spalten.map((s, ci) => zelle(ci, s.t, XLSX_STIL.kopf)).join("")}</row>`);
+    b.zeilen.forEach((z) => {
+      r++;
+      const zellen = b.spalten.map((s, ci) => {
+        let w = z.w[ci];
+        if (ci === 1 && z.einzug && typeof w === "string") w = "   ".repeat(z.einzug) + w;
+        let stil = z.fett ? XLSX_STIL.textFett : XLSX_STIL.text;
+        if (s.typ === "chf") stil = z.fett ? XLSX_STIL.chfFett : XLSX_STIL.chf;
+        else if (s.typ === "zahl") stil = z.fett ? XLSX_STIL.zahlFett : XLSX_STIL.zahl;
+        return zelle(ci, typeof w === "number" && !isFinite(w) ? "" : w, stil, s.typ);
+      }).join("");
+      zeilenXml.push(`<row r="${r}">${zellen}</row>`);
+    });
+    const letzte = xlsxSpalte(b.spalten.length - 1);
+    const filterBis = kopfZeile + b.zeilen.filter((z) => !z.summe).length;
+    const filter = `A${kopfZeile}:${letzte}${Math.max(kopfZeile, filterBis)}`;
+    definiert.push(`<definedName name="_xlnm._FilterDatabase" localSheetId="${bi}" hidden="1">'${xmlEsc(b.name.replace(/'/g, "''"))}'!$A$${kopfZeile}:$${letzte}$${Math.max(kopfZeile, filterBis)}</definedName>`);
+    const cols = b.spalten.map((s, ci) => `<col min="${ci + 1}" max="${ci + 1}" width="${s.b || (s.typ === "chf" ? 14 : 12)}" customWidth="1"/>`).join("");
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheetPr><pageSetUpPr fitToPage="1"/></sheetPr><sheetViews><sheetView workbookViewId="0"${bi === 0 ? ' tabSelected="1"' : ""}><pane ySplit="${kopfZeile}" topLeftCell="A${kopfZeile + 1}" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="15"/><cols>${cols}</cols><sheetData>${zeilenXml.join("")}</sheetData>${b.zeilen.length ? `<autoFilter ref="${filter}"/>` : ""}<pageMargins left="0.5" right="0.5" top="0.6" bottom="0.6" header="0.3" footer="0.3"/><pageSetup paperSize="9" orientation="${b.spalten.length > 8 ? "landscape" : "portrait"}" fitToWidth="1" fitToHeight="0"/></worksheet>`;
+  });
+  const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="2"><numFmt numFmtId="164" formatCode="#,##0.00"/><numFmt numFmtId="165" formatCode="dd.mm.yyyy"/></numFmts><fonts count="4"><font><sz val="10"/><name val="Arial"/></font><font><b/><sz val="10"/><name val="Arial"/></font><font><b/><sz val="14"/><name val="Arial"/></font><font><sz val="9"/><color rgb="FF808080"/><name val="Arial"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFEFEBE6"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left/><right/><top/><bottom style="thin"><color rgb="FF999999"/></bottom><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="10"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment wrapText="1" vertical="center"/></xf><xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="164" fontId="1" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/><xf numFmtId="165" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1"/><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/><xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
+  const workbook = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><bookViews><workbookView/></bookViews><sheets>${liste.map((b, i) => `<sheet name="${xmlEsc(b.name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join("")}</sheets><definedNames>${definiert.join("")}</definedNames></workbook>`;
+  const wbRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${liste.map((b, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join("")}<Relationship Id="rId${liste.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`;
+  const types = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>${liste.map((b, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join("")}<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>`;
+  const rels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`;
+  const blob = zipStore([
+    { name: "[Content_Types].xml", inhalt: types },
+    { name: "_rels/.rels", inhalt: rels },
+    { name: "xl/workbook.xml", inhalt: workbook },
+    { name: "xl/_rels/workbook.xml.rels", inhalt: wbRels },
+    { name: "xl/styles.xml", inhalt: styles },
+    ...sheets.map((x, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, inhalt: x })),
+  ]);
+  return new Blob([blob], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+}
+function excelSpeichern(blaetter, dateiname) {
+  try { return download(baueXlsx(blaetter), dateiname.replace(/[^\w.\-äöüÄÖÜ]+/g, "_") + ".xlsx"); }
+  catch (e) { window.alert("Die Excel-Datei konnte nicht erzeugt werden: " + e.message); return Promise.resolve(false); }
+}
 // Downloads: In der geteilten Artifact-Ansicht blockiert der Browser einfache Download-Links;
 // dort übernimmt die Plattform das Speichern (mit Rückfrage an den Betrachter).
 // Lokal geöffnet (bauadmin.html) funktioniert der gewohnte Link.
@@ -595,7 +691,7 @@ function pdfKopf(bl, titel, projekt, rollen, zusatz, vorlage) {
 
   // Rechte Spalte: Datum, Beteiligte, danach die freien Zeilen der Vorlage
   let yR = oben;
-  bl.text(today(), { size: 8.5, rechts, y: yR }); yR -= 12;
+  bl.text(today().split("-").reverse().join("."), { size: 8.5, rechts, y: yR }); yR -= 12;
   if (rollen?.bauherr) { bl.text("Bauherr: " + rollen.bauherr, { size: 8.5, rechts, y: yR, farbe: grau }); yR -= 12; }
   if (rollen?.bauleitung) { bl.text("Bauleitung: " + rollen.bauleitung, { size: 8.5, rechts, y: yR, farbe: grau }); yR -= 12; }
   (v.kopf || []).filter(Boolean).forEach((zl, i) => { if (i === 0) yR -= 3; bl.text(zl, { rechts, y: yR, size: 7.5, farbe: hell }); yR -= 10; });
@@ -804,12 +900,12 @@ const HILFE = {
   umbuchungen: ["Budget von einer BKP-Position in eine andere verschieben.", "Das Gesamtbudget bleibt unverändert."],
   vertraege: ["① Vertrag erfassen (oder aus einer Ausschreibung vergeben) — mit Konditionen, Rückbehalt und Garantie.", "② Nachträge direkt am Vertrag erfassen; sie erben die %-Konditionen.", "③ Werkvertrag drucken über den Knopf am Vertrag.", "Die Garantie-Übersicht oben zeigt ablaufende Fristen und Rückbehalte."],
   vergauftraege: ["Mehrere geprüfte Rechnungen zu einem Vergütungsauftrag bündeln und als ein PDF ausgeben.", "Das Dokument enthält eine Zusammenstellung, je Rechnung ein Deckblatt mit Vertragsstand — und direkt dahinter den Beleg des Unternehmers.", "«Als gesendet markieren» setzt alle enthaltenen Rechnungen auf bezahlt. Spätere Änderungen am Auftrag lassen den Status unberührt."],
-  rechnungen: ["Rechnungen auf einen Vertrag buchen (oder direkt auf eine BKP-Position).", "Je Rechnung lässt sich ein PDF des Unternehmers hinterlegen — per Knopf oder Ziehen-und-Ablegen.", "Status-Ablauf: erfasst → geprüft → bezahlt. Nur «bezahlt» zählt in die Spalte Bezahlt.", "«Druck» erstellt eine Zahlungsfreigabe zum Unterschreiben.", "Rot in fakt./soll = mehr fakturiert als vertraglich vereinbart."],
+  rechnungen: ["Rechnungen auf einen Vertrag buchen (oder direkt auf eine BKP-Position).", "Rechnungs-PDF in den Reiter ziehen: Vertrag, Betrag, Datum und Nummer werden vorgeschlagen, das PDF wird als Beleg angehängt.", "Auf ein bestehendes «+ PDF» gezogen, wird das PDF nur dort als Beleg hinterlegt.", "Status-Ablauf: erfasst → geprüft → bezahlt. Nur «bezahlt» zählt in die Spalte Bezahlt.", "«Druck» erstellt eine Zahlungsfreigabe zum Unterschreiben.", "Rot in fakt./soll = mehr fakturiert als vertraglich vereinbart."],
   lv: ["① LV importieren (.crbx aus Messerli/CRB) oder Positionen manuell erfassen.", "② Leere Offerte als CSV oder .crbx an die Unternehmer senden.", "③ Zurückerhaltene Offerten je Firma einlesen (⬇) — Preise erscheinen automatisch in der Matrix. Oder Preise direkt eintippen.", "④ Vergleichen (günstigster Preis grün) und unten «vergeben» — als neuer Vertrag oder zu einem bestehenden dazu.", "Vergabeantrag drucken für die Bauherrschaft."],
   angebote: ["Offerten vergleichen und vergeben: je Unternehmer eine Spalte mit der Konditionen-Staffel von brutto bis netto.", "Bieter fügst du aus dem Adressstamm hinzu — mehrere auf einmal.", "Hier entstehen auch Vergabeantrag, Positionsvergleich und das Leistungsverzeichnis als PDF."],
   rapporte: ["Regierapporte auf Verträge buchen (Stunden × Ansatz + Material).", "Solange das Regiebudget des Vertrags nicht überschritten ist, ändert sich die Prognose nicht — erst der Überschuss fliesst als Erwartung ein."],
   erwartungen: ["Erwartete Mehrkosten erfassen, die noch in keinem Nachtrag stecken.", "Prognose = Vertrag (oder KV) + Erwartung. Regie-Überschüsse erscheinen automatisch."],
-  abrechnung: ["Die Gesamtübersicht nach BKP — netto oder brutto, mit Detailzeilen (▸).", "Doppelklick auf Erwartung/Prognose setzt den Wert direkt.", "CSV-Export für Excel oder PDF für die Bauherrschaft — Spalten und Einzelrechnungen sind dabei wählbar.", "Klick auf eine Rechnung öffnet ihren Beleg; fehlt er, kannst du ihn gleich anhängen."],
+  abrechnung: ["Die Gesamtübersicht nach BKP — netto oder brutto, mit Detailzeilen (▸).", "Doppelklick auf Erwartung/Prognose setzt den Wert direkt.", "Excel-Export (mit Detailblatt) oder PDF für die Bauherrschaft — Spalten und Einzelrechnungen sind dabei wählbar.", "Klick auf eine Rechnung öffnet ihren Beleg; fehlt er, kannst du ihn gleich anhängen."],
 };
 function HilfeBox({ view }) {
   const steps = HILFE[view];
@@ -2706,7 +2802,7 @@ function App() {
           {view === "vorlage" && <VorlageEditor wert={db.vorlage} titel="Vorlage für alle PDF-Dokumente" hinweis="Logo, Kopf- und Fusszeilen gelten projektübergreifend. Im Reiter «Projekt» lässt sich für ein einzelnes Projekt eine abweichende Vorlage setzen." onAendern={(v) => dispatch({ type: "setVorlage", vorlage: v })} />}
           {view === "beteiligte" && <ProjektBeteiligteView db={db} dispatch={dispatch} projektId={db.aktiv} firmen={firmen} />}
           {view === "listen" && <ListenView db={db} dispatch={dispatch} projektId={db.aktiv} projekt={projekt} d={d} />}
-          {view === "dashboard" && <Dashboard ks={ks} d={d} dispatch={dispatch} projektId={db.aktiv} />}
+          {view === "dashboard" && <Dashboard ks={ks} d={d} dispatch={dispatch} projektId={db.aktiv} projekt={projekt} db={db} />}
           {view === "kv" && <KvView d={d} dispatch={dispatch} projektId={db.aktiv} ks={ks} projekt={projekt} db={db} />}
           {view === "mutationen" && <MutationenView d={d} dispatch={dispatch} projektId={db.aktiv} />}
           {view === "umbuchungen" && <UmbuchungenView d={d} dispatch={dispatch} projektId={db.aktiv} />}
@@ -2818,7 +2914,7 @@ function ProjektView({ projekt, dispatch, db }) {
   );
 }
 
-function Dashboard({ ks, d, dispatch, projektId }) {
+function Dashboard({ ks, d, dispatch, projektId, projekt, db }) {
   const t = ks.total;
   if (!ks.ordered.length) return <Empty text="Noch keine BKP-Positionen erfasst. Importiere zuerst den Kostenvoranschlag." />;
   const over = ks.ordered.filter((z) => !z.hasChildren && z.roll.abwKv > 0).sort((a, b) => b.roll.abwKv - a.roll.abwKv).slice(0, 5);
@@ -2833,6 +2929,9 @@ function Dashboard({ ks, d, dispatch, projektId }) {
   }
   return (
     <div className="space-y-5">
+      <div className="flex justify-end print:hidden -mb-2">
+        <button className={btnGhost} title="Eine Excel-Datei mit KV, Verträgen, Nachträgen, Rechnungen, Mutationen und Erwartungen" onClick={() => excelSpeichern([excelBlattKv(ks, projekt), excelBlattVertraege(d, projekt), excelBlattNachtraege(d, projekt), excelBlattRechnungen(d, db, projekt), excelBlattBewegungen(d, projekt)], projektDateiname("BauAdmin", projekt))}>📊 Alles als Excel</button>
+      </div>
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <Stat label="KV revidiert" value={chf(t.kvRevidiert)} sub="Budget netto" />
         <Stat label="Beauftragt" value={chf(t.beauftragt)} sub="Verträge netto + NT + Teuerung" />
@@ -3036,6 +3135,7 @@ function KvView({ d, dispatch, projektId, ks, projekt, db }) {
             } catch (e) { window.alert("Das PDF konnte nicht erzeugt werden: " + e.message); }
             setKvBusy(false);
           }}>{kvBusy ? "erzeugt…" : "📄 PDF"}</button>
+          <button className={btnGhost} disabled={!ks.ordered.length} onClick={() => excelSpeichern([excelBlattKv(ks, projekt)], projektDateiname("Kostenvoranschlag", projekt))}>📊 Excel</button>
         </div>
       </div>
       <div className={katalogOffen ? "grid grid-cols-1 xl:grid-cols-[minmax(380px,460px)_1fr] gap-4 items-start" : ""}>
@@ -3309,7 +3409,8 @@ function VertraegeView({ d, dispatch, projektId, projekt, firmen, db }) {
     <div className="space-y-3">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <button className={btnPrimary} onClick={() => { const k = kondVorgabe(projekt, null); setVForm({ positionId: "", unternehmer: "", nr: "", betrag: "", pauschalabzug: "", rundung: "", regieBudget: "", teuerung: "", datum: today(), rabattPct: k.rabattPct || "", skontoPct: k.skontoPct || "", bauabzuegePct: k.bauabzuegePct || "", rueckbehaltPct: k.rueckbehaltPct || "", garantieJahre: k.garantieJahre || "", garantieArt: k.garantieArt || "" }); }}>+ Vertrag</button>
-        {d.vertraege.length > 0 && <div className="text-sm text-stone-500">{d.vertraege.length} Verträge · Total beauftragt <span className="font-semibold tabular-nums text-stone-700">{chf(totalBeauftragt)}</span></div>}
+        {d.vertraege.length > 0 && <div className="flex items-center gap-3 flex-wrap"><div className="text-sm text-stone-500">{d.vertraege.length} Verträge · Total beauftragt <span className="font-semibold tabular-nums text-stone-700">{chf(totalBeauftragt)}</span></div>
+          <button className={btnGhost} onClick={() => excelSpeichern([excelBlattVertraege(d, projekt), excelBlattNachtraege(d, projekt)], projektDateiname("Vertraege", projekt))}>📊 Excel</button></div>}
       </div>
       {garantieRows.length > 0 && (
         <div className={`${card} overflow-x-auto`}>
@@ -3949,73 +4050,221 @@ async function baueAbrechnungPdf(ctx) {
     { k: "abwKv", l: "Abw. KV", g: (z) => z.roll.abwKv, ampel: true },
   ];
   const cols = moegliche.filter((c) => spalten[c.k]);
-  const spW = 92, gesamtW = cols.length * spW, textB = rechts - RAND - gesamtW;
+  // Spalten so schmal wie nötig, damit die Bezeichnungen Platz haben
+  const spW = Math.max(66, Math.min(92, Math.floor((rechts - RAND - 250) / Math.max(1, cols.length))));
+  const gesamtW = cols.length * spW, textB = rechts - RAND - gesamtW;
   const spR = (i) => RAND + textB + (i + 1) * spW - 6;
+  const spL = (i) => RAND + textB + i * spW + 8;
+  const linieHell = PDFLib.rgb(0.88, 0.86, 0.84), band = PDFLib.rgb(0.955, 0.945, 0.93), bandDunkel = PDFLib.rgb(0.92, 0.905, 0.885);
+  const wertText = (c, v) => (c.ampel && Math.abs(v) >= 0.005 ? (v > 0 ? "+" : "") + chfPdf(v) : chfPdf(v));
+  const wertFarbe = (c, v) => (c.ampel ? (v > 0.004 ? rot : (v < -0.004 ? gruen : grau)) : undefined);
+  const detailInfo = (t) => String(t || "").replace(/\s*·\s*nicht verbucht/, "").replace(/(\d{4})-(\d{2})-(\d{2})/g, "$3.$2.$1");
+  const werteZeichnen = (roll, size, fett) => cols.forEach((c, i) => {
+    const v = (Number(c.g({ roll })) || 0) * f;
+    bl.text(wertText(c, v), { rechts: spR(i), size, fett: fett || c.fett, farbe: wertFarbe(c, v) });
+  });
 
   const kopf = (fortsetzung) => {
-    pdfKopf(bl, "Bauabrechnung", projekt, rollen, (brutto ? `alle Beträge inkl. MwSt ${satz}%` : "alle Beträge exkl. MwSt") + (fortsetzung ? "  ·  Fortsetzung" : ""), vorlage);
-    cols.forEach((c, i) => bl.text(c.l, { rechts: spR(i), size: 7.5, farbe: grau }));
-    bl.y -= 9; bl.linie(RAND, rechts, bl.y, 0.8, PDFLib.rgb(0.55, 0.52, 0.50)); bl.y -= 14;
+    pdfKopf(bl, "Bauabrechnung", projekt, rollen, (brutto ? `alle Beträge in CHF inkl. MwSt ${satz}%` : "alle Beträge in CHF exkl. MwSt") + (fortsetzung ? "  ·  Fortsetzung" : ""), vorlage);
+    bl.kasten(RAND, bl.y - 6, rechts - RAND, 17, bandDunkel);
+    bl.text("BKP", { x: RAND + 4, size: 7.5, fett: true, farbe: grau });
+    bl.text("Bezeichnung", { x: RAND + 46, size: 7.5, fett: true, farbe: grau });
+    cols.forEach((c, i) => bl.text(c.l, { rechts: spR(i), size: 7.5, fett: true, farbe: grau }));
+    bl.y -= 22;
   };
   kopf(false);
 
+  // BKP-Hauptgruppen (1 Vorbereitungsarbeiten, 2 Gebäude …) als Zwischenüberschrift mit Summe —
+  // ausser das KV führt die Hauptgruppe schon selbst als Position
+  const eigeneGruppen = new Set(ks.ordered.filter((z) => z.depth === 0 && String(z.pos.bkp).trim() === bkpGroup(z.pos.bkp)).map((z) => bkpGroup(z.pos.bkp)));
+  const gruppenSumme = {}; (ks.groups || []).forEach((g) => { gruppenSumme[g.g] = g; });
+  let letzteGruppe = null, ersteZeile = true;
+
+  const detailZeilen = (z) => {
+    if (!mitDetails) return [];
+    // Betrag in die passende Spalte — ist sie ausgeblendet, in die nächstverwandte
+    const spalteFuer = { rg: ["bezahlt", "prognose"], vertrag: ["beauftragt", "prognose"], nt: ["beauftragt", "prognose"], teuerung: ["beauftragt", "prognose"], rap: ["beauftragt", "prognose"], erw: ["erwartung", "prognose"], mut: ["kvRevidiert", "kv", "prognose"], umb: ["kvRevidiert", "kv", "prognose"] };
+    return (details[z.pos.id] || []).filter((it) => artImPdf[artVon(it.kind)]).map((it) => {
+      let iBez = -1;
+      (spalteFuer[it.kind] || []).some((k) => (iBez = cols.findIndex((c) => c.k === k)) >= 0);
+      if (iBez < 0) iBez = cols.length - 1;
+      const x = RAND + 58 + z.depth * 12;
+      const breite = Math.max(120, spL(iBez) - x - 6);
+      const info = detailInfo(it.sub);
+      let zeilen = bl.umbruch(it.label + (info ? "  ·  " + info : ""), breite, 7.5, false);
+      if (zeilen.length > 2) zeilen = [zeilen[0], zeilen.slice(1).join(" ")];
+      if (zeilen[1]) { const zl = bl.umbruch(zeilen[1], breite - 12, 7.5, false); zeilen[1] = zl[0] + (zl.length > 1 ? " ..." : ""); }
+      return { it, iBez, x, zeilen };
+    });
+  };
+
   ks.ordered.forEach((z) => {
-    if (bl.y - 18 < RAND + 50) { bl.neueSeite(); kopf(true); }
     const gruppe = z.hasChildren;
     const size = gruppe ? 9 : 8.5;
-    bl.text(z.pos.bkp, { x: RAND + 4 + z.depth * 12, size, fett: gruppe });
-    bl.text(bl.umbruch(z.pos.bezeichnung, textB - 62 - z.depth * 12, size, gruppe)[0] || "", { x: RAND + 46 + z.depth * 12, size, fett: gruppe });
-    cols.forEach((c, i) => {
-      const v = (Number(c.g(z)) || 0) * f;
-      let farbe;
-      if (c.ampel) farbe = v > 0 ? rot : (v < 0 ? gruen : grau);
-      bl.text(c.ampel && v !== 0 ? (v > 0 ? "+" : "") + chfPdf(v) : chfPdf(v), { rechts: spR(i), size, fett: gruppe || c.fett, farbe });
-    });
-    bl.y -= gruppe ? 15 : 13;
+    const nameX = RAND + 46 + z.depth * 12;
+    let name = bl.umbruch(z.pos.bezeichnung, RAND + textB - nameX - 10, size, gruppe);
+    if (name.length > 2) name = [name[0], name.slice(1).join(" ")];
+    const dets = detailZeilen(z);
+    const hoehe = 13 + (name.length - 1) * 10 + dets.reduce((s2, dd) => s2 + dd.zeilen.length * 9.5, 0) + 6;
+    const g = bkpGroup(z.pos.bkp);
+    const neueGruppe = z.depth === 0 && g !== letzteGruppe && !eigeneGruppen.has(g) && gruppenSumme[g];
+    if (bl.y - Math.min(hoehe, 120) - (neueGruppe ? 24 : 0) < bl.untenRand + 12) { bl.neueSeite(); kopf(true); ersteZeile = true; }
 
-    // Gewählte Detailzeilen unter der Position
-    if (mitDetails) {
-      const spalteFuer = { rg: "bezahlt", vertrag: "beauftragt", nt: "beauftragt", teuerung: "beauftragt", rap: "beauftragt", erw: "erwartung", mut: "kvRevidiert", umb: "kvRevidiert" };
-      const zeilen = (details[z.pos.id] || []).filter((it) => artImPdf[artVon(it.kind)]);
-      zeilen.forEach((it) => {
-        if (bl.y - 14 < bl.untenRand + 20) { bl.neueSeite(); kopf(true); }
-        bl.text(`· ${it.label}`, { x: RAND + 62 + z.depth * 12, size: 7.5, farbe: grau });
-        bl.text(it.sub || "", { x: RAND + 250 + z.depth * 12, size: 7, farbe: grau });
-        let iBez = cols.findIndex((c) => c.k === spalteFuer[it.kind]);
-        if (iBez < 0) iBez = cols.length - 1;
-        const wert = (Number(it.betrag) || 0) * f;
-        bl.text((it.signed && wert > 0 ? "+" : "") + chfPdf(wert), { rechts: spR(iBez), size: 7.5, farbe: grau });
-        bl.y -= 11;
-      });
-      if (zeilen.length) bl.linie(RAND + 50, rechts, bl.y + 4, 0.25, PDFLib.rgb(0.93, 0.92, 0.91));
+    if (neueGruppe) {
+      if (!ersteZeile) bl.y -= 6;
+      bl.kasten(RAND, bl.y - 5, rechts - RAND, 16, band);
+      bl.text(g, { x: RAND + 4, size: 9, fett: true });
+      bl.text(BKP_GROUPS[g] || "", { x: RAND + 46, size: 9, fett: true });
+      werteZeichnen(gruppenSumme[g], 9, true);
+      bl.y -= 20; ersteZeile = true;
     }
-    if (gruppe) bl.linie(RAND, rechts, bl.y + 5, 0.3, PDFLib.rgb(0.91, 0.90, 0.89));
+    if (z.depth === 0) letzteGruppe = g;
+    // Trennlinie über jeder Hauptposition — mit Abstand zur Schrift
+    if (z.depth === 0 && !ersteZeile) { bl.y -= 4; bl.linie(RAND, rechts, bl.y + 11, 0.4, linieHell); }
+    ersteZeile = false;
+
+    bl.text(z.pos.bkp, { x: RAND + 4 + z.depth * 12, size, fett: gruppe });
+    bl.text(name[0] || "", { x: nameX, size, fett: gruppe });
+    werteZeichnen(z.roll, size, gruppe);
+    if (name[1]) { bl.y -= 10; bl.text(name[1], { x: nameX, size, fett: gruppe }); }
+    bl.y -= 13;
+
+    dets.forEach((dd) => {
+      if (bl.y - dd.zeilen.length * 9.5 < bl.untenRand + 8) { bl.neueSeite(); kopf(true); }
+      const wert = (Number(dd.it.betrag) || 0) * f;
+      bl.text(dd.zeilen[0], { x: dd.x, size: 7.5, farbe: grau });
+      bl.text((dd.it.signed && wert > 0 ? "+" : "") + chfPdf(wert), { rechts: spR(dd.iBez), size: 7.5, farbe: grau });
+      if (dd.zeilen[1]) { bl.y -= 9.5; bl.text(dd.zeilen[1], { x: dd.x + 8, size: 7.5, farbe: grau }); }
+      bl.y -= 9.5;
+    });
+    if (dets.length) bl.y -= 3;
   });
 
   // Summen
-  bl.platz(70);
-  bl.y -= 8; bl.linie(RAND, rechts, bl.y, 1.2, PDFLib.rgb(0.13, 0.12, 0.11)); bl.y -= 18;
-  bl.text("Total", { size: 10, fett: true });
-  cols.forEach((c, i) => {
-    const v = (Number(c.g({ roll: ks.total })) || 0) * f;
-    let farbe;
-    if (c.ampel) farbe = v > 0 ? rot : (v < 0 ? gruen : grau);
-    bl.text(c.ampel && v !== 0 ? (v > 0 ? "+" : "") + chfPdf(v) : chfPdf(v), { rechts: spR(i), size: 10, fett: true, farbe });
-  });
-  bl.y -= 20;
+  bl.platz(90);
+  bl.y -= 6; bl.linie(RAND, rechts, bl.y + 12, 1, PDFLib.rgb(0.13, 0.12, 0.11));
+  bl.kasten(RAND, bl.y - 6, rechts - RAND, 19, bandDunkel);
+  bl.text("Total", { x: RAND + 4, size: 10, fett: true });
+  werteZeichnen(ks.total, 9.5, true);
+  bl.y -= 22;
   if (!brutto) {
-    bl.text(`MwSt ${satz}% auf Prognose`, { size: 9, farbe: grau });
+    bl.text(`MwSt ${satz}% auf Prognose`, { x: RAND + 4, size: 9, farbe: grau });
     bl.text(chfPdf(ks.total.prognose * satz / 100), { rechts, size: 9, farbe: grau });
     bl.y -= 14;
-    bl.text("Prognose inkl. MwSt", { size: 10, fett: true });
+    bl.linie(RAND + textB, rechts, bl.y + 10, 0.4, linieHell);
+    bl.text("Prognose inkl. MwSt", { x: RAND + 4, size: 10, fett: true });
     bl.text("CHF " + chfPdf(ks.total.prognose * (1 + satz / 100)), { rechts, size: 10, fett: true });
+    bl.y -= 14;
   }
+  if (ks.reserve) {
+    bl.text(`Teuerungsreserve ${ks.resSatz}% auf KV revidiert (nicht in der Prognose enthalten)`, { x: RAND + 4, size: 8.5, farbe: grau });
+    bl.text(chfPdf(ks.reserve * f), { rechts, size: 8.5, farbe: grau });
+    bl.y -= 14;
+  }
+  bl.y -= 8;
+  bl.umbruch("Prognose = beauftragte Leistungen (Verträge netto inkl. genehmigter Nachträge und Teuerung) plus pendente Nachträge und erwartete Mehrkosten; ohne Vertrag gilt der revidierte KV. Abw. KV = Prognose minus KV (rot = Mehrkosten).", rechts - RAND, 7, false).forEach((zl) => {
+    if (bl.y < bl.untenRand + 4) { bl.neueSeite(); }
+    bl.text(zl, { x: RAND + 4, size: 7, farbe: grau }); bl.y -= 9;
+  });
   bl.abschliessen();
   return doc.save();
 }
 
 // ---------- Vergütungsaufträge ----------
 // Zahlen für das Deckblatt einer Rechnung: Vertragsstaffel, sonst Positionsbudget
+// ——— Excel-Exporte ———
+function excelUntertitel(projekt) {
+  const h = new Date(); const dat = `${String(h.getDate()).padStart(2, "0")}.${String(h.getMonth() + 1).padStart(2, "0")}.${h.getFullYear()}`;
+  return [projekt?.name, `Stand ${dat}`, "Beträge in CHF"].filter(Boolean).join(" · ");
+}
+const XL = { text: (t, b) => ({ t, b: b || 14 }), chf: (t, b) => ({ t, b: b || 14, typ: "chf" }), zahl: (t, b) => ({ t, b: b || 8, typ: "zahl" }), datum: (t) => ({ t, b: 11, typ: "datum" }) };
+function excelBlattKv(ks, projekt, titel) {
+  const spalten = [XL.text("BKP", 9), XL.text("Bezeichnung", 38), XL.zahl("Ebene", 6), XL.chf("KV"), XL.chf("Mut./Umb."), XL.chf("KV revidiert"), XL.chf("Vertrag netto"), XL.chf("NT genehmigt"), XL.chf("NT pendent"), XL.chf("Teuerung"), XL.chf("Beauftragt"), XL.chf("Erwartung"), XL.chf("Prognose"), XL.chf("Fakturiert"), XL.chf("Bezahlt"), XL.chf("Abweichung KV"), XL.text("Interne Notiz", 40)];
+  const zeilen = ks.ordered.map((z) => {
+    const r = z.roll;
+    return { fett: z.hasChildren, einzug: z.depth, w: [String(z.pos.bkp), z.pos.bezeichnung, z.depth + 1, r.kv, r.mutSumme, r.kvRevidiert, r.vertragNetto, r.ntGen, r.ntPend, r.teuerung, r.beauftragt, r.erwartung, r.prognose, r.fakturiert, r.bezahlt, r.abwKv, z.hasChildren ? "" : z.pos.notiz || ""] };
+  });
+  const t = ks.total;
+  const leer = (n) => Array(n).fill("");
+  zeilen.push({ summe: true, w: [] });
+  zeilen.push({ summe: true, fett: true, w: ["", "Total netto", "", t.kv, t.mutSumme, t.kvRevidiert, t.vertragNetto, t.ntGen, t.ntPend, t.teuerung, t.beauftragt, t.erwartung, t.prognose, t.fakturiert, t.bezahlt, t.abwKv] });
+  zeilen.push({ summe: true, w: ["", `MwSt ${ks.satz}% auf Prognose`, "", ...leer(9), ks.mwst] });
+  zeilen.push({ summe: true, fett: true, w: ["", "Total brutto (Prognose)", "", ...leer(9), ks.brutto] });
+  if (ks.reserve) zeilen.push({ summe: true, w: ["", `Teuerungsreserve ${ks.resSatz}% auf KV revidiert`, "", ...leer(9), ks.reserve] });
+  return { name: titel || "KV", titel: titel || "Kostenvoranschlag / Kostenstand", untertitel: excelUntertitel(projekt) + " · Oberpositionen enthalten die Summe ihrer Unterpositionen (Spalte «Ebene» filtern)", spalten, zeilen };
+}
+function vertragKennzahlen(v, d) {
+  const netto = konditionenNetto(v.betrag, v, true);
+  const nts = d.nachtraege.filter((n) => n.vertragId === v.id);
+  const ntGen = nts.filter((n) => n.status === "genehmigt").reduce((s, n) => s + konditionenNetto(n.betrag, v, false), 0);
+  const ntPend = nts.filter((n) => n.status === "pendent").reduce((s, n) => s + konditionenNetto(n.betrag, v, false), 0);
+  const beauftragt = netto + ntGen + (Number(v.teuerung) || 0);
+  const rs = d.rechnungen.filter((r) => r.vertragId === v.id);
+  const fakturiert = rs.reduce((s, r) => s + (Number(r.betrag) || 0), 0);
+  const bezahlt = rs.filter((r) => r.status === "bezahlt").reduce((s, r) => s + (Number(r.betrag) || 0), 0);
+  return { netto, ntGen, ntPend, beauftragt, fakturiert, bezahlt };
+}
+function sortierteVertraege(d) {
+  return [...d.vertraege].sort((a, b) => String(a.nr || "zzz").localeCompare(String(b.nr || "zzz"), "de", { numeric: true, sensitivity: "base" }) || String(a.unternehmer || "").localeCompare(String(b.unternehmer || ""), "de"));
+}
+function excelBlattVertraege(d, projekt) {
+  const spalten = [XL.text("Vertrag Nr.", 11), XL.text("BKP", 8), XL.text("BKP-Bezeichnung", 26), XL.text("Unternehmer", 30), XL.datum("Datum"), XL.text("Pauschal", 9), XL.chf("Betrag brutto"), XL.zahl("Rabatt %"), XL.chf("Pauschalabzug"), XL.zahl("Skonto %"), XL.zahl("Bauabzüge %"), XL.chf("Vertrag netto"), XL.chf("NT genehmigt"), XL.chf("NT pendent"), XL.chf("Teuerung"), XL.chf("Beauftragt netto"), XL.chf("Fakturiert"), XL.chf("Bezahlt"), XL.chf("Offen"), XL.zahl("Rückbehalt %"), XL.datum("Abnahme"), XL.datum("Garantie bis"), XL.text("Garantieart", 22)];
+  const tot = { betrag: 0, netto: 0, ntGen: 0, ntPend: 0, teuerung: 0, beauftragt: 0, fakturiert: 0, bezahlt: 0 };
+  const zeilen = sortierteVertraege(d).map((v) => {
+    const pos = d.positionen.find((p) => p.id === v.positionId);
+    const k = vertragKennzahlen(v, d);
+    tot.betrag += Number(v.betrag) || 0; tot.netto += k.netto; tot.ntGen += k.ntGen; tot.ntPend += k.ntPend; tot.teuerung += Number(v.teuerung) || 0; tot.beauftragt += k.beauftragt; tot.fakturiert += k.fakturiert; tot.bezahlt += k.bezahlt;
+    return { w: [v.nr || "", pos ? String(pos.bkp) : "", pos ? pos.bezeichnung : "", v.unternehmer || "", v.datum || "", v.pauschal ? "ja" : "", Number(v.betrag) || 0, Number(v.rabattPct) || "", Number(v.pauschalabzug) || "", Number(v.skontoPct) || "", Number(v.bauabzuegePct) || "", k.netto, k.ntGen, k.ntPend, Number(v.teuerung) || 0, k.beauftragt, k.fakturiert, k.bezahlt, k.beauftragt - k.bezahlt, Number(v.rueckbehaltPct) || "", v.abnahme || "", garantieBis(v) || "", v.garantieArt ? garantieArtLabel(v.garantieArt) : ""] };
+  });
+  zeilen.push({ summe: true, w: [] });
+  zeilen.push({ summe: true, fett: true, w: ["Total", "", "", `${d.vertraege.length} Verträge`, "", "", tot.betrag, "", "", "", "", tot.netto, tot.ntGen, tot.ntPend, tot.teuerung, tot.beauftragt, tot.fakturiert, tot.bezahlt, tot.beauftragt - tot.bezahlt] });
+  return { name: "Verträge", titel: "Verträge", untertitel: excelUntertitel(projekt), spalten, zeilen };
+}
+function excelBlattNachtraege(d, projekt) {
+  const spalten = [XL.text("Vertrag Nr.", 11), XL.text("Unternehmer", 30), XL.text("Nachtrag", 40), XL.datum("Datum"), XL.text("Status", 11), XL.chf("Betrag brutto"), XL.chf("Betrag netto")];
+  const zeilen = [];
+  sortierteVertraege(d).forEach((v) => d.nachtraege.filter((n) => n.vertragId === v.id).forEach((n) => {
+    zeilen.push({ w: [v.nr || "", v.unternehmer || "", n.bezeichnung || "", n.datum || "", n.status || "", Number(n.betrag) || 0, konditionenNetto(n.betrag, v, false)] });
+  }));
+  return { name: "Nachträge", titel: "Nachträge", untertitel: excelUntertitel(projekt), spalten, zeilen };
+}
+function excelBlattRechnungen(d, db, projekt) {
+  const spalten = [XL.text("Buchungsnr.", 11), XL.datum("Datum"), XL.text("Vertrag Nr.", 11), XL.text("Unternehmer / Buchung", 32), XL.text("BKP", 8), XL.text("Typ", 10), XL.text("Rechnungsnr.", 14), XL.chf("Betrag netto"), XL.text("Status", 10), XL.text("Vergütungsauftrag", 16), XL.text("Beleg", 30)];
+  const liste = [...d.rechnungen].sort((a, b) => String(a.buchungsNr || "").localeCompare(String(b.buchungsNr || ""), "de", { numeric: true }) || String(a.datum || "").localeCompare(String(b.datum || "")));
+  let summe = 0, bezahlt = 0;
+  const zeilen = liste.map((r) => {
+    const v = d.vertraege.find((x) => x.id === r.vertragId);
+    const pos = d.positionen.find((p) => p.id === (v ? v.positionId : r.positionId));
+    const va = vaFuerRechnung(db.vergauftraege, r.id);
+    summe += Number(r.betrag) || 0; if (r.status === "bezahlt") bezahlt += Number(r.betrag) || 0;
+    return { w: [r.buchungsNr || "", r.datum || "", v ? v.nr || "" : "", v ? v.unternehmer : (pos ? `${pos.bezeichnung} (ohne Vertrag)` : ""), pos ? String(pos.bkp) : "", RTYP[r.typ] || r.typ || "", r.nr || "", Number(r.betrag) || 0, RSTATUS[r.status] || r.status || "", va ? va.nr || "ja" : "", r.beleg ? r.beleg.name : ""] };
+  });
+  zeilen.push({ summe: true, w: [] });
+  zeilen.push({ summe: true, fett: true, w: ["Total", "", "", `${liste.length} Rechnungen`, "", "", "", summe] });
+  zeilen.push({ summe: true, w: ["davon bezahlt", "", "", "", "", "", "", bezahlt] });
+  return { name: "Rechnungen", titel: "Rechnungen", untertitel: excelUntertitel(projekt), spalten, zeilen };
+}
+function excelBlattBewegungen(d, projekt) {
+  const posTxt = (id) => { const p = d.positionen.find((x) => x.id === id); return p ? `${p.bkp} ${p.bezeichnung}` : ""; };
+  const spalten = [XL.text("Art", 12), XL.datum("Datum"), XL.text("BKP", 30), XL.text("nach BKP", 30), XL.text("Grund / Bezeichnung", 40), XL.chf("Betrag")];
+  const zeilen = [
+    ...d.mutationen.map((m) => ({ w: ["Mutation", m.datum || "", posTxt(m.positionId), "", m.grund || "", Number(m.betrag) || 0] })),
+    ...d.umbuchungen.map((u) => ({ w: ["Umbuchung", u.datum || "", posTxt(u.vonPositionId), posTxt(u.nachPositionId), u.grund || "", Number(u.betrag) || 0] })),
+    ...d.erwartungen.map((e) => ({ w: ["Erwartung", e.datum || "", posTxt(e.positionId), "", e.bezeichnung || "", Number(e.betrag) || 0] })),
+  ].sort((a, b) => String(a.w[1]).localeCompare(String(b.w[1])));
+  return { name: "Mutationen & Erwartungen", titel: "Mutationen, Umbuchungen und Erwartungen", untertitel: excelUntertitel(projekt), spalten, zeilen };
+}
+const DETAIL_ART = { vertrag: "Vertrag", nt: "Nachtrag", teuerung: "Teuerung", mut: "Mutation", umb: "Umbuchung", erw: "Erwartung", rap: "Rapport", rg: "Rechnung" };
+function excelBlattDetails(ks, details, projekt) {
+  const spalten = [XL.text("BKP", 9), XL.text("Position", 32), XL.text("Art", 11), XL.text("Beschrieb", 44), XL.text("Info", 28), XL.chf("Betrag netto")];
+  const zeilen = [];
+  ks.ordered.forEach((z) => (details[z.pos.id] || []).forEach((it) => {
+    zeilen.push({ w: [String(z.pos.bkp), z.pos.bezeichnung, DETAIL_ART[it.kind] || it.kind, it.label.replace(/^(Vertrag|Nachtrag|Teuerung|Mutation|Erwartung|Rapport) · /, ""), it.sub || "", Number(it.betrag) || 0] });
+  }));
+  return { name: "Details", titel: "Bauabrechnung — Details je Position", untertitel: excelUntertitel(projekt), spalten, zeilen };
+}
+function projektDateiname(praefix, projekt) { return `${praefix}_${(projekt?.name || "Projekt").replace(/[^\w]+/g, "_")}`; }
+
 function belegStaffel(r, d, ks) {
   const v = d.vertraege.find((x) => x.id === r.vertragId) || null;
   const betrag = Number(r.betrag) || 0;
@@ -4337,9 +4586,9 @@ function BelegFeld({ rechnung, dispatch }) {
 
   return (
     <div
-      onDragOver={(e) => { e.preventDefault(); setUeber(true); }}
+      onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setUeber(true); }}
       onDragLeave={() => setUeber(false)}
-      onDrop={(e) => { e.preventDefault(); setUeber(false); uebernehmen(e.dataTransfer.files[0]); }}
+      onDrop={(e) => { e.preventDefault(); e.stopPropagation(); setUeber(false); uebernehmen(e.dataTransfer.files[0]); }}
       className={`inline-flex items-center gap-1.5 rounded px-1 ${ueber ? "ring-2 ring-orange-500 bg-orange-50" : ""}`}
       title={hat ? rechnung.beleg.name : "PDF hierher ziehen oder klicken"}
     >
@@ -4353,6 +4602,277 @@ function BelegFeld({ rechnung, dispatch }) {
       ) : (
         <button className="text-xs text-stone-400 hover:text-orange-800 hover:underline" onClick={() => ref.current?.click()}>+ PDF</button>
       )}
+    </div>
+  );
+}
+
+// ——— Rechnungs-PDF einlesen: Text lesen, Angaben vorschlagen ———
+let pdfjsPromise = null;
+function pdfjsLaden() {
+  if (window.pdfjsLib) return Promise.resolve(window.pdfjsLib);
+  if (!pdfjsPromise) {
+    pdfjsPromise = (async () => {
+      if (!window.__PDFJS_GZ) throw new Error("PDF-Leser nicht enthalten.");
+      const roh = Uint8Array.from(atob(window.__PDFJS_GZ), (c) => c.charCodeAt(0));
+      const text = await new Response(new Blob([roh]).stream().pipeThrough(new DecompressionStream("gzip"))).text();
+      (0, eval)(text);
+      if (!window.pdfjsLib) throw new Error("PDF-Leser konnte nicht gestartet werden.");
+      return window.pdfjsLib;
+    })();
+    pdfjsPromise.catch(() => { pdfjsPromise = null; });
+  }
+  return pdfjsPromise;
+}
+async function pdfOeffnen(blob) {
+  const lib = await pdfjsLaden();
+  const daten = new Uint8Array(await blob.arrayBuffer());
+  return lib.getDocument({ data: daten, isEvalSupported: false }).promise;
+}
+// Text der ersten Seiten als Zeilen (nach Höhe gruppiert, links nach rechts)
+async function pdfZeilenLesen(dok, maxSeiten) {
+  const zeilen = [];
+  for (let s = 1; s <= Math.min(dok.numPages, maxSeiten || 3); s++) {
+    const seite = await dok.getPage(s);
+    const inhalt = await seite.getTextContent();
+    const gruppen = [];
+    inhalt.items.forEach((it) => {
+      if (!it.str || !it.str.trim()) return;
+      const y = it.transform[5], x = it.transform[4], h = Math.abs(it.transform[3]) || 8;
+      let g = gruppen.find((gg) => Math.abs(gg.y - y) < h * 0.5);
+      if (!g) { g = { y, teile: [] }; gruppen.push(g); }
+      g.teile.push({ x, s: it.str, w: it.width || 0 });
+    });
+    gruppen.sort((a, b) => b.y - a.y).forEach((g) => {
+      g.teile.sort((a, b) => a.x - b.x);
+      let z = "", ende = null;
+      g.teile.forEach((t) => { if (ende !== null && t.x - ende > 3) z += "  "; else if (z && !/\s$/.test(z) && ende !== null && t.x - ende > 0.5) z += " "; z += t.s; ende = t.x + t.w; });
+      zeilen.push(z.replace(/\s{3,}/g, "  ").trim());
+    });
+  }
+  return zeilen;
+}
+const BETRAG_RE = /(?:^|[^\d.,'’])(-?\d{1,3}(?:['’   ]\d{3})+(?:[.,]\d{2})?|-?\d{1,3}(?:\.\d{3})+,\d{2}|-?\d+[.,]\d{2})(?![\d])/g;
+function betraegeIn(zeile) {
+  const out = []; let m; BETRAG_RE.lastIndex = 0;
+  while ((m = BETRAG_RE.exec(zeile))) {
+    let t = m[1].replace(/['’   ]/g, "");
+    if (/^\-?\d{1,3}(\.\d{3})+,\d{2}$/.test(t)) t = t.replace(/\./g, "").replace(",", ".");
+    else t = t.replace(",", ".");
+    const n = parseFloat(t); if (isFinite(n)) out.push(n);
+  }
+  return out;
+}
+const MONATE = { jan: 1, januar: 1, feb: 2, februar: 2, "mär": 3, mar: 3, "märz": 3, maerz: 3, apr: 4, april: 4, mai: 5, jun: 6, juni: 6, jul: 7, juli: 7, aug: 8, august: 8, sep: 9, sept: 9, september: 9, okt: 10, oktober: 10, nov: 11, november: 11, dez: 12, dezember: 12 };
+function datumIn(zeile) {
+  let m = /(\d{1,2})\.\s?(\d{1,2})\.\s?(\d{4}|\d{2})(?!\d)/.exec(zeile);
+  if (m) { const j = m[3].length === 2 ? 2000 + +m[3] : +m[3]; if (+m[2] >= 1 && +m[2] <= 12 && +m[1] >= 1 && +m[1] <= 31) return `${j}-${String(m[2]).padStart(2, "0")}-${String(m[1]).padStart(2, "0")}`; }
+  m = /(\d{1,2})\.?\s+([A-Za-zäÄ]{3,9})\.?\s+(\d{4})/.exec(zeile);
+  if (m && MONATE[m[2].toLowerCase()]) return `${m[3]}-${String(MONATE[m[2].toLowerCase()]).padStart(2, "0")}-${String(m[1]).padStart(2, "0")}`;
+  m = /(\d{4})-(\d{2})-(\d{2})/.exec(zeile); if (m) return m[0];
+  return "";
+}
+function namensKern(n) {
+  return String(n || "").toLowerCase().replace(/[.,&+()"'«»]/g, " ").replace(/\b(ag|gmbh|sa|sàrl|sarl|kg|co|und|and|cie|ltd|holding|gruppe|group|die|der|das)\b/g, " ").split(/\s+/).filter((w) => w.length >= 3);
+}
+function einfach(t) { return String(t || "").toLowerCase().replace(/\s+/g, " "); }
+function rechnungErkennen(zeilen, dateiname, ctx) {
+  const { vertraege, rechnungen, firmen, satz } = ctx;
+  const text = zeilen.join("\n"), klein = einfach(text + " " + dateiname), kompakt = klein.replace(/[^a-z0-9äöü]/g, "");
+  const hinweise = [];
+  // Rechnungsnummer
+  let nr = "";
+  for (const z of zeilen) {
+    const m = /(?:rechnung(?:s)?[- ]?(?:nr|nummer|no)|rg\.?[- ]?nr|faktura[- ]?nr|beleg[- ]?nr|invoice\s*(?:no|nr|number)|rechnung)\.?\s*[:#]?\s*([A-Z]{0,4}[- ]?\d[\w\-\/.]{1,20})/i.exec(z);
+    if (m && !/^\d{1,2}\.\d{1,2}\.\d{2,4}$/.test(m[1])) { nr = m[1].replace(/[.,]$/, "").trim(); break; }
+  }
+  // Datum
+  let datum = "";
+  for (const z of zeilen) if (/(rechnungs)?datum|date|^.{0,40}\b(zürich|bern|basel|luzern|winterthur|st\. ?gallen|zug|aarau|chur|,)\s*,?\s*(den\s+)?\d/i.test(z)) { datum = datumIn(z); if (datum) break; }
+  if (!datum) for (const z of zeilen) { datum = datumIn(z); if (datum) break; }
+  // Typ
+  const typ = /akonto|abschlag|teilrechnung|a-conto|a conto|abschlagszahlung/.test(klein) ? "akonto" : /regie/.test(klein) ? "regie" : "rechnung";
+  // Beträge
+  const NETTO = /(exkl|excl|ohne|zzgl|exklusive)\.?\s*(mwst|mwst\.|mehrwertsteuer|ust)|\bnetto\b|zwischentotal|subtotal|total\s+netto/i;
+  const BRUTTO = /(inkl|incl|inklusive)\.?\s*(mwst|mehrwertsteuer|ust)|rechnungsbetrag|zu\s+(be)?zahlen|zahlbar|endbetrag|gesamt(betrag|total)|\btotal\b|zahlungsbetrag|forderung/i;
+  const MWST = /mwst|mehrwertsteuer|\bust\b|\bmw?st\b/i;
+  let netto = null, brutto = null, mwstBetrag = null;
+  zeilen.forEach((z, i) => {
+    const b = betraegeIn(z); const b2 = b.length ? b : betraegeIn(zeilen[i + 1] || "");
+    if (!b2.length) return;
+    const wert = b2[b2.length - 1];
+    if (NETTO.test(z)) netto = wert;
+    else if (BRUTTO.test(z) && !/%/.test(z.replace(/\d+(\.\d+)?\s*%\s*(mwst|mehrwertsteuer)/i, ""))) { if (brutto === null || wert >= brutto) brutto = wert; }
+    else if (MWST.test(z) && b.length) mwstBetrag = wert;
+  });
+  if (brutto === null) {
+    const alle = zeilen.flatMap((z) => betraegeIn(z)).filter((n) => n > 0);
+    if (alle.length) { brutto = Math.max(...alle); hinweise.push("Betrag: grösster Betrag im Dokument — bitte prüfen."); }
+  }
+  let betrag = null, betragQuelle = "";
+  if (netto !== null && (brutto === null || netto <= brutto)) { betrag = netto; betragQuelle = "exkl. MwSt aus dem PDF"; }
+  else if (brutto !== null && mwstBetrag !== null && mwstBetrag < brutto) { betrag = brutto - mwstBetrag; betragQuelle = "Total abzüglich ausgewiesener MwSt"; }
+  else if (brutto !== null) { betrag = satz ? brutto / (1 + satz / 100) : brutto; betragQuelle = satz ? `Total inkl. MwSt ÷ ${1 + satz / 100}` : "Total aus dem PDF"; }
+  if (betrag !== null) betrag = Math.round(betrag * 100) / 100;
+  // Firma und Vertrag
+  const kandidaten = vertraege.map((v) => {
+    const fa = findFirma(firmen, v.firmaId, v.unternehmer);
+    let punkte = 0; const gruende = [];
+    const mwst = (fa?.mwstNr || v.firmaSnap?.mwstNr || "").replace(/[^0-9]/g, "");
+    if (mwst.length >= 9 && kompakt.includes(mwst)) { punkte += 60; gruende.push("MwSt-Nr."); }
+    const namen = namensKern(fa?.name || v.unternehmer);
+    const treffer = namen.filter((w) => klein.includes(w)).length;
+    if (namen.length && treffer) { punkte += 30 * treffer / namen.length + (treffer === namen.length ? 10 : 0); gruende.push("Firmenname"); }
+    const domain = String(fa?.website || fa?.email || "").toLowerCase().replace(/^.*@/, "").replace(/^https?:\/\//, "").replace(/^www\./, "").split("/")[0];
+    if (domain.length > 4 && klein.includes(domain)) { punkte += 15; gruende.push("Web/E-Mail"); }
+    if (v.nr && new RegExp("(^|[^\\d.])" + String(v.nr).replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "(?![\\d])").test(text + " " + dateiname)) { punkte += 12; gruende.push("Vertragsnummer"); }
+    return { v, punkte, gruende };
+  }).filter((k) => k.punkte >= 20).sort((a, b) => b.punkte - a.punkte);
+  const vertrag = kandidaten[0]?.v || null;
+  if (kandidaten.length > 1 && kandidaten[1].punkte >= kandidaten[0].punkte - 5) hinweise.push("Mehrere Verträge passen — bitte den richtigen wählen.");
+  if (!vertrag) hinweise.push("Kein Vertrag erkannt — bitte wählen.");
+  const doppelt = nr && rechnungen.some((r) => String(r.nr || "").trim().toLowerCase() === nr.toLowerCase() && (!vertrag || r.vertragId === vertrag.id));
+  if (doppelt) hinweise.push(`Rechnungsnummer ${nr} ist bereits erfasst.`);
+  return { nr, datum, typ, betrag, betragQuelle, netto, brutto, mwstBetrag, vertragId: vertrag?.id || "", vertragGrund: kandidaten[0]?.gruende || [], kandidaten: kandidaten.map((k) => k.v.id), hinweise, doppelt, textGefunden: zeilen.length > 0 };
+}
+
+// Seitenvorschau mit pdf.js (funktioniert auch dort, wo eingebettete PDF-Anzeigen gesperrt sind)
+function PdfVorschau({ dok }) {
+  const [seite, setSeite] = useState(1);
+  const ref = useRef(null);
+  const boxRef = useRef(null);
+  useEffect(() => { setSeite(1); }, [dok]);
+  useEffect(() => {
+    if (!dok || !ref.current) return;
+    let abbruch = false, task = null;
+    (async () => {
+      const pg = await dok.getPage(seite); if (abbruch) return;
+      const breite = Math.max(280, (boxRef.current?.clientWidth || 480) - 2);
+      const v1 = pg.getViewport({ scale: 1 });
+      const skala = breite / v1.width, dpr = window.devicePixelRatio || 1;
+      const vp = pg.getViewport({ scale: skala * dpr });
+      const c = ref.current; c.width = vp.width; c.height = vp.height; c.style.width = vp.width / dpr + "px"; c.style.height = vp.height / dpr + "px";
+      task = pg.render({ canvasContext: c.getContext("2d"), viewport: vp });
+      try { await task.promise; } catch (e) {}
+    })();
+    return () => { abbruch = true; try { task && task.cancel(); } catch (e) {} };
+  }, [dok, seite]);
+  if (!dok) return <div className="text-sm text-stone-400 p-6 text-center">Vorschau wird geladen…</div>;
+  return (
+    <div ref={boxRef} className="min-w-0">
+      <div className="border border-stone-200 rounded overflow-hidden bg-white"><canvas ref={ref} className="block" /></div>
+      {dok.numPages > 1 && <div className="flex items-center justify-center gap-3 mt-2 text-sm">
+        <button className="px-2 text-stone-600 disabled:text-stone-300" disabled={seite <= 1} onClick={() => setSeite(seite - 1)}>◀</button>
+        <span className="tabular-nums text-stone-500">Seite {seite} / {dok.numPages}</span>
+        <button className="px-2 text-stone-600 disabled:text-stone-300" disabled={seite >= dok.numPages} onClick={() => setSeite(seite + 1)}>▶</button>
+      </div>}
+    </div>
+  );
+}
+
+function RechnungAusPdf({ dateien, d, db, projektId, projekt, dispatch, onClose }) {
+  const [index, setIndex] = useState(0);
+  const [dok, setDok] = useState(null);
+  const [lesen, setLesen] = useState(true);
+  const [fehler, setFehler] = useState("");
+  const [vorschlag, setVorschlag] = useState(null);
+  const [f, setF] = useState(null);
+  const erfasstRef = useRef(0);
+  const erfasst = erfasstRef.current;
+  const datei = dateien[index];
+  const opts = posSelectOptions(d.positionen);
+  const sortV = useMemo(() => sortierteVertraege(d), [d.vertraege]);
+
+  useEffect(() => {
+    if (!datei) return;
+    let weg = false;
+    setLesen(true); setFehler(""); setDok(null); setVorschlag(null);
+    const leer = { buchung: "vertrag", vertragId: "", positionId: "", typ: "akonto", nr: "", buchungsNr: "", betrag: "", datum: today(), status: "erfasst" };
+    (async () => {
+      let vs = null, zeilen = [], lesefehler = false;
+      try {
+        const doc = await pdfOeffnen(datei); if (weg) return;
+        setDok(doc);
+        zeilen = await pdfZeilenLesen(doc, 3);
+      } catch (e) { lesefehler = true; if (!weg) setFehler("Das PDF konnte nicht gelesen werden (" + (e.message || e) + "). Du kannst die Angaben trotzdem von Hand erfassen."); }
+      if (weg) return;
+      vs = rechnungErkennen(zeilen, datei.name, { vertraege: d.vertraege, rechnungen: d.rechnungen, firmen: db.firmen || [], satz: Number(projekt?.mwstSatz) || 0 });
+      if (!zeilen.length && !lesefehler) vs.hinweise.unshift("Im PDF ist kein Text enthalten (vermutlich ein Scan) — bitte die Angaben von Hand eintragen.");
+      setVorschlag(vs);
+      setF({ ...leer, vertragId: vs.vertragId, typ: vs.typ, nr: vs.nr, datum: vs.datum || today(), betrag: vs.betrag !== null ? String(vs.betrag) : "", buchungsNr: naechsteBuchungsNr(db.rechnungen, projektId) });
+      setLesen(false);
+    })();
+    return () => { weg = true; };
+  }, [index, datei]);
+
+  const weiter = () => { if (index + 1 < dateien.length) setIndex(index + 1); else onClose(erfasstRef.current); };
+  const speichern = async () => {
+    const item = { id: uid(), projektId, typ: f.typ, nr: f.nr, buchungsNr: f.buchungsNr || naechsteBuchungsNr(db.rechnungen, projektId), betrag: parseBetrag(f.betrag), datum: f.datum, status: f.status, beleg: null };
+    if (f.buchung === "vertrag") item.vertragId = f.vertragId; else item.positionId = f.positionId;
+    try {
+      const bid = uid();
+      await belegSpeichern(bid, datei);
+      item.beleg = { id: bid, name: datei.name, groesse: datei.size, datum: today() };
+    } catch (e) { window.alert("Der Beleg konnte nicht gespeichert werden (" + e.message + "). Die Rechnung wird ohne Beleg erfasst."); }
+    dispatch({ type: "add", coll: "rechnungen", item });
+    erfasstRef.current += 1;
+    weiter();
+  };
+  const buchungDoppelt = f && !!f.buchungsNr && (db.rechnungen || []).some((r) => r.projektId === projektId && String(r.buchungsNr || "") === String(f.buchungsNr).trim());
+  const titel = `Rechnung aus PDF${dateien.length > 1 ? ` (${index + 1} von ${dateien.length})` : ""}`;
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-stone-900/40 p-2 sm:p-4 overflow-y-auto" onClick={() => onClose(erfasstRef.current)}>
+      <div className={`${card} shadow-xl w-full max-w-6xl mt-4 sm:mt-8`} onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-3 border-b border-stone-200"><h3 className="font-semibold text-stone-900 truncate">{titel} · <span className="font-normal text-stone-500">{datei?.name}</span></h3><button className="text-stone-400 hover:text-stone-700 text-xl leading-none" onClick={() => onClose(erfasstRef.current)}>×</button></div>
+        <div className="p-4 sm:p-5 grid grid-cols-1 lg:grid-cols-[1fr_400px] gap-5">
+          <div className="order-2 lg:order-1 max-h-[75vh] overflow-y-auto">{fehler && !dok ? <div className="text-sm text-red-700">{fehler}</div> : <PdfVorschau dok={dok} />}</div>
+          <div className="order-1 lg:order-2 space-y-3">
+            {lesen || !f ? <div className="text-sm text-stone-500 py-6">PDF wird gelesen…</div> : (<>
+              {vorschlag && (vorschlag.hinweise.length > 0 || vorschlag.vertragGrund.length > 0) && (
+                <div className="text-xs rounded-md bg-amber-50 border border-amber-200 text-amber-900 p-2.5 space-y-1">
+                  {vorschlag.vertragGrund.length > 0 && <div>Vertrag erkannt über: {vorschlag.vertragGrund.join(", ")}.</div>}
+                  {vorschlag.hinweise.map((h, i) => <div key={i}>• {h}</div>)}
+                </div>
+              )}
+              <div className="flex gap-4 text-sm">
+                <label className="inline-flex items-center gap-1.5"><input type="radio" checked={f.buchung === "vertrag"} onChange={() => setF({ ...f, buchung: "vertrag", positionId: "" })} /> auf Vertrag</label>
+                <label className="inline-flex items-center gap-1.5"><input type="radio" checked={f.buchung === "bkp"} onChange={() => setF({ ...f, buchung: "bkp", vertragId: "" })} /> direkt auf BKP</label>
+              </div>
+              {f.buchung === "vertrag" ? (
+                <Field label="Vertrag"><select className={inputCls} value={f.vertragId} onChange={(e) => setF({ ...f, vertragId: e.target.value })}><option value="">wählen…</option>
+                  {vorschlag?.kandidaten.length > 1 && <optgroup label="Passend zum PDF">{vorschlag.kandidaten.map((id) => { const v = d.vertraege.find((x) => x.id === id); return v ? <option key={"k" + id} value={id}>{v.unternehmer} {v.nr && `(${v.nr})`}</option> : null; })}</optgroup>}
+                  <optgroup label="Alle Verträge">{sortV.map((v) => <option key={v.id} value={v.id}>{v.unternehmer} {v.nr && `(${v.nr})`}</option>)}</optgroup>
+                </select></Field>
+              ) : (
+                <Field label="BKP-Position"><select className={inputCls} value={f.positionId} onChange={(e) => setF({ ...f, positionId: e.target.value })}><option value="">wählen…</option>{opts.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</select></Field>
+              )}
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Typ"><select className={inputCls} value={f.typ} onChange={(e) => setF({ ...f, typ: e.target.value })}><option value="akonto">Akonto</option><option value="rechnung">Rechnung</option><option value="regie">Regie</option></select></Field>
+                <Field label="Status"><select className={inputCls} value={f.status} onChange={(e) => setF({ ...f, status: e.target.value })}><option value="erfasst">erfasst</option><option value="geprueft">geprüft</option><option value="bezahlt">bezahlt</option></select></Field>
+                <Field label="Rg-Nr."><input className={inputCls} value={f.nr} onChange={(e) => setF({ ...f, nr: e.target.value })} /></Field>
+                <Field label="Datum"><input type="date" className={inputCls} value={f.datum} onChange={(e) => setF({ ...f, datum: e.target.value })} /></Field>
+                <Field label="Buchungsnr."><input className={inputCls} value={f.buchungsNr} onChange={(e) => setF({ ...f, buchungsNr: e.target.value })} />{buchungDoppelt ? <div className="text-xs text-amber-700 mt-1">bereits vergeben</div> : null}</Field>
+                <Field label="Betrag netto (exkl. MwSt)"><input className={inputCls} value={f.betrag} onChange={(e) => setF({ ...f, betrag: e.target.value })} /></Field>
+              </div>
+              {vorschlag && (vorschlag.betragQuelle || vorschlag.brutto !== null) && (
+                <div className="text-xs text-stone-500 space-y-1">
+                  {vorschlag.betragQuelle && <div>Betrag: {vorschlag.betragQuelle}.</div>}
+                  <div className="flex flex-wrap gap-1.5">
+                    {[["exkl. MwSt", vorschlag.netto], ["inkl. MwSt", vorschlag.brutto], ["MwSt", vorschlag.mwstBetrag]].filter(([, w]) => w !== null).map(([l, w]) => (
+                      <button key={l} className="rounded border border-stone-200 px-1.5 py-0.5 hover:bg-orange-50 tabular-nums" title="Diesen Betrag übernehmen" onClick={() => setF({ ...f, betrag: String(w) })}>{l}: {chfPdf(w)}</button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div className="flex justify-end gap-2 pt-2 flex-wrap">
+                {dateien.length > 1 && <button className={btnGhost} onClick={weiter}>Überspringen</button>}
+                <button className={btnGhost} onClick={() => onClose(erfasstRef.current)}>Abbrechen</button>
+                <button className={btnPrimary} disabled={!(f.buchung === "vertrag" ? f.vertragId : f.positionId) || !f.betrag} onClick={speichern}>Rechnung erfassen{dateien.length > 1 && index + 1 < dateien.length ? " und weiter" : ""}</button>
+              </div>
+              <p className="text-xs text-stone-400">Das PDF wird als Beleg an die Rechnung gehängt.</p>
+            </>)}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -4377,9 +4897,39 @@ function RechnungenView({ d, dispatch, projektId, projekt, db }) {
     });
     return map;
   }, [d]);
+  // Rechnungs-PDFs hineinziehen oder wählen → je PDF eine neue Rechnung mit Vorschlägen
+  const [pdfDateien, setPdfDateien] = useState(null);
+  const [ziehen, setZiehen] = useState(false);
+  const [pdfMeldung, setPdfMeldung] = useState("");
+  const pdfRef = useRef(null);
+  const zaehler = useRef(0);
+  const pdfsAufnehmen = (liste) => {
+    const pdfs = [...(liste || [])].filter((x) => x.type === "application/pdf" || /\.pdf$/i.test(x.name));
+    const zuGross = pdfs.filter((x) => x.size > 25 * 1024 * 1024);
+    if (zuGross.length) window.alert(`${zuGross.map((x) => x.name).join(", ")}: grösser als 25 MB — bitte vorher verkleinern.`);
+    const ok = pdfs.filter((x) => x.size <= 25 * 1024 * 1024);
+    if (!ok.length) { if (!zuGross.length) window.alert("Bitte PDF-Dateien verwenden."); return; }
+    setPdfMeldung(""); setPdfDateien(ok);
+  };
+  const hatDateien = (e) => [...(e.dataTransfer?.types || [])].includes("Files");
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 relative"
+      onDragEnter={(e) => { if (!hatDateien(e)) return; e.preventDefault(); zaehler.current++; setZiehen(true); }}
+      onDragOver={(e) => { if (hatDateien(e)) e.preventDefault(); }}
+      onDragLeave={() => { zaehler.current = Math.max(0, zaehler.current - 1); if (!zaehler.current) setZiehen(false); }}
+      onDrop={(e) => { if (!hatDateien(e)) return; e.preventDefault(); zaehler.current = 0; setZiehen(false); pdfsAufnehmen(e.dataTransfer.files); }}>
+      {ziehen && <div className="absolute inset-0 z-40 rounded-xl border-2 border-dashed border-orange-600 bg-orange-50/85 flex items-center justify-center pointer-events-none min-h-[200px]">
+        <div className="text-center text-orange-900"><div className="text-3xl mb-1">📥</div><div className="font-semibold">PDF hier loslassen</div><div className="text-sm">Je Datei wird eine neue Rechnung vorbereitet — Vertrag, Betrag, Datum und Nummer werden vorgeschlagen.</div></div>
+      </div>}
+      <input ref={pdfRef} type="file" multiple accept="application/pdf,.pdf" className="hidden" onChange={(e) => { pdfsAufnehmen(e.target.files); e.target.value = ""; }} />
+      <div className="rounded-xl border-2 border-dashed border-stone-300 bg-white/60 px-4 py-3 flex items-center gap-3 flex-wrap text-sm text-stone-600">
+        <span className="text-xl">📥</span>
+        <span className="flex-1 min-w-[200px]"><strong className="text-stone-800">Rechnungs-PDF hierher ziehen</strong> — Vertrag, Betrag, Datum und Rechnungsnummer werden aus dem PDF vorgeschlagen und der Beleg angehängt. Mehrere Dateien auf einmal gehen auch.</span>
+        <button className={btnGhost} onClick={() => pdfRef.current?.click()}>PDF wählen…</button>
+      </div>
+      {pdfMeldung && <div className="text-sm text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-md px-3 py-2">{pdfMeldung}</div>}
+      {pdfDateien && <RechnungAusPdf dateien={pdfDateien} d={d} db={db} projektId={projektId} projekt={projekt} dispatch={dispatch} onClose={(n) => { setPdfDateien(null); if (n) setPdfMeldung(`${n} Rechnung${n === 1 ? "" : "en"} aus PDF erfasst — Status «erfasst». Bitte prüfen und freigeben.`); }} />}
       <div className={`${card} p-4 space-y-3`}>
         <div className="flex gap-4 text-sm">
           <label className="inline-flex items-center gap-1.5"><input type="radio" checked={f.buchung === "vertrag"} onChange={() => setF({ ...f, buchung: "vertrag", positionId: "" })} /> auf Vertrag</label>
@@ -4405,6 +4955,7 @@ function RechnungenView({ d, dispatch, projektId, projekt, db }) {
           }}>Erfassen</button>
         </div>
       </div>
+      {d.rechnungen.length > 0 && <div className="flex justify-end -mb-2"><button className={btnGhost} onClick={() => excelSpeichern([excelBlattRechnungen(d, db, projekt)], projektDateiname("Rechnungen", projekt))}>📊 Excel</button></div>}
       {!d.rechnungen.length ? <Empty text="Keine Rechnungen erfasst." /> : (
         <div className={`${card} overflow-x-auto`}><table className="w-full text-sm">
           <thead className="bg-stone-50 text-stone-500 text-xs"><tr><th className="text-left font-medium px-3 py-2">Buchungsnr.</th><th className="text-left font-medium px-3 py-2">Datum</th><th className="text-left font-medium px-3 py-2">Buchung</th><th className="text-left font-medium px-3 py-2">Typ</th><th className="text-left font-medium px-3 py-2">Rg-Nr.</th><th className="text-right font-medium px-3 py-2">Betrag</th><th className="text-left font-medium px-3 py-2">Status</th><th className="text-right font-medium px-3 py-2">fakt./soll</th><th className="text-left font-medium px-3 py-2">Beleg</th><th className="w-12"></th></tr></thead>
@@ -5533,7 +6084,7 @@ function AbrechnungView({ ks, projekt, d, dispatch, projektId, db }) {
     lines.push(["", "", "TOTAL BRUTTO", "", "", "", "", "", "", "", "", Math.round(ks.brutto), "", ""].join(";"));
     if (ks.reserve) lines.push(["", "", `Teuerungsreserve ${ks.resSatz}%`, "", "", "", "", "", "", "", "", Math.round(ks.reserve), "", ""].join(";"));
     const blob = new Blob(["﻿" + lines.join("\n")], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = `Bauabrechnung_${(projekt?.name || "Projekt").replace(/\s+/g, "_")}.csv`; a.click(); URL.revokeObjectURL(url);
+    download(blob, `Bauabrechnung_${(projekt?.name || "Projekt").replace(/\s+/g, "_")}.csv`);
   }
   if (!ks.ordered.length) return <Empty text="Noch keine Daten für die Bauabrechnung." />;
   const t = ks.total;
@@ -5544,7 +6095,8 @@ function AbrechnungView({ ks, projekt, d, dispatch, projektId, db }) {
   return (
     <div className="space-y-4">
       <div className="flex gap-2 print:hidden flex-wrap items-center">
-        <button className={btnPrimary} onClick={exportCsv}>CSV exportieren</button>
+        <button className={btnPrimary} onClick={() => excelSpeichern([excelBlattKv(ks, projekt, "Bauabrechnung"), excelBlattDetails(ks, details, projekt), excelBlattVertraege(d, projekt), excelBlattRechnungen(d, db, projekt)], projektDateiname("Bauabrechnung", projekt))}>📊 Excel</button>
+        <button className={btnGhost} onClick={exportCsv}>CSV</button>
         <button className={btnGhost} disabled={pdfBusy} onClick={async () => {
           setPdfBusy(true);
           try {
