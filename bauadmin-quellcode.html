@@ -905,6 +905,7 @@ const HILFE = {
   angebote: ["Offerten vergleichen und vergeben: je Unternehmer eine Spalte mit der Konditionen-Staffel von brutto bis netto.", "Bieter fügst du aus dem Adressstamm hinzu — mehrere auf einmal.", "Hier entstehen auch Vergabeantrag, Positionsvergleich und das Leistungsverzeichnis als PDF."],
   rapporte: ["Regierapporte auf Verträge buchen (Stunden × Ansatz + Material).", "Solange das Regiebudget des Vertrags nicht überschritten ist, ändert sich die Prognose nicht — erst der Überschuss fliesst als Erwartung ein."],
   erwartungen: ["Erwartete Mehrkosten erfassen, die noch in keinem Nachtrag stecken.", "Prognose = Vertrag (oder KV) + Erwartung. Regie-Überschüsse erscheinen automatisch."],
+  baustelle: ["Die Kompaktansicht für Handy und Tablet: Kostenstand, offene Rechnungen und Verträge auf einen Blick.", "Rechnungen lassen sich hier als geprüft oder bezahlt markieren und neue Rechnungs-PDFs erfassen.", "Auf dem Handy startet BauAdmin direkt in dieser Ansicht."],
   abrechnung: ["Die Gesamtübersicht nach BKP — netto oder brutto, mit Detailzeilen (▸).", "Doppelklick auf Erwartung/Prognose setzt den Wert direkt.", "Excel-Export (mit Detailblatt) oder PDF für die Bauherrschaft — Spalten und Einzelrechnungen sind dabei wählbar.", "Klick auf eine Rechnung öffnet ihren Beleg; fehlt er, kannst du ihn gleich anhängen."],
 };
 function HilfeBox({ view }) {
@@ -2693,7 +2694,9 @@ function PersonenTabelle({ firma, upd }) {
 function App() {
   const [db, dispatch] = useReducer(reducer, null, () => normalize(demoDB()));
   const [loaded, setLoaded] = useState(false);
-  const [view, setView] = useState("dashboard");
+  const [view, setViewRoh] = useState(() => (typeof window !== "undefined" && window.innerWidth < 640 ? "baustelle" : "dashboard"));
+  const [menuOffen, setMenuOffen] = useState(false);
+  const setView = (v) => { setViewRoh(v); setMenuOffen(false); try { window.scrollTo(0, 0); } catch (e) {} };
   const firstSave = useRef(true);
 
   useEffect(() => {
@@ -2734,7 +2737,7 @@ function App() {
     ["dashboard", "Kostenübersicht"], ["kv", "KV / BKP-Positionen"], ["mutationen", "Mutationen"], ["umbuchungen", "Umbuchungen"],
     ["lv", "Leistungsverzeichnisse"], ["angebote", "Angebotsvergleich und Vergabeanträge"], ["vertraege", "Verträge & Nachträge"],
     ["rapporte", "Rapporte"], ["rechnungen", "Rechnungen"], ["vergauftraege", "Vergütungsaufträge"],
-    ["erwartungen", "Erwartungen"], ["abrechnung", "Bauabrechnung"],
+    ["erwartungen", "Erwartungen"], ["abrechnung", "Bauabrechnung"], ["baustelle", "Kompaktansicht"],
   ];
 
   return (
@@ -2750,47 +2753,52 @@ function App() {
       ) : null}
       {!speicherFehler && sicherungFaellig ? (
         <div className="bg-amber-100 text-amber-900 border-b border-amber-300 text-sm print:hidden">
-          <div className="max-w-[1480px] mx-auto px-5 py-2 flex flex-wrap items-center gap-3">
+          <div className="max-w-[1480px] mx-auto px-3 sm:px-5 py-1.5 sm:py-2 flex flex-wrap items-center gap-x-3 gap-y-1">
             <strong>{sicherungTage === null ? "Es wurde noch nie eine Sicherung erstellt." : `Letzte Sicherung vor ${sicherungTage} Tagen.`}</strong>
-            <span>Deine Daten liegen nur in diesem Browser — exportiere regelmässig eine Sicherungsdatei.</span>
-            <button className="ml-auto bg-amber-700 text-white rounded px-3 py-1 font-medium" onClick={() => setView("sicherung")}>Jetzt sichern</button>
+            <span className="hidden md:inline flex-1 min-w-0">Deine Daten liegen nur in diesem Browser — exportiere regelmässig eine Sicherungsdatei.</span>
+            <button className="ml-auto md:ml-0 bg-amber-700 text-white rounded px-3 py-0.5 sm:py-1 font-medium" onClick={() => setView("sicherung")}>Jetzt sichern</button>
             <button className="text-amber-800 hover:underline" onClick={erinnerungAusblenden}>Später</button>
           </div>
         </div>
       ) : null}
-      <header className="bg-stone-900 text-white print:hidden">
-        <div className="max-w-[1480px] mx-auto px-5 py-3 flex items-center justify-between flex-wrap gap-3">
-          <div className="flex items-center gap-3">
+      <header className="bg-stone-900 text-white print:hidden sticky top-0 z-30 lg:static">
+        <div className="max-w-[1480px] mx-auto px-3 sm:px-5 py-2 sm:py-3 flex items-center justify-between gap-2 sm:gap-3">
+          <div className="flex items-center gap-3 shrink-0">
             <div className="w-9 h-9 rounded bg-orange-700 flex items-center justify-center font-bold text-sm">BA</div>
-            <div><div className="font-semibold leading-tight">BauAdmin</div><div className="text-[11px] text-stone-400 leading-tight">Kostenkontrolle nach BKP</div></div>
+            <div className="hidden sm:block"><div className="font-semibold leading-tight">BauAdmin</div><div className="text-[11px] text-stone-400 leading-tight">Kostenkontrolle nach BKP</div></div>
           </div>
-          <div className="flex items-center gap-2">
-            <select className="bg-stone-800 border border-stone-700 rounded-md px-3 py-1.5 text-sm" value={db.aktiv} onChange={(e) => dispatch({ type: "setAktiv", id: e.target.value })}>
+          <div className="flex items-center gap-2 min-w-0">
+            <select className="bg-stone-800 border border-stone-700 rounded-md px-2 sm:px-3 py-1.5 text-sm min-w-0 max-w-[46vw] sm:max-w-none" value={db.aktiv} onChange={(e) => dispatch({ type: "setAktiv", id: e.target.value })}>
               {db.projekte.map((pr) => <option key={pr.id} value={pr.id}>{pr.name}</option>)}
             </select>
             <ProjektNeu dispatch={dispatch} setView={setView} />
-            <button className={`w-8 h-8 rounded-full text-sm font-bold ${hilfe ? "bg-orange-700 text-white" : "bg-stone-700 text-stone-300 hover:bg-stone-600"}`} title={hilfe ? "Hinweise ausblenden" : "Hinweise einblenden"} onClick={toggleHilfe}>?</button>
+            <button className={`w-8 h-8 shrink-0 rounded-full text-sm font-bold ${hilfe ? "bg-orange-700 text-white" : "bg-stone-700 text-stone-300 hover:bg-stone-600"}`} title={hilfe ? "Hinweise ausblenden" : "Hinweise einblenden"} onClick={toggleHilfe}>?</button>
+            <button className="lg:hidden shrink-0 h-8 px-2.5 rounded-md bg-stone-700 hover:bg-stone-600 text-sm font-medium" aria-expanded={menuOffen} onClick={() => setMenuOffen(!menuOffen)}>{menuOffen ? "✕" : "☰"}<span className="hidden sm:inline"> Menü</span></button>
           </div>
         </div>
       </header>
 
-      <div className="max-w-[1480px] mx-auto px-5 py-5 grid grid-cols-1 lg:grid-cols-[210px_1fr] gap-5">
-        <nav className="lg:sticky lg:top-5 self-start print:hidden">
-          <div className="flex lg:flex-col gap-1 overflow-x-auto pb-1">
-            <div className="hidden lg:block text-[10px] uppercase tracking-wider text-stone-400 px-3 pt-1 pb-1">Global</div>
+      <div className="max-w-[1480px] mx-auto px-3 sm:px-5 py-4 sm:py-5 grid grid-cols-1 lg:grid-cols-[210px_1fr] gap-5 print:block print:max-w-none print:p-0">
+        <nav className={`lg:sticky lg:top-5 self-start print:hidden ${menuOffen ? "" : "hidden lg:block"}`}>
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:flex lg:flex-col gap-1 pb-1 bg-white lg:bg-transparent rounded-xl lg:rounded-none border border-stone-200 lg:border-0 p-2 lg:p-0 shadow-sm lg:shadow-none">
+            <div className="col-span-full text-[10px] uppercase tracking-wider text-stone-400 px-3 pt-1 pb-1">Global</div>
             {navGlobal.map(([key, label]) => (
-              <button key={key} onClick={() => setView(key)} className={`text-left px-3 py-2 rounded-md text-sm whitespace-nowrap transition-colors ${view === key ? "bg-orange-800 text-white font-medium" : "text-stone-600 hover:bg-stone-200/60"}`}>{label}</button>
+              <button key={key} onClick={() => setView(key)} className={`text-left px-3 py-2 rounded-md text-sm lg:whitespace-nowrap transition-colors ${view === key ? "bg-orange-800 text-white font-medium" : "text-stone-600 hover:bg-stone-200/60"}`}>{label}</button>
             ))}
-            <div className="hidden lg:block text-[10px] uppercase tracking-wider text-stone-400 px-3 pt-3 pb-1">Projekt</div>
+            <div className="col-span-full text-[10px] uppercase tracking-wider text-stone-400 px-3 pt-3 pb-1">Projekt</div>
             {nav.map(([key, label]) => (
-              <button key={key} onClick={() => setView(key)} className={`text-left px-3 py-2 rounded-md text-sm whitespace-nowrap transition-colors ${view === key ? "bg-orange-800 text-white font-medium" : "text-stone-600 hover:bg-stone-200/60"}`}>{label}</button>
+              <button key={key} onClick={() => setView(key)} className={`text-left px-3 py-2 rounded-md text-sm lg:whitespace-nowrap transition-colors ${view === key ? "bg-orange-800 text-white font-medium" : "text-stone-600 hover:bg-stone-200/60"}`}>{label}</button>
             ))}
           </div>
         </nav>
 
         <main className="min-w-0">
           <div className="mb-4">
-            <h1 className="text-xl font-semibold">{[...navGlobal, ...nav].find((n) => n[0] === view)?.[1]}</h1>
+            <div className="flex items-start justify-between gap-3">
+              <h1 className="text-xl font-semibold">{[...navGlobal, ...nav].find((n) => n[0] === view)?.[1]}</h1>
+              <button className={`${btnGhost} print:hidden shrink-0`} title="Diese Ansicht drucken (quer, A4)" onClick={() => window.print()}>🖨<span className="hidden sm:inline"> Drucken</span></button>
+              <span className="hidden print:inline text-xs text-stone-500">Stand {today().split("-").reverse().join(".")}</span>
+            </div>
             {navGlobal.some((n) => n[0] === view)
               ? <p className="text-sm text-stone-500">Projektübergreifend · {(db.firmen || []).length} Firmen · {(db.projekte || []).length} Projekt{(db.projekte || []).length === 1 ? "" : "e"}</p>
               : <p className="text-sm text-stone-500">{projekt?.name}{rollen.bauherr ? ` · ${rollen.bauherr}` : ""} · {projekt?.plzOrt || projekt?.ort} · MwSt {ks.satz}%</p>}
@@ -2813,10 +2821,92 @@ function App() {
           {view === "angebote" && <AngeboteView d={d} dispatch={dispatch} projektId={db.aktiv} projekt={projekt} db={db} ks={ks} />}
           {view === "rapporte" && <RapporteView d={d} dispatch={dispatch} projektId={db.aktiv} />}
           {view === "erwartungen" && <ErwartungenView d={d} dispatch={dispatch} projektId={db.aktiv} ks={ks} />}
+          {view === "baustelle" && <KompaktView ks={ks} d={d} db={db} dispatch={dispatch} projektId={db.aktiv} projekt={projekt} setView={setView} />}
           {view === "abrechnung" && <AbrechnungView ks={ks} projekt={projekt} d={d} dispatch={dispatch} projektId={db.aktiv} db={db} />}
         </main>
       </div>
-      <style>{`@media print{ body.print-doc-open *{visibility:hidden !important} body.print-doc-open .print-area, body.print-doc-open .print-area *{visibility:visible !important} body.print-doc-open .print-area{position:absolute !important;left:0;top:0;width:100%;padding:0 !important} }`}</style>
+      <style>{`@media print{ @page{size:A4 landscape;margin:12mm} html,body,#root{background:#fff !important} .min-h-screen{background:#fff !important;min-height:0 !important} main{font-size:10pt} .shadow-sm,.shadow,.shadow-xl{box-shadow:none !important} .overflow-x-auto,.overflow-y-auto{overflow:visible !important;max-height:none !important} tr,li,.break-inside-avoid{break-inside:avoid} thead{display:table-header-group} input,select,textarea{border-color:transparent !important;background:transparent !important;-webkit-appearance:none;appearance:none} .print\\:hidden{display:none !important} main td button:not(.print-keep){display:none !important} } @media print{ body.print-doc-open *{visibility:hidden !important} body.print-doc-open .print-area, body.print-doc-open .print-area *{visibility:visible !important} body.print-doc-open .print-area{position:absolute !important;left:0;top:0;width:100%;padding:0 !important} }`}</style>
+    </div>
+  );
+}
+
+// Kompaktansicht für Handy/Tablet auf der Baustelle: Kostenstand, offene Rechnungen, Verträge
+function KompaktView({ ks, d, db, dispatch, projektId, projekt, setView }) {
+  const t = ks.total;
+  const [pdfDateien, setPdfDateien] = useState(null);
+  const [meldung, setMeldung] = useState("");
+  const pdfRef = useRef(null);
+  const offen = [...d.rechnungen].filter((r) => r.status !== "bezahlt").sort((a, b) => String(b.datum || "").localeCompare(String(a.datum || "")));
+  const vLabel = (r) => { const v = d.vertraege.find((x) => x.id === r.vertragId); if (v) return v.unternehmer + (v.nr ? ` · ${v.nr}` : ""); const p = d.positionen.find((x) => x.id === r.positionId); return p ? `${p.bkp} ${p.bezeichnung}` : "—"; };
+  const ueber = ks.ordered.filter((z) => !z.hasChildren && z.roll.abwKv > 0.5).sort((a, b) => b.roll.abwKv - a.roll.abwKv).slice(0, 5);
+  const belegAnsehen = async (r) => {
+    try { const blob = await belegLaden(r.beleg.id); if (!blob) { window.alert("Beleg nicht gefunden."); return; } const url = URL.createObjectURL(blob); window.open(url, "_blank"); setTimeout(() => URL.revokeObjectURL(url), 60000); }
+    catch (e) { window.alert("Beleg konnte nicht geöffnet werden: " + e.message); }
+  };
+  const statusSetzen = (r, status) => dispatch({ type: "update", coll: "rechnungen", id: r.id, patch: { status } });
+  const anteil = t.kvRevidiert > 0 ? Math.min(100, Math.round(100 * t.bezahlt / t.kvRevidiert)) : 0;
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 gap-2 sm:gap-3">
+        <Stat label="KV revidiert" value={chf(t.kvRevidiert)} sub="Budget netto" />
+        <Stat label="Prognose" value={chf(t.prognose)} accent={t.abwKv > 0 ? "text-red-600" : "text-emerald-600"} sub={`${t.abwKv > 0 ? "+" : ""}${chf(t.abwKv)} zum KV`} />
+        <Stat label="Beauftragt" value={chf(t.beauftragt)} sub={`${d.vertraege.length} Verträge`} />
+        <Stat label="Bezahlt" value={chf(t.bezahlt)} sub={`${anteil}% des Budgets`} />
+      </div>
+      <div className={`${card} p-4`}><Ampel kv={t.kv} prognose={t.prognose} /></div>
+
+      <div className={`${card} p-4 print:hidden`}>
+        <input ref={pdfRef} type="file" multiple accept="application/pdf,.pdf" className="hidden" onChange={(e) => { const l = [...e.target.files].filter((x) => /pdf/i.test(x.type) || /\.pdf$/i.test(x.name)); e.target.value = ""; if (l.length) { setMeldung(""); setPdfDateien(l); } }} />
+        <button className={`${btnPrimary} w-full justify-center py-2.5`} onClick={() => pdfRef.current?.click()}>📥 Rechnungs-PDF erfassen</button>
+        {meldung && <div className="text-sm text-emerald-800 mt-2">{meldung}</div>}
+      </div>
+      {pdfDateien && <RechnungAusPdf dateien={pdfDateien} d={d} db={db} projektId={projektId} projekt={projekt} dispatch={dispatch} onClose={(n) => { setPdfDateien(null); if (n) setMeldung(`${n} Rechnung${n === 1 ? "" : "en"} erfasst.`); }} />}
+
+      <div className={card}>
+        <div className="px-4 py-3 border-b border-stone-100 flex items-center justify-between"><h2 className="font-semibold">Offene Rechnungen</h2><span className="text-sm text-stone-500 tabular-nums">{offen.length} · {chf(offen.reduce((s2, r) => s2 + (Number(r.betrag) || 0), 0))}</span></div>
+        {!offen.length ? <p className="text-sm text-stone-400 px-4 py-4">Keine offenen Rechnungen.</p> : (
+          <ul className="divide-y divide-stone-100">{offen.map((r) => (
+            <li key={r.id} className="px-4 py-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="font-medium truncate">{vLabel(r)}</div>
+                  <div className="text-xs text-stone-500">{r.buchungsNr || "–"} · {RTYP[r.typ] || r.typ} {r.nr || ""} · {String(r.datum || "").split("-").reverse().join(".")}</div>
+                </div>
+                <div className="text-right shrink-0"><div className="tabular-nums font-semibold">{chf(r.betrag)}</div><div className={`text-[11px] rounded px-1.5 inline-block mt-0.5 ${r.status === "geprueft" ? "bg-amber-100 text-amber-700" : "bg-stone-100 text-stone-600"}`}>{RSTATUS[r.status] || r.status}</div></div>
+              </div>
+              <div className="flex gap-2 mt-2 flex-wrap print:hidden">
+                {r.beleg ? <button className={`${btnGhost} py-1`} onClick={() => belegAnsehen(r)}>📄 Beleg</button> : <span className="text-xs text-stone-400 self-center">kein Beleg</span>}
+                {r.status === "erfasst" && <button className={`${btnGhost} py-1`} onClick={() => statusSetzen(r, "geprueft")}>✓ geprüft</button>}
+                <button className={`${btnGhost} py-1`} onClick={() => { if (window.confirm(`${vLabel(r)}: ${chf(r.betrag)} als bezahlt markieren?`)) statusSetzen(r, "bezahlt"); }}>bezahlt</button>
+              </div>
+            </li>
+          ))}</ul>
+        )}
+      </div>
+
+      <div className={card}>
+        <div className="px-4 py-3 border-b border-stone-100 flex items-center justify-between"><h2 className="font-semibold">Verträge</h2><button className="text-sm text-orange-800 hover:underline print:hidden" onClick={() => setView("vertraege")}>alle →</button></div>
+        {!d.vertraege.length ? <p className="text-sm text-stone-400 px-4 py-4">Keine Verträge.</p> : (
+          <ul className="divide-y divide-stone-100">{sortierteVertraege(d).map((v) => {
+            const k = vertragKennzahlen(v, d);
+            const pz = k.beauftragt > 0 ? Math.round(100 * k.fakturiert / k.beauftragt) : 0;
+            return (
+              <li key={v.id} className="px-4 py-2.5">
+                <div className="flex items-baseline justify-between gap-3"><span className="font-medium truncate">{v.unternehmer}<span className="text-stone-400 text-xs font-normal"> · {v.nr || "—"}</span></span><span className="tabular-nums text-sm shrink-0">{chf(k.beauftragt)}</span></div>
+                <div className="flex items-center gap-2 mt-1">
+                  <div className="flex-1 h-1.5 bg-stone-100 rounded-full overflow-hidden"><div className={`h-full ${pz > 100 ? "bg-red-500" : "bg-orange-700"}`} style={{ width: Math.min(100, pz) + "%" }} /></div>
+                  <span className={`text-xs tabular-nums w-24 text-right ${pz > 100 ? "text-red-600 font-medium" : "text-stone-500"}`}>{pz}% fakturiert</span>
+                </div>
+              </li>
+            );
+          })}</ul>
+        )}
+      </div>
+
+      {ueber.length > 0 && <div className={`${card} p-4`}>
+        <h2 className="font-semibold mb-2">Über Budget</h2>
+        <ul className="space-y-1.5">{ueber.map((z) => <li key={z.pos.id} className="flex justify-between gap-3 text-sm"><span className="truncate"><span className="font-medium tabular-nums">{z.pos.bkp}</span> {z.pos.bezeichnung}</span><Abw v={z.roll.abwKv} /></li>)}</ul>
+      </div>}
     </div>
   );
 }
@@ -2826,7 +2916,7 @@ function ProjektNeu({ dispatch, setView }) {
   const [f, setF] = useState({ name: "", bauherr: "", ort: "" });
   return (
     <>
-      <button className={`${btn} bg-stone-700 hover:bg-stone-600 text-white`} onClick={() => setOpen(true)}>+ Projekt</button>
+      <button className={`${btn} bg-stone-700 hover:bg-stone-600 text-white`} onClick={() => setOpen(true)} title="Neues Projekt">+<span className="hidden sm:inline"> Projekt</span></button>
       {open && (
         <Modal title="Neues Bauprojekt" onClose={() => setOpen(false)}>
           <div className="space-y-3">
@@ -3116,7 +3206,7 @@ function KvView({ d, dispatch, projektId, ks, projekt, db }) {
   const [edit, setEdit] = useState(null);
   return (
     <div className="space-y-4">
-      <div className="flex gap-2 flex-wrap">
+      <div className="flex gap-2 flex-wrap print:hidden">
         <button className={btnPrimary} onClick={() => setEdit({ bkp: "", bezeichnung: "", kv: "", parentId: null })}>+ Hauptposition</button>
         <button className={btnGhost} onClick={() => setImportOpen(true)}>KV importieren (CSV)</button>
         <button className={katalogOffen ? btnPrimary : btnGhost} onClick={() => setKatalogOffen(!katalogOffen)}>{katalogOffen ? "BKP-Katalog ausblenden" : "BKP-Katalog einblenden"}</button>
@@ -3407,7 +3497,7 @@ function VertraegeView({ d, dispatch, projektId, projekt, firmen, db }) {
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between flex-wrap gap-2">
+      <div className="flex items-center justify-between flex-wrap gap-2 print:hidden">
         <button className={btnPrimary} onClick={() => { const k = kondVorgabe(projekt, null); setVForm({ positionId: "", unternehmer: "", nr: "", betrag: "", pauschalabzug: "", rundung: "", regieBudget: "", teuerung: "", datum: today(), rabattPct: k.rabattPct || "", skontoPct: k.skontoPct || "", bauabzuegePct: k.bauabzuegePct || "", rueckbehaltPct: k.rueckbehaltPct || "", garantieJahre: k.garantieJahre || "", garantieArt: k.garantieArt || "" }); }}>+ Vertrag</button>
         {d.vertraege.length > 0 && <div className="flex items-center gap-3 flex-wrap"><div className="text-sm text-stone-500">{d.vertraege.length} Verträge · Total beauftragt <span className="font-semibold tabular-nums text-stone-700">{chf(totalBeauftragt)}</span></div>
           <button className={btnGhost} onClick={() => excelSpeichern([excelBlattVertraege(d, projekt), excelBlattNachtraege(d, projekt)], projektDateiname("Vertraege", projekt))}>📊 Excel</button></div>}
@@ -4595,7 +4685,7 @@ function BelegFeld({ rechnung, dispatch }) {
       <input ref={ref} type="file" accept="application/pdf,.pdf" className="hidden" onChange={(e) => { uebernehmen(e.target.files[0]); e.target.value = ""; }} />
       {busy ? <span className="text-xs text-stone-400">lädt…</span> : hat ? (
         <>
-          <button className="text-xs text-orange-800 hover:underline max-w-[110px] truncate" onClick={ansehen}>📄 {rechnung.beleg.name}</button>
+          <button className="print-keep text-xs text-orange-800 hover:underline max-w-[110px] truncate" onClick={ansehen}>📄 {rechnung.beleg.name}</button>
           <button className="text-xs text-stone-400 hover:text-stone-700" title="Beleg ersetzen" onClick={() => ref.current?.click()}>↻</button>
           <button className="text-xs text-stone-400 hover:text-red-600" title="Beleg entfernen" onClick={entfernen}>×</button>
         </>
@@ -4923,23 +5013,23 @@ function RechnungenView({ d, dispatch, projektId, projekt, db }) {
         <div className="text-center text-orange-900"><div className="text-3xl mb-1">📥</div><div className="font-semibold">PDF hier loslassen</div><div className="text-sm">Je Datei wird eine neue Rechnung vorbereitet — Vertrag, Betrag, Datum und Nummer werden vorgeschlagen.</div></div>
       </div>}
       <input ref={pdfRef} type="file" multiple accept="application/pdf,.pdf" className="hidden" onChange={(e) => { pdfsAufnehmen(e.target.files); e.target.value = ""; }} />
-      <div className="rounded-xl border-2 border-dashed border-stone-300 bg-white/60 px-4 py-3 flex items-center gap-3 flex-wrap text-sm text-stone-600">
+      <div className="rounded-xl border-2 border-dashed border-stone-300 bg-white/60 px-4 py-3 flex items-center gap-3 flex-wrap text-sm text-stone-600 print:hidden">
         <span className="text-xl">📥</span>
         <span className="flex-1 min-w-[200px]"><strong className="text-stone-800">Rechnungs-PDF hierher ziehen</strong> — Vertrag, Betrag, Datum und Rechnungsnummer werden aus dem PDF vorgeschlagen und der Beleg angehängt. Mehrere Dateien auf einmal gehen auch.</span>
         <button className={btnGhost} onClick={() => pdfRef.current?.click()}>PDF wählen…</button>
       </div>
       {pdfMeldung && <div className="text-sm text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-md px-3 py-2">{pdfMeldung}</div>}
       {pdfDateien && <RechnungAusPdf dateien={pdfDateien} d={d} db={db} projektId={projektId} projekt={projekt} dispatch={dispatch} onClose={(n) => { setPdfDateien(null); if (n) setPdfMeldung(`${n} Rechnung${n === 1 ? "" : "en"} aus PDF erfasst — Status «erfasst». Bitte prüfen und freigeben.`); }} />}
-      <div className={`${card} p-4 space-y-3`}>
+      <div className={`${card} p-4 space-y-3 print:hidden`}>
         <div className="flex gap-4 text-sm">
           <label className="inline-flex items-center gap-1.5"><input type="radio" checked={f.buchung === "vertrag"} onChange={() => setF({ ...f, buchung: "vertrag", positionId: "" })} /> auf Vertrag</label>
           <label className="inline-flex items-center gap-1.5"><input type="radio" checked={f.buchung === "bkp"} onChange={() => setF({ ...f, buchung: "bkp", vertragId: "" })} /> direkt auf BKP (ohne Vertrag)</label>
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-[1fr_120px_110px_110px_120px_120px_110px_auto] gap-3 items-end">
+        <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-[1fr_120px_110px_110px_120px_140px_110px_auto] gap-3 items-end">
           {f.buchung === "vertrag" ? (
-            <Field label="Vertrag"><select className={inputCls} value={f.vertragId} onChange={(e) => setF({ ...f, vertragId: e.target.value })}><option value="">wählen…</option>{d.vertraege.map((v) => <option key={v.id} value={v.id}>{v.unternehmer} {v.nr && `(${v.nr})`}</option>)}</select></Field>
+            <div className="col-span-2 sm:col-span-4 xl:col-span-1"><Field label="Vertrag"><select className={inputCls} value={f.vertragId} onChange={(e) => setF({ ...f, vertragId: e.target.value })}><option value="">wählen…</option>{d.vertraege.map((v) => <option key={v.id} value={v.id}>{v.unternehmer} {v.nr && `(${v.nr})`}</option>)}</select></Field></div>
           ) : (
-            <Field label="BKP-Position"><select className={inputCls} value={f.positionId} onChange={(e) => setF({ ...f, positionId: e.target.value })}><option value="">wählen…</option>{opts.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</select></Field>
+            <div className="col-span-2 sm:col-span-4 xl:col-span-1"><Field label="BKP-Position"><select className={inputCls} value={f.positionId} onChange={(e) => setF({ ...f, positionId: e.target.value })}><option value="">wählen…</option>{opts.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</select></Field></div>
           )}
           <Field label="Typ"><select className={inputCls} value={f.typ} onChange={(e) => setF({ ...f, typ: e.target.value })}><option value="akonto">Akonto</option><option value="rechnung">Rechnung</option><option value="regie">Regie</option></select></Field>
           <Field label="Buchungsnr."><input className={inputCls} value={f.buchungsNr} onChange={(e) => setF({ ...f, buchungsNr: e.target.value })} />{buchungDoppelt ? <div className="text-xs text-amber-700 mt-1">bereits vergeben</div> : null}</Field>
@@ -4955,7 +5045,7 @@ function RechnungenView({ d, dispatch, projektId, projekt, db }) {
           }}>Erfassen</button>
         </div>
       </div>
-      {d.rechnungen.length > 0 && <div className="flex justify-end -mb-2"><button className={btnGhost} onClick={() => excelSpeichern([excelBlattRechnungen(d, db, projekt)], projektDateiname("Rechnungen", projekt))}>📊 Excel</button></div>}
+      {d.rechnungen.length > 0 && <div className="flex justify-end -mb-2 print:hidden"><button className={btnGhost} onClick={() => excelSpeichern([excelBlattRechnungen(d, db, projekt)], projektDateiname("Rechnungen", projekt))}>📊 Excel</button></div>}
       {!d.rechnungen.length ? <Empty text="Keine Rechnungen erfasst." /> : (
         <div className={`${card} overflow-x-auto`}><table className="w-full text-sm">
           <thead className="bg-stone-50 text-stone-500 text-xs"><tr><th className="text-left font-medium px-3 py-2">Buchungsnr.</th><th className="text-left font-medium px-3 py-2">Datum</th><th className="text-left font-medium px-3 py-2">Buchung</th><th className="text-left font-medium px-3 py-2">Typ</th><th className="text-left font-medium px-3 py-2">Rg-Nr.</th><th className="text-right font-medium px-3 py-2">Betrag</th><th className="text-left font-medium px-3 py-2">Status</th><th className="text-right font-medium px-3 py-2">fakt./soll</th><th className="text-left font-medium px-3 py-2">Beleg</th><th className="w-12"></th></tr></thead>
@@ -4964,14 +5054,14 @@ function RechnungenView({ d, dispatch, projektId, projekt, db }) {
             const ueber = pv && pv.fakt > pv.soll;
             return (
               <tr key={r.id} className="border-t border-stone-100">
-                <td className="px-3 py-2 tabular-nums text-stone-600 font-medium">{r.buchungsNr || "–"}</td>
-                <td className="px-3 py-2 tabular-nums text-stone-500">{r.datum}</td>
+                <td className="px-3 py-2 tabular-nums text-stone-600 font-medium whitespace-nowrap">{r.buchungsNr || "–"}</td>
+                <td className="px-3 py-2 tabular-nums text-stone-500 whitespace-nowrap">{String(r.datum || "").split("-").reverse().join(".")}</td>
                 <td className="px-3 py-2">{r.vertragId ? vLabel(r.vertragId) : <span>{posLabel(r.positionId)} <span className="text-xs text-stone-400">(ohne Vertrag)</span></span>}</td>
                 <td className="px-3 py-2"><span className={`text-xs rounded px-1.5 py-0.5 ${typCol[r.typ] || typCol.rechnung}`}>{RTYP[r.typ] || r.typ}</span></td>
-                <td className="px-3 py-2 text-stone-500">{r.nr}</td>
-                <td className="px-3 py-2 text-right tabular-nums">{chf(r.betrag)}</td>
+                <td className="px-3 py-2 text-stone-500 whitespace-nowrap">{r.nr}</td>
+                <td className="px-3 py-2 text-right tabular-nums whitespace-nowrap">{chf(r.betrag)}</td>
                 <td className="px-3 py-2"><select className={`text-xs rounded px-1.5 py-0.5 border-0 ${statusCol[r.status]}`} value={r.status} onChange={(e) => dispatch({ type: "update", coll: "rechnungen", id: r.id, patch: { status: e.target.value } })}><option value="erfasst">erfasst</option><option value="geprueft">geprüft</option><option value="bezahlt">bezahlt</option></select></td>
-                <td className={`px-3 py-2 text-right tabular-nums text-xs ${ueber ? "text-red-600 font-medium" : "text-stone-500"}`}>{pv ? `${chf(pv.fakt)} / ${chf(pv.soll)}` : "–"}</td>
+                <td className={`px-3 py-2 text-right tabular-nums text-xs whitespace-nowrap ${ueber ? "text-red-600 font-medium" : "text-stone-500"}`}>{pv ? `${chf(pv.fakt)} / ${chf(pv.soll)}` : "–"}</td>
                 <td className="px-3 py-2"><BelegFeld rechnung={r} dispatch={dispatch} /></td>
                 <td className="px-3 py-2 text-right whitespace-nowrap"><button className="text-stone-600 text-xs hover:underline mr-2" title="Zahlungsfreigabe als PDF" onClick={async () => {
                   try {
