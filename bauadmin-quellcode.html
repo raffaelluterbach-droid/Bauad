@@ -197,7 +197,42 @@ function makeCrbxBlob(text) {
   const eocd = [...u32(0x06054b50), ...u16(0), ...u16(0), ...u16(1), ...u16(1), ...u32(cdir.length), ...u32(cdOff), ...u16(0)];
   return new Blob([new Uint8Array([...local, ...cdir, ...eocd])], { type: "application/octet-stream" });
 }
-function download(blob, filename) { const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = filename; a.click(); URL.revokeObjectURL(url); }
+// Downloads: In der geteilten Artifact-Ansicht blockiert der Browser einfache Download-Links;
+// dort übernimmt die Plattform das Speichern (mit Rückfrage an den Betrachter).
+// Lokal geöffnet (bauadmin.html) funktioniert der gewohnte Link.
+let downloadsNsPromise = null;
+function downloadsNs() {
+  if (!window.claude || typeof window.claude.use !== "function") return Promise.resolve(null);
+  if (!downloadsNsPromise) downloadsNsPromise = Promise.resolve(window.claude.use("downloads")).catch(() => null);
+  return downloadsNsPromise;
+}
+async function download(blob, filename) {
+  const imArtifact = !!(window.claude && typeof window.claude.use === "function");
+  if (imArtifact) {
+    const dl = await downloadsNs();
+    if (dl) {
+      try { await dl.save({ filename, data: blob }); return true; }
+      catch (e) {
+        const code = (e && e.code) || "unavailable";
+        if (code === "declined") return false;
+        if (code === "rejected_extension" || code === "extension_not_enabled") {
+          window.alert(`Dateien vom Typ «${(filename.split(".").pop() || "").toUpperCase()}» lassen sich in der geteilten Ansicht nicht speichern. Öffne dafür die lokale bauadmin.html.`);
+          return false;
+        }
+        if (code === "rate_limited") { window.alert("Es ist bereits ein Speichern-Dialog offen. Bitte kurz warten."); return false; }
+        window.alert("Speichern ist in dieser Ansicht nicht verfügbar. Öffne dafür die lokale bauadmin.html.");
+        return false;
+      }
+    }
+    window.alert("Speichern ist in dieser Ansicht nicht verfügbar. Öffne dafür die lokale bauadmin.html.");
+    return false;
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a"); a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
+  return true;
+}
 
 // ---------- Offerte als CSV (Unternehmer-Preise) ----------
 // Vorlage zum Versand an Unternehmer; sie tragen die Einheitspreise ein und senden zurück.
@@ -236,16 +271,58 @@ function parseOfferteCsv(text, positionen) {
 }
 
 // ---------- Persistence ----------
+// Der Projektstand liegt in IndexedDB (kein 5-MB-Limit wie localStorage).
+// Ältere Stände aus localStorage werden beim ersten Laden übernommen.
 const DB_KEY = "bauadmin:db:v5";
+const DATEN_DB = "bauadmin:daten", DATEN_STORE = "stand";
+let datenDbPromise = null;
+function datenDb() {
+  if (datenDbPromise) return datenDbPromise;
+  datenDbPromise = new Promise((resolve, reject) => {
+    if (!window.indexedDB) { reject(new Error("Dieser Browser bietet keine IndexedDB.")); return; }
+    const req = indexedDB.open(DATEN_DB, 1);
+    req.onupgradeneeded = () => { if (!req.result.objectStoreNames.contains(DATEN_STORE)) req.result.createObjectStore(DATEN_STORE); };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error || new Error("Datenspeicher nicht verfügbar."));
+  });
+  datenDbPromise.catch(() => { datenDbPromise = null; });
+  return datenDbPromise;
+}
+function datenTx(modus, arbeit) {
+  return datenDb().then((db) => new Promise((resolve, reject) => {
+    const tx = db.transaction(DATEN_STORE, modus);
+    const req = arbeit(tx.objectStore(DATEN_STORE));
+    tx.oncomplete = () => resolve(req.result);
+    tx.onerror = () => reject(tx.error || req.error);
+    tx.onabort = () => reject(tx.error || new Error("Speichern abgebrochen."));
+  }));
+}
 async function loadDB() {
+  try {
+    const gespeichert = await datenTx("readonly", (st) => st.get("db"));
+    if (gespeichert) return typeof gespeichert === "string" ? JSON.parse(gespeichert) : gespeichert;
+  } catch (e) {}
+  // Übernahme aus dem früheren Speicherort
   try {
     const r = localStorage.getItem(DB_KEY); if (r) return JSON.parse(r);
     const old = localStorage.getItem("bauadmin:db:v4"); if (old) return JSON.parse(old);
   } catch (e) {}
   return null;
 }
+// Liefert true bei Erfolg; wirft mit verständlicher Meldung, wenn nichts gespeichert werden konnte
 async function saveDB(db) {
-  try { localStorage.setItem(DB_KEY, JSON.stringify(db)); } catch (e) {}
+  const text = JSON.stringify(db);
+  try {
+    await datenTx("readwrite", (st) => st.put(text, "db"));
+    return true;
+  } catch (e) {
+    // Notlösung: localStorage, falls IndexedDB versagt (z.B. privates Fenster)
+    try { localStorage.setItem(DB_KEY, text); return true; }
+    catch (e2) {
+      const voll = /quota/i.test(String((e2 && e2.name) || "") + String((e2 && e2.message) || ""));
+      throw new Error(voll ? "Der Browserspeicher ist voll." : "Der Browser verweigert das Speichern (" + ((e && e.message) || "unbekannter Grund") + ").");
+    }
+  }
 }
 
 // ---------- Belegablage (IndexedDB) ----------
@@ -385,6 +462,7 @@ function reducer(db, a) {
     case "load": return a.db;
     case "setAktiv": return { ...db, aktiv: a.id };
     case "setVorlage": return { ...db, vorlage: a.vorlage };
+    case "setMeta": return { ...db, meta: { ...(db.meta || {}), ...a.patch } };
     case "setBkpKatalog": return { ...db, bkpKatalog: a.katalog };
     case "positionenZurueck": return { ...db, positionen: [...db.positionen.filter((x) => x.projektId !== a.projektId), ...a.items] };
     case "add": return { ...db, [a.coll]: [...db[a.coll], a.item] };
@@ -2011,6 +2089,148 @@ function VorlageVorschau({ v, logoUrl }) {
   );
 }
 
+// ---------- Sicherung: alles in einer Datei ----------
+// Enthält den kompletten Projektstand und sämtliche Dateien aus der Belegablage
+// (Rechnungs-PDFs, Firmenlogo). Format bewusst JSON: in jedem Browser lesbar und
+// auch in der geteilten Ansicht speicherbar.
+const SICHERUNG_FORMAT = "bauadmin-sicherung";
+function blobZuBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(",")[1] || "");
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(blob);
+  });
+}
+function base64ZuBlob(b64, typ) {
+  const bin = atob(b64 || "");
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: typ || "application/octet-stream" });
+}
+function alleBelegeLesen() {
+  return belegDb().then((db) => new Promise((resolve, reject) => {
+    const out = [];
+    const tx = db.transaction(BELEG_STORE, "readonly");
+    const req = tx.objectStore(BELEG_STORE).openCursor();
+    req.onsuccess = () => { const c = req.result; if (c) { out.push([c.key, c.value]); c.continue(); } };
+    tx.oncomplete = () => resolve(out);
+    tx.onerror = () => reject(tx.error);
+  }));
+}
+function belegeErsetzen(eintraege) {
+  return belegDb().then((db) => new Promise((resolve, reject) => {
+    const tx = db.transaction(BELEG_STORE, "readwrite");
+    const st = tx.objectStore(BELEG_STORE);
+    st.clear();
+    eintraege.forEach(([id, blob]) => st.put(blob, id));
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  }));
+}
+async function sicherungErstellen(db) {
+  const dateien = {};
+  let bytes = 0;
+  for (const [id, wert] of await alleBelegeLesen()) {
+    if (!(wert instanceof Blob)) continue;
+    dateien[id] = { typ: wert.type || "application/octet-stream", daten: await blobZuBase64(wert) };
+    bytes += wert.size;
+  }
+  const inhalt = { format: SICHERUNG_FORMAT, version: 1, erstellt: new Date().toISOString(), db, dateien };
+  return { text: JSON.stringify(inhalt), anzahlDateien: Object.keys(dateien).length, bytes };
+}
+function sicherungPruefen(text) {
+  let x;
+  try { x = JSON.parse(text); } catch (e) { throw new Error("Die Datei ist keine gültige Sicherung (kein lesbares JSON)."); }
+  if (!x || x.format !== SICHERUNG_FORMAT) throw new Error("Diese Datei ist keine BauAdmin-Sicherung.");
+  if (!x.db || !Array.isArray(x.db.projekte)) throw new Error("Die Sicherung enthält keinen gültigen Projektstand.");
+  return x;
+}
+async function sicherungEinspielen(x) {
+  const eintraege = Object.entries(x.dateien || {}).map(([id, f]) => [id, base64ZuBlob(f.daten, f.typ)]);
+  await belegeErsetzen(eintraege);
+  return normalize(x.db);
+}
+function tageSeit(iso) {
+  if (!iso) return null;
+  return Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+}
+
+function SicherungView({ db, dispatch }) {
+  const [busy, setBusy] = useState("");
+  const [meldung, setMeldung] = useState(null);
+  const ref = useRef(null);
+  const letzte = db.meta?.letzteSicherung || "";
+  const tage = tageSeit(letzte);
+  const zaehlen = (k) => (db[k] || []).length;
+
+  const exportieren = async () => {
+    setBusy("export"); setMeldung(null);
+    try {
+      const jetzt = new Date().toISOString();
+      const stand = { ...db, meta: { ...(db.meta || {}), letzteSicherung: jetzt } };
+      const { text, anzahlDateien, bytes } = await sicherungErstellen(stand);
+      const ok = await download(new Blob([text], { type: "application/json" }), `BauAdmin-Sicherung_${jetzt.slice(0, 10)}.json`);
+      if (ok) {
+        dispatch({ type: "setMeta", patch: { letzteSicherung: jetzt } });
+        setMeldung({ art: "ok", text: `Sicherung erstellt: ${zaehlen("projekte")} Projekte, ${anzahlDateien} Dateien (${(bytes / 1048576).toFixed(1)} MB Belege). Lege die Datei an einem sicheren Ort ab — etwa auf einem Netzlaufwerk oder in der Cloud.` });
+      }
+    } catch (e) { setMeldung({ art: "fehler", text: "Die Sicherung konnte nicht erstellt werden: " + e.message }); }
+    setBusy("");
+  };
+
+  const einlesen = async (datei) => {
+    if (!datei) return;
+    setBusy("import"); setMeldung(null);
+    try {
+      const x = sicherungPruefen(await datei.text());
+      const p = (x.db.projekte || []).length, f = Object.keys(x.dateien || {}).length;
+      const vom = x.erstellt ? new Date(x.erstellt).toLocaleString("de-CH") : "unbekannt";
+      if (!window.confirm(`Sicherung vom ${vom} einlesen?\n\n${p} Projekte, ${f} Dateien.\n\nAlle Daten, die jetzt in diesem Browser stehen, werden dadurch ersetzt. Exportiere vorher eine Sicherung des aktuellen Stands, falls du ihn behalten willst.`)) { setBusy(""); return; }
+      const neu = await sicherungEinspielen(x);
+      dispatch({ type: "load", db: neu });
+      setMeldung({ art: "ok", text: `Sicherung vom ${vom} eingelesen: ${p} Projekte und ${f} Dateien wiederhergestellt.` });
+    } catch (e) { setMeldung({ art: "fehler", text: e.message }); }
+    setBusy("");
+  };
+
+  return (
+    <div className="space-y-4 max-w-3xl">
+      <div className={`${card} p-4 space-y-3`}>
+        <div className="font-medium">Stand in diesem Browser</div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+          {[["Projekte", "projekte"], ["Verträge", "vertraege"], ["Rechnungen", "rechnungen"], ["Firmen", "firmen"]].map(([l, k]) => (
+            <div key={k} className="rounded-lg bg-stone-50 px-3 py-2"><div className="text-xs text-stone-500">{l}</div><div className="text-lg font-semibold tabular-nums">{zaehlen(k)}</div></div>
+          ))}
+        </div>
+        <div className={`text-sm rounded-lg px-3 py-2 ${tage === null ? "bg-amber-50 text-amber-800" : tage > 7 ? "bg-amber-50 text-amber-800" : "bg-emerald-50 text-emerald-800"}`}>
+          {tage === null ? "Es wurde noch nie eine Sicherung erstellt." : tage === 0 ? "Letzte Sicherung: heute." : `Letzte Sicherung: vor ${tage} Tag${tage === 1 ? "" : "en"} (${new Date(letzte).toLocaleDateString("de-CH")}).`}
+        </div>
+      </div>
+
+      <div className={`${card} p-4 space-y-3`}>
+        <div className="font-medium">Sicherung exportieren</div>
+        <p className="text-sm text-stone-600">Speichert alles in <strong>einer Datei</strong>: Projekte, KV, Verträge, Rechnungen, Adressstamm, Kataloge, Vorlage — und sämtliche Belege samt Firmenlogo.</p>
+        <button className={btnPrimary} disabled={!!busy} onClick={exportieren}>{busy === "export" ? "erstellt…" : "Sicherung jetzt exportieren"}</button>
+      </div>
+
+      <div className={`${card} p-4 space-y-3`}>
+        <div className="font-medium">Sicherung einlesen</div>
+        <p className="text-sm text-stone-600">Stellt einen gesicherten Stand wieder her — auch auf einem anderen Computer oder in einem anderen Browser. <strong>Der aktuelle Stand in diesem Browser wird dabei ersetzt.</strong></p>
+        <input ref={ref} type="file" accept=".json,application/json" className="hidden" onChange={(e) => { einlesen(e.target.files[0]); e.target.value = ""; }} />
+        <button className={btnGhost} disabled={!!busy} onClick={() => ref.current?.click()}>{busy === "import" ? "liest ein…" : "Sicherungsdatei wählen…"}</button>
+      </div>
+
+      {meldung ? <div className={`text-sm rounded-lg px-3 py-2.5 ${meldung.art === "ok" ? "bg-emerald-50 text-emerald-800 border border-emerald-200" : "bg-red-50 text-red-700 border border-red-200"}`}>{meldung.text}</div> : null}
+
+      <div className="text-xs text-stone-500 space-y-1">
+        <p><strong>Wo liegen die Daten?</strong> Ausschliesslich in diesem Browser auf diesem Computer. Die lokale Datei <em>bauadmin.html</em> und der geteilte Link haben je einen eigenen, getrennten Speicher.</p>
+        <p><strong>Empfehlung:</strong> Mindestens wöchentlich sichern und die Datei ausserhalb des Computers ablegen. Nach sieben Tagen ohne Sicherung erinnert dich die App.</p>
+      </div>
+    </div>
+  );
+}
+
 function AdressstammView({ firmen, db, dispatch }) {
   const [sel, setSel] = useState(null);
   const [q, setQ] = useState("");
@@ -2386,7 +2606,19 @@ function App() {
       setLoaded(true);
     });
   }, []);
-  useEffect(() => { if (!loaded) return; if (firstSave.current) { firstSave.current = false; return; } saveDB(db); }, [db, loaded]);
+  // Speichern darf nie still scheitern — ein Fehler bleibt sichtbar, bis ein Speichern wieder gelingt
+  const [speicherFehler, setSpeicherFehler] = useState("");
+  useEffect(() => {
+    if (!loaded) return;
+    if (firstSave.current) { firstSave.current = false; return; }
+    saveDB(db).then(() => setSpeicherFehler("")).catch((e) => setSpeicherFehler(e.message || "Speichern fehlgeschlagen."));
+  }, [db, loaded]);
+
+  // Erinnerung, wenn seit mehr als 7 Tagen keine Sicherung exportiert wurde (pro Sitzung ausblendbar)
+  const [erinnerungWeg, setErinnerungWeg] = useState(() => { try { return sessionStorage.getItem("bauadmin:erinnerung") === "weg"; } catch (e) { return false; } });
+  const sicherungTage = tageSeit(db.meta?.letzteSicherung);
+  const sicherungFaellig = loaded && !erinnerungWeg && view !== "sicherung" && (sicherungTage === null || sicherungTage > 7);
+  function erinnerungAusblenden() { setErinnerungWeg(true); try { sessionStorage.setItem("bauadmin:erinnerung", "weg"); } catch (e) {} }
 
   const [hilfe, setHilfe] = useState(() => { try { return localStorage.getItem("bauadmin:hilfe") !== "0"; } catch (e) { return true; } });
   function toggleHilfe() { setHilfe((h) => { try { localStorage.setItem("bauadmin:hilfe", h ? "0" : "1"); } catch (e) {} return !h; }); }
@@ -2400,7 +2632,7 @@ function App() {
   const ks = useKostenStand(d, projekt);
   const rollen = projektRollen(db, projekt);
 
-  const navGlobal = [["adressstamm", "Adressstamm"], ["vorlage", "PDF-Vorlage"]];
+  const navGlobal = [["adressstamm", "Adressstamm"], ["vorlage", "PDF-Vorlage"], ["sicherung", "Sicherung"]];
   const nav = [
     ["projekt", "Projekt"], ["beteiligte", "Beteiligte"], ["listen", "Listen"],
     ["dashboard", "Kostenübersicht"], ["kv", "KV / BKP-Positionen"], ["mutationen", "Mutationen"], ["umbuchungen", "Umbuchungen"],
@@ -2411,6 +2643,25 @@ function App() {
 
   return (
     <div className="min-h-screen bg-[#faf7f2] text-stone-800" style={{ fontFamily: "ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" }}>
+      {speicherFehler ? (
+        <div className="bg-red-700 text-white text-sm print:hidden">
+          <div className="max-w-[1480px] mx-auto px-5 py-2.5 flex flex-wrap items-center gap-3">
+            <strong>Achtung: Deine letzten Änderungen wurden nicht gespeichert.</strong>
+            <span className="opacity-90">{speicherFehler} Exportiere jetzt eine Sicherung, damit nichts verloren geht.</span>
+            <button className="ml-auto bg-white text-red-800 rounded px-3 py-1 font-medium" onClick={() => setView("sicherung")}>Zur Sicherung</button>
+          </div>
+        </div>
+      ) : null}
+      {!speicherFehler && sicherungFaellig ? (
+        <div className="bg-amber-100 text-amber-900 border-b border-amber-300 text-sm print:hidden">
+          <div className="max-w-[1480px] mx-auto px-5 py-2 flex flex-wrap items-center gap-3">
+            <strong>{sicherungTage === null ? "Es wurde noch nie eine Sicherung erstellt." : `Letzte Sicherung vor ${sicherungTage} Tagen.`}</strong>
+            <span>Deine Daten liegen nur in diesem Browser — exportiere regelmässig eine Sicherungsdatei.</span>
+            <button className="ml-auto bg-amber-700 text-white rounded px-3 py-1 font-medium" onClick={() => setView("sicherung")}>Jetzt sichern</button>
+            <button className="text-amber-800 hover:underline" onClick={erinnerungAusblenden}>Später</button>
+          </div>
+        </div>
+      ) : null}
       <header className="bg-stone-900 text-white print:hidden">
         <div className="max-w-[1480px] mx-auto px-5 py-3 flex items-center justify-between flex-wrap gap-3">
           <div className="flex items-center gap-3">
@@ -2451,6 +2702,7 @@ function App() {
           {hilfe && <HilfeBox view={view} />}
           {view === "projekt" && <ProjektView projekt={projekt} dispatch={dispatch} db={db} />}
           {view === "adressstamm" && <AdressstammView firmen={firmen} db={db} dispatch={dispatch} />}
+          {view === "sicherung" && <SicherungView db={db} dispatch={dispatch} />}
           {view === "vorlage" && <VorlageEditor wert={db.vorlage} titel="Vorlage für alle PDF-Dokumente" hinweis="Logo, Kopf- und Fusszeilen gelten projektübergreifend. Im Reiter «Projekt» lässt sich für ein einzelnes Projekt eine abweichende Vorlage setzen." onAendern={(v) => dispatch({ type: "setVorlage", vorlage: v })} />}
           {view === "beteiligte" && <ProjektBeteiligteView db={db} dispatch={dispatch} projektId={db.aktiv} firmen={firmen} />}
           {view === "listen" && <ListenView db={db} dispatch={dispatch} projektId={db.aktiv} projekt={projekt} d={d} />}
