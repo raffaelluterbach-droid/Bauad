@@ -445,12 +445,21 @@ function belegTx(modus, arbeit) {
     req.onerror = () => reject(req.error);
   }));
 }
-const belegSpeichern = (id, blob) => belegTx("readwrite", (s) => s.put(blob, id));
+const belegSpeichernLokal = (id, blob) => belegTx("readwrite", (s) => s.put(blob, id));
+const belegLadenLokal = (id) => belegTx("readonly", (s) => s.get(id));
+// Im Team liegen Belege zusätzlich im gemeinsamen Ordner; lokal fehlende werden von dort geholt
+async function belegSpeichern(id, blob) { await belegSpeichernLokal(id, blob); teamBelegHochladen(id, blob); }
+async function belegLaden(id) {
+  const lokal = await belegLadenLokal(id);
+  if (lokal) return lokal;
+  const geteilt = await teamBelegHolen(id);
+  if (geteilt) { try { await belegSpeichernLokal(id, geteilt); } catch (e) {} }
+  return geteilt || null;
+}
+async function belegLoeschen(id) { await belegTx("readwrite", (s) => s.delete(id)); teamBelegLoeschen(id); }
 // Das Firmenlogo liegt in derselben Ablage wie die Belege
-const logoSpeichern = (id, blob) => belegTx("readwrite", (s) => s.put(blob, id));
-const logoLaden = (id) => belegTx("readonly", (s) => s.get(id));
-const belegLaden = (id) => belegTx("readonly", (s) => s.get(id));
-const belegLoeschen = (id) => belegTx("readwrite", (s) => s.delete(id));
+const logoSpeichern = belegSpeichern;
+const logoLaden = belegLaden;
 function normalize(db) {
   db.projekte = db.projekte.map((p) => ({ mwstSatz: 8.1, teuerungsReserve: 0, strasse: "", plzOrt: "", bauherrAdresse: "", bauleitung: "", gewichtPreis: 70, gewichtReferenzen: 20, gewichtLehrlinge: 10, ...p, kond: { ...LEERE_KOND, ...(p.kond || {}) } }));
   db.positionen = (db.positionen || []).map((p) => ({ parentId: null, notiz: "", ...p }));
@@ -2190,6 +2199,393 @@ function VorlageVorschau({ v, logoUrl }) {
 // Enthält den kompletten Projektstand und sämtliche Dateien aus der Belegablage
 // (Rechnungs-PDFs, Firmenlogo). Format bewusst JSON: in jedem Browser lesbar und
 // auch in der geteilten Ansicht speicherbar.
+// =========================================================================
+//  ORDNERZUGRIFF: automatische Sicherung und Team-Ordner (Chrome/Edge, lokal)
+// =========================================================================
+const ORDNER_MOEGLICH = typeof window !== "undefined" && typeof window.showDirectoryPicker === "function" && (() => { try { return window.self === window.top; } catch (e) { return false; } })();
+async function ordnerWaehlen(id) { return window.showDirectoryPicker({ id, mode: "readwrite" }); }
+async function ordnerErlaubt(h, fragen) {
+  if (!h) return false;
+  try {
+    if (typeof h.queryPermission !== "function") return true;
+    if ((await h.queryPermission({ mode: "readwrite" })) === "granted") return true;
+    if (fragen && typeof h.requestPermission === "function") return (await h.requestPermission({ mode: "readwrite" })) === "granted";
+  } catch (e) {}
+  return false;
+}
+async function einstellungLesen(k) { try { return await datenTx("readonly", (st) => st.get(k)); } catch (e) { return undefined; } }
+async function einstellungSchreiben(k, v) { try { await datenTx("readwrite", (st) => (v === undefined ? st.delete(k) : st.put(v, k))); return true; } catch (e) { return false; } }
+async function dateiLesenText(dir, name) { try { const fh = await dir.getFileHandle(name); return await (await fh.getFile()).text(); } catch (e) { return null; } }
+async function dateiSchreiben(dir, name, daten) { const fh = await dir.getFileHandle(name, { create: true }); const w = await fh.createWritable(); await w.write(daten); await w.close(); }
+async function dateiAnhaengen(dir, name, text) {
+  const fh = await dir.getFileHandle(name, { create: true });
+  const f = await fh.getFile();
+  const w = await fh.createWritable({ keepExistingData: true });
+  await w.seek(f.size); await w.write(text); await w.close();
+  return f.size;
+}
+function zeitVor(iso) {
+  if (!iso) return "";
+  const s = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+  if (s < 60) return "gerade eben"; if (s < 3600) return `vor ${Math.round(s / 60)} Min.`; if (s < 86400) return `vor ${Math.round(s / 3600)} Std.`;
+  return `vor ${Math.round(s / 86400)} Tagen`;
+}
+
+// ——— Automatische Sicherung: täglich eine Datei, nach Änderungen aktualisiert, 30 Tage aufbewahrt ———
+const AUTO_TAGE = 30;
+const auto = { status: "aus", handle: null, name: "", letzte: "", fehler: "", timer: null, db: null, hoerer: new Set() };
+function autoMelden() { auto.hoerer.forEach((f) => { try { f(); } catch (e) {} }); }
+function autoInfo() { return { status: auto.status, name: auto.name, letzte: auto.letzte, fehler: auto.fehler }; }
+async function autoKonfigSpeichern() { await einstellungSchreiben("auto:ordner", auto.handle ? { handle: auto.handle, name: auto.name, letzte: auto.letzte } : undefined); }
+async function autoStart() {
+  const k = await einstellungLesen("auto:ordner");
+  if (!k || !k.handle) return;
+  Object.assign(auto, { handle: k.handle, name: k.name || "", letzte: k.letzte || "" });
+  auto.status = (await ordnerErlaubt(k.handle, false)) ? "aktiv" : "pausiert";
+  autoMelden();
+}
+async function autoEinrichten(db) {
+  const h = await ordnerWaehlen("bauadmin-sicherung");
+  Object.assign(auto, { handle: h, name: h.name, status: "aktiv", fehler: "" });
+  await autoKonfigSpeichern();
+  await autoSchreiben(db);
+}
+async function autoFortsetzen() { if (await ordnerErlaubt(auto.handle, true)) { auto.status = "aktiv"; auto.fehler = ""; if (auto.db) autoVormerken(auto.db, 1000); } autoMelden(); }
+async function autoAus() { clearTimeout(auto.timer); Object.assign(auto, { status: "aus", handle: null, name: "", letzte: "", fehler: "" }); await autoKonfigSpeichern(); autoMelden(); }
+function autoVormerken(db, ms) {
+  auto.db = db;
+  if (auto.status !== "aktiv") return;
+  clearTimeout(auto.timer);
+  auto.timer = setTimeout(() => autoSchreiben(auto.db), ms === undefined ? 90000 : ms);
+}
+async function autoSchreiben(db) {
+  if (auto.status !== "aktiv" || !auto.handle || !db) return;
+  clearTimeout(auto.timer); auto.timer = null;
+  try {
+    const { text } = await sicherungErstellen(db);
+    await dateiSchreiben(auto.handle, `BauAdmin-Sicherung_${today()}.json`, text);
+    auto.letzte = new Date().toISOString(); auto.fehler = "";
+    await autoKonfigSpeichern();
+    // Ältere Tagesdateien entfernen
+    const grenze = new Date(Date.now() - AUTO_TAGE * 86400000).toISOString().slice(0, 10);
+    const weg = [];
+    for await (const [name, h] of auto.handle.entries()) { const m = /^BauAdmin-Sicherung_(\d{4}-\d{2}-\d{2})\.json$/.exec(name); if (h.kind === "file" && m && m[1] < grenze) weg.push(name); }
+    for (const n of weg) { try { await auto.handle.removeEntry(n); } catch (e) {} }
+  } catch (e) {
+    auto.fehler = "Die automatische Sicherung konnte nicht geschrieben werden: " + (e.message || e);
+    if (!(await ordnerErlaubt(auto.handle, false))) auto.status = "pausiert";
+  }
+  autoMelden();
+}
+if (typeof document !== "undefined") document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden" && auto.timer && auto.db) autoSchreiben(auto.db); });
+
+// ——— Team: gemeinsamer Ordner auf dem Netzlaufwerk ———
+// Jede Person schreibt ihre Änderungen in eine eigene Protokolldatei (protokoll/<id>-<n>.jsonl) und liest
+// die Dateien der anderen alle paar Sekunden. Der Datenstand ergibt sich bei allen gleich aus allen
+// Protokollen in Zeitreihenfolge; ändern zwei Personen dasselbe Feld, gilt die spätere Änderung.
+const TEAM_MARKER = "bauadmin-team.json";
+const TEAM_SEGMENT = 1024 * 1024;
+const TEAM_LOKAL = new Set(["aktiv", "meta"]);
+const TEAM_LABEL = { projekte: "Projekt", positionen: "KV-Position", mutationen: "Mutation", umbuchungen: "Umbuchung", vertraege: "Vertrag", nachtraege: "Nachtrag", rechnungen: "Rechnung", angebote: "Ausschreibung", rapporte: "Rapport", erwartungen: "Erwartung", snapshots: "Kostenstand", beteiligte: "Beteiligte", listen: "Liste", vergauftraege: "Vergütungsauftrag", firmen: "Firma", kataloge: "Katalog", vorlage: "PDF-Vorlage", bkpKatalog: "BKP-Katalog" };
+function istSammlung(w) { return Array.isArray(w) && w.every((x) => x && typeof x === "object" && typeof x.id === "string"); }
+function aenderungenBerechnen(alt, neu) {
+  const ops = [];
+  if (!neu || alt === neu) return ops;
+  alt = alt || {};
+  new Set([...Object.keys(alt), ...Object.keys(neu)]).forEach((k) => {
+    if (TEAM_LOKAL.has(k)) return;
+    const a = alt[k], b = neu[k];
+    if (a === b) return;
+    if (istSammlung(b) && (a === undefined || a === null || istSammlung(a))) {
+      const altMap = new Map((a || []).map((x) => [x.id, x]));
+      const da = new Set();
+      b.forEach((x) => {
+        da.add(x.id);
+        const y = altMap.get(x.id);
+        if (!y) { ops.push({ k, id: x.id, neu: x }); return; }
+        if (y === x) return;
+        const set = {}, weg = [];
+        Object.keys(x).forEach((f) => { if (x[f] !== y[f] && JSON.stringify(x[f]) !== JSON.stringify(y[f])) set[f] = x[f]; });
+        Object.keys(y).forEach((f) => { if (!(f in x)) weg.push(f); });
+        if (Object.keys(set).length || weg.length) ops.push(weg.length ? { k, id: x.id, set, weg } : { k, id: x.id, set });
+      });
+      altMap.forEach((y, id) => { if (!da.has(id)) ops.push({ k, id, del: true }); });
+    } else if (JSON.stringify(a) !== JSON.stringify(b)) ops.push({ k, wert: b === undefined ? null : b });
+  });
+  return ops;
+}
+// Aufeinanderfolgende Änderungen am selben Datensatz zusammenfassen (z.B. Tippen in ein Feld)
+function opsZusammenfassen(ops) {
+  const out = [], wo = new Map();
+  ops.forEach((op) => {
+    const key = op.k + "\u0000" + (op.id || "");
+    const i = wo.get(key);
+    const vor = i !== undefined ? out[i] : null;
+    if (!vor) { wo.set(key, out.length); out.push(op); return; }
+    if ("wert" in op) { out[i] = op; return; }
+    if (op.del) { if (vor.neu) { out[i] = null; wo.delete(key); } else out[i] = op; return; }
+    if (op.neu) { out[i] = null; wo.set(key, out.length); out.push(op); return; }
+    if (vor.del) { wo.set(key, out.length); out.push(op); return; }
+    if (vor.neu) { const x = { ...vor.neu, ...op.set }; (op.weg || []).forEach((f) => delete x[f]); out[i] = { k: op.k, id: op.id, neu: x }; return; }
+    const set = { ...vor.set, ...op.set }; const weg = new Set([...(vor.weg || []).filter((f) => !(f in op.set)), ...(op.weg || [])]);
+    weg.forEach((f) => delete set[f]);
+    out[i] = weg.size ? { k: op.k, id: op.id, set, weg: [...weg] } : { k: op.k, id: op.id, set };
+  });
+  return out.filter(Boolean);
+}
+function teamReplay(eintraege) {
+  const maps = {}, werte = {};
+  const sortiert = [...eintraege].sort((a, b) => (a.t < b.t ? -1 : a.t > b.t ? 1 : a.c < b.c ? -1 : a.c > b.c ? 1 : (a.n || 0) - (b.n || 0)));
+  sortiert.forEach((e) => (e.ops || []).forEach((op) => {
+    if (!op || !op.k || TEAM_LOKAL.has(op.k)) return;
+    if ("wert" in op) { werte[op.k] = op.wert; delete maps[op.k]; return; }
+    const m = maps[op.k] || (maps[op.k] = new Map(istSammlung(werte[op.k]) ? werte[op.k].map((x) => [x.id, x]) : []));
+    if (op.del) m.delete(op.id);
+    else if (op.neu) { m.delete(op.id); m.set(op.id, op.neu); }
+    else { const x = m.get(op.id); if (!x) return; const y = { ...x, ...op.set }; (op.weg || []).forEach((f) => delete y[f]); m.set(op.id, y); }
+  }));
+  const db = { ...werte };
+  Object.entries(maps).forEach(([k, m]) => { db[k] = [...m.values()]; });
+  return db;
+}
+
+const team = {
+  status: "aus", ordner: null, ordnerName: "", name: "", client: "", fehler: "",
+  eintraege: [], bekannt: new Set(), gelesen: {}, reste: {}, dirs: {}, segment: 0, seq: 0,
+  ausstehend: [], belegeAusstehend: [], basis: null, anwesend: [], letzterAbgleich: "", anwesendGeschrieben: 0, anwesendGelesen: 0,
+  uebernehmen: null, dbJetzt: null, hoerer: new Set(), timer: null, poll: null, schreibt: false, liest: false, sperre: null,
+};
+try { team.client = localStorage.getItem("bauadmin:client") || ""; if (!team.client) { team.client = uid() + uid(); localStorage.setItem("bauadmin:client", team.client); } } catch (e) { team.client = uid() + uid(); }
+try { team.name = localStorage.getItem("bauadmin:name") || ""; } catch (e) {}
+function teamMelden() { team.hoerer.forEach((f) => { try { f(); } catch (e) {} }); }
+function teamSchluessel(e) { return `${e.c}|${e.n}|${e.t}`; }
+function teamAktivitaet() {
+  return [...team.eintraege].filter((e) => !e.start).sort((a, b) => (a.t < b.t ? 1 : -1)).slice(0, 15).map((e) => {
+    const z = {}; (e.ops || []).forEach((op) => { const l = TEAM_LABEL[op.k] || op.k; z[l] = (z[l] || 0) + 1; });
+    return { wer: e.u || "?", ich: e.c === team.client, t: e.t, was: Object.entries(z).map(([l, n]) => (n > 1 ? `${n} × ${l}` : l)).join(", ") };
+  });
+}
+function teamInfo() {
+  return { status: team.status, ordnerName: team.ordnerName, name: team.name, fehler: team.fehler, ausstehend: team.ausstehend.length + team.belegeAusstehend.length, anwesend: team.anwesend, letzterAbgleich: team.letzterAbgleich, aktivitaet: team.status === "aus" ? [] : teamAktivitaet() };
+}
+async function teamDir(name) { if (!team.dirs[name]) team.dirs[name] = await team.ordner.getDirectoryHandle(name, { create: true }); return team.dirs[name]; }
+async function teamKonfigSpeichern() {
+  await einstellungSchreiben("team:konfig", team.ordner ? { ordner: team.ordner, ordnerName: team.ordnerName, name: team.name, client: team.client } : undefined);
+  try { localStorage.setItem("bauadmin:name", team.name || ""); } catch (e) {}
+}
+function teamSperreHolen() {
+  if (team.sperre) return team.sperre;
+  if (!navigator.locks || typeof navigator.locks.request !== "function") return (team.sperre = Promise.resolve(true));
+  team.sperre = new Promise((ok) => {
+    navigator.locks.request("bauadmin-team", { ifAvailable: true }, (lock) => { ok(!!lock); return lock ? new Promise(() => {}) : undefined; }).catch(() => ok(true));
+  });
+  team.sperre.then((ok) => { if (!ok) team.sperre = null; });
+  return team.sperre;
+}
+async function teamEinlesen() {
+  const pd = await teamDir("protokoll");
+  const neu = [];
+  for await (const [name, h] of pd.entries()) {
+    if (h.kind !== "file" || !/\.jsonl$/.test(name)) continue;
+    const f = await h.getFile();
+    const ab = team.gelesen[name] || 0;
+    if (f.size <= ab) continue;
+    const text = (team.reste[name] || "") + (await f.slice(ab).text());
+    team.gelesen[name] = f.size;
+    const teile = text.split("\n"); team.reste[name] = teile.pop();
+    teile.forEach((z) => { if (!z.trim()) return; try { const e = JSON.parse(z); if (e && Array.isArray(e.ops) && !team.bekannt.has(teamSchluessel(e))) { team.bekannt.add(teamSchluessel(e)); team.eintraege.push(e); neu.push(e); } } catch (err) {} });
+  }
+  return neu;
+}
+function teamUebernehmen() {
+  const alle = team.ausstehend.length ? [...team.eintraege, { t: "9999", c: team.client, n: 0, ops: team.ausstehend }] : team.eintraege;
+  const roh = teamReplay(alle);
+  if (!roh.projekte || !roh.projekte.length) return false;
+  const jetzt = team.dbJetzt ? team.dbJetzt() || {} : {};
+  const db = normalize({ ...roh, meta: jetzt.meta || {}, aktiv: roh.projekte.some((p) => p.id === jetzt.aktiv) ? jetzt.aktiv : roh.projekte[0].id });
+  team.basis = db;
+  if (team.uebernehmen) team.uebernehmen(db);
+  return true;
+}
+// Wird bei jeder Datenänderung in der App aufgerufen
+function teamLokal(db) {
+  if (team.status === "aus" || !team.basis || db === team.basis) return;
+  const ops = aenderungenBerechnen(team.basis, db);
+  team.basis = db;
+  if (!ops.length) return;
+  team.ausstehend = opsZusammenfassen([...team.ausstehend, ...ops]);
+  einstellungSchreiben("team:ausstehend", team.ausstehend);
+  clearTimeout(team.timer); team.timer = setTimeout(teamSchreiben, 1200);
+  teamMelden();
+}
+async function teamSchreiben() {
+  if (team.status !== "verbunden" || team.schreibt) return;
+  if (!team.ausstehend.length && !team.belegeAusstehend.length) return;
+  team.schreibt = true;
+  const ops = team.ausstehend; team.ausstehend = [];
+  try {
+    if (ops.length) {
+      const e = { t: new Date().toISOString(), c: team.client, u: team.name, n: ++team.seq, ops };
+      const pd = await teamDir("protokoll");
+      const datei = `${team.client}-${team.segment}.jsonl`;
+      const zeile = JSON.stringify(e) + "\n";
+      const vorher = await dateiAnhaengen(pd, datei, zeile);
+      if ((team.gelesen[datei] || 0) === vorher) team.gelesen[datei] = vorher + new TextEncoder().encode(zeile).length;
+      team.bekannt.add(teamSchluessel(e)); team.eintraege.push(e);
+      if ((team.gelesen[datei] || 0) > TEAM_SEGMENT) team.segment++;
+    }
+    await einstellungSchreiben("team:ausstehend", team.ausstehend);
+    await teamBelegeNachreichen();
+    team.fehler = "";
+  } catch (err) {
+    team.ausstehend = opsZusammenfassen([...ops, ...team.ausstehend]);
+    einstellungSchreiben("team:ausstehend", team.ausstehend);
+    team.fehler = "Der Team-Ordner ist nicht erreichbar — deine Änderungen werden gesammelt und später übertragen. (" + (err.message || err) + ")";
+  }
+  team.schreibt = false; teamMelden();
+  if (team.ausstehend.length) { clearTimeout(team.timer); team.timer = setTimeout(teamSchreiben, team.fehler ? 8000 : 1200); }
+}
+async function teamAnwesenheit() {
+  const jetzt = Date.now();
+  if (jetzt - team.anwesendGeschrieben > 30000) {
+    team.anwesendGeschrieben = jetzt;
+    try { await dateiSchreiben(await teamDir("anwesend"), `${team.client}.json`, JSON.stringify({ c: team.client, name: team.name, zeit: new Date().toISOString() })); } catch (e) {}
+  }
+  if (jetzt - team.anwesendGelesen > 12000) {
+    team.anwesendGelesen = jetzt;
+    const liste = [];
+    try {
+      for await (const [name, h] of (await teamDir("anwesend")).entries()) {
+        if (h.kind !== "file" || !/\.json$/.test(name)) continue;
+        try { const x = JSON.parse(await (await h.getFile()).text()); if (x && x.zeit && jetzt - new Date(x.zeit).getTime() < 100000) liste.push({ name: x.name || "?", ich: x.c === team.client }); } catch (e) {}
+      }
+    } catch (e) {}
+    team.anwesend = liste.sort((a, b) => (a.ich ? -1 : b.ich ? 1 : a.name.localeCompare(b.name)));
+  }
+}
+async function teamAbgleichen() {
+  if (team.status !== "verbunden" || team.liest) return;
+  team.liest = true;
+  try {
+    const neu = await teamEinlesen();
+    if (neu.some((e) => e.c !== team.client)) teamUebernehmen();
+    await teamAnwesenheit();
+    team.letzterAbgleich = new Date().toISOString();
+    if (team.fehler && !team.ausstehend.length) team.fehler = "";
+  } catch (err) {
+    team.fehler = "Der Team-Ordner ist nicht erreichbar (" + (err.message || err) + "). Deine Änderungen werden gesammelt.";
+  }
+  team.liest = false; teamMelden();
+}
+async function teamVerbinden(fragen) {
+  if (!team.ordner) return false;
+  if (!(await ordnerErlaubt(team.ordner, fragen))) { team.status = "getrennt"; team.fehler = ""; teamMelden(); return false; }
+  if (!(await teamSperreHolen())) { team.status = "getrennt"; team.fehler = "BauAdmin ist in einem anderen Fenster bereits mit dem Team verbunden. Arbeite bitte in einem einzigen Fenster."; teamMelden(); return false; }
+  team.status = "verbinde"; teamMelden();
+  try {
+    if (!(await dateiLesenText(team.ordner, TEAM_MARKER))) throw new Error("Im Ordner fehlt die Datei «bauadmin-team.json».");
+    Object.assign(team, { eintraege: [], bekannt: new Set(), gelesen: {}, reste: {}, dirs: {}, anwesendGeschrieben: 0, anwesendGelesen: 0 });
+    await teamEinlesen();
+    const eigene = Object.keys(team.gelesen).map((n) => { const m = new RegExp("^" + team.client + "-(\\d+)\\.jsonl$").exec(n); return m ? +m[1] : -1; });
+    team.segment = Math.max(0, ...eigene);
+    if ((team.gelesen[`${team.client}-${team.segment}.jsonl`] || 0) > TEAM_SEGMENT) team.segment++;
+    team.seq = team.eintraege.filter((e) => e.c === team.client).reduce((m, e) => Math.max(m, e.n || 0), 0);
+    team.status = "verbunden"; team.fehler = "";
+    teamUebernehmen();
+    await teamAnwesenheit();
+    team.letzterAbgleich = new Date().toISOString();
+    clearInterval(team.poll); team.poll = setInterval(teamAbgleichen, 4000);
+    teamSchreiben();
+  } catch (err) { team.status = "getrennt"; team.fehler = "Verbindung zum Team-Ordner fehlgeschlagen: " + (err.message || err); }
+  teamMelden();
+  return team.status === "verbunden";
+}
+async function teamStart(db) {
+  const k = await einstellungLesen("team:konfig");
+  if (!k || !k.ordner) return;
+  Object.assign(team, { ordner: k.ordner, ordnerName: k.ordnerName || k.ordner.name || "", name: k.name || team.name, client: k.client || team.client });
+  team.ausstehend = (await einstellungLesen("team:ausstehend")) || [];
+  team.belegeAusstehend = (await einstellungLesen("team:belege")) || [];
+  team.basis = db; team.status = "getrennt"; teamMelden();
+  await teamVerbinden(false);
+}
+async function teamEinrichten(name, db) {
+  const h = await ordnerWaehlen("bauadmin-team");
+  if (await dateiLesenText(h, TEAM_MARKER)) throw new Error("In diesem Ordner gibt es bereits ein BauAdmin-Team. Wähle «Team beitreten».");
+  if (!(await ordnerErlaubt(h, true))) throw new Error("Ohne Schreibrecht auf den Ordner geht es nicht.");
+  await dateiSchreiben(h, TEAM_MARKER, JSON.stringify({ format: "bauadmin-team", version: 1, erstellt: new Date().toISOString(), von: name }, null, 2));
+  const pd = await h.getDirectoryHandle("protokoll", { create: true });
+  const start = { t: new Date().toISOString(), c: team.client, u: name, n: 1, start: true, ops: aenderungenBerechnen({}, db) };
+  await dateiAnhaengen(pd, `${team.client}-0.jsonl`, JSON.stringify(start) + "\n");
+  const bd = await h.getDirectoryHandle("belege", { create: true });
+  for (const [id, blob] of await alleBelegeLesen()) { try { await dateiSchreiben(bd, belegDateiname(id, blob.type), blob); } catch (e) {} }
+  Object.assign(team, { ordner: h, ordnerName: h.name, name, ausstehend: [], belegeAusstehend: [], basis: db });
+  await teamKonfigSpeichern(); await einstellungSchreiben("team:ausstehend", []); await einstellungSchreiben("team:belege", []);
+  return teamVerbinden(false);
+}
+async function teamBeitreten(name) {
+  const h = await ordnerWaehlen("bauadmin-team");
+  if (!(await dateiLesenText(h, TEAM_MARKER))) throw new Error("Dieser Ordner ist kein BauAdmin-Team-Ordner. Wähle den Ordner, in dem die Datei «bauadmin-team.json» liegt.");
+  Object.assign(team, { ordner: h, ordnerName: h.name, name, ausstehend: [], belegeAusstehend: [], basis: null });
+  await teamKonfigSpeichern(); await einstellungSchreiben("team:ausstehend", []); await einstellungSchreiben("team:belege", []);
+  return teamVerbinden(false);
+}
+async function teamTrennen() {
+  clearInterval(team.poll); clearTimeout(team.timer);
+  if (team.status === "verbunden") { try { await teamSchreiben(); } catch (e) {} try { (await teamDir("anwesend")).removeEntry(`${team.client}.json`); } catch (e) {} }
+  Object.assign(team, { status: "aus", ordner: null, ordnerName: "", fehler: "", eintraege: [], bekannt: new Set(), ausstehend: [], belegeAusstehend: [], basis: null, anwesend: [], dirs: {} });
+  await teamKonfigSpeichern(); await einstellungSchreiben("team:ausstehend", undefined); await einstellungSchreiben("team:belege", undefined);
+  teamMelden();
+}
+async function teamNameAendern(name) { team.name = name; await teamKonfigSpeichern(); team.anwesendGeschrieben = 0; teamMelden(); }
+if (typeof document !== "undefined") document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") teamAbgleichen(); else if (team.ausstehend.length) teamSchreiben(); });
+
+// Belege im Team-Ordner (belege/<id>.pdf) — lokal zwischengespeichert
+function belegDateiname(id, typ) { return id + (/pdf/.test(typ || "") ? ".pdf" : /png/.test(typ || "") ? ".png" : /jpe?g/.test(typ || "") ? ".jpg" : ".bin"); }
+const BELEG_ENDUNGEN = [["pdf", "application/pdf"], ["png", "image/png"], ["jpg", "image/jpeg"], ["bin", "application/octet-stream"]];
+async function teamBelegHochladen(id, blob) {
+  if (team.status === "aus") return;
+  try {
+    if (team.status !== "verbunden") throw new Error("nicht verbunden");
+    await dateiSchreiben(await teamDir("belege"), belegDateiname(id, blob.type), blob);
+  } catch (e) {
+    if (!team.belegeAusstehend.includes(id)) { team.belegeAusstehend.push(id); einstellungSchreiben("team:belege", team.belegeAusstehend); teamMelden(); }
+  }
+}
+async function teamBelegeNachreichen() {
+  for (const id of [...team.belegeAusstehend]) {
+    const blob = await belegLadenLokal(id);
+    if (blob) await dateiSchreiben(await teamDir("belege"), belegDateiname(id, blob.type), blob);
+    team.belegeAusstehend = team.belegeAusstehend.filter((x) => x !== id);
+    await einstellungSchreiben("team:belege", team.belegeAusstehend);
+  }
+}
+async function teamBelegHolen(id) {
+  if (team.status !== "verbunden") return null;
+  const bd = await teamDir("belege");
+  for (const [ext, typ] of BELEG_ENDUNGEN) {
+    try { const f = await (await bd.getFileHandle(`${id}.${ext}`)).getFile(); return new Blob([await f.arrayBuffer()], { type: typ }); } catch (e) {}
+  }
+  return null;
+}
+async function teamBelegLoeschen(id) {
+  if (team.status !== "verbunden") return;
+  try { const bd = await teamDir("belege"); for (const [ext] of BELEG_ENDUNGEN) { try { await bd.removeEntry(`${id}.${ext}`); } catch (e) {} } } catch (e) {}
+}
+async function teamAlleBelege(schon) {
+  const out = [];
+  if (team.status !== "verbunden") return out;
+  try {
+    for await (const [name, h] of (await teamDir("belege")).entries()) {
+      const m = /^(.+)\.(pdf|png|jpg|bin)$/.exec(name);
+      if (h.kind !== "file" || !m || schon.has(m[1])) continue;
+      const f = await h.getFile();
+      out.push([m[1], new Blob([await f.arrayBuffer()], { type: (BELEG_ENDUNGEN.find((x) => x[0] === m[2]) || [])[1] })]);
+    }
+  } catch (e) {}
+  return out;
+}
+
 const SICHERUNG_FORMAT = "bauadmin-sicherung";
 function blobZuBase64(blob) {
   return new Promise((resolve, reject) => {
@@ -2228,7 +2624,9 @@ function belegeErsetzen(eintraege) {
 async function sicherungErstellen(db) {
   const dateien = {};
   let bytes = 0;
-  for (const [id, wert] of await alleBelegeLesen()) {
+  const lokal = await alleBelegeLesen();
+  const geteilt = await teamAlleBelege(new Set(lokal.map(([id]) => id)));
+  for (const [id, wert] of [...lokal, ...geteilt]) {
     if (!(wert instanceof Blob)) continue;
     dateien[id] = { typ: wert.type || "application/octet-stream", daten: await blobZuBase64(wert) };
     bytes += wert.size;
@@ -2246,6 +2644,7 @@ function sicherungPruefen(text) {
 async function sicherungEinspielen(x) {
   const eintraege = Object.entries(x.dateien || {}).map(([id, f]) => [id, base64ZuBlob(f.daten, f.typ)]);
   await belegeErsetzen(eintraege);
+  eintraege.forEach(([id, blob]) => teamBelegHochladen(id, blob));
   return normalize(x.db);
 }
 function tageSeit(iso) {
@@ -2283,7 +2682,7 @@ function SicherungView({ db, dispatch }) {
       const x = sicherungPruefen(await datei.text());
       const p = (x.db.projekte || []).length, f = Object.keys(x.dateien || {}).length;
       const vom = x.erstellt ? new Date(x.erstellt).toLocaleString("de-CH") : "unbekannt";
-      if (!window.confirm(`Sicherung vom ${vom} einlesen?\n\n${p} Projekte, ${f} Dateien.\n\nAlle Daten, die jetzt in diesem Browser stehen, werden dadurch ersetzt. Exportiere vorher eine Sicherung des aktuellen Stands, falls du ihn behalten willst.`)) { setBusy(""); return; }
+      if (!window.confirm(`Sicherung vom ${vom} einlesen?\n\n${p} Projekte, ${f} Dateien.\n\nAlle Daten, die jetzt in diesem Browser stehen, werden dadurch ersetzt.${team.status !== "aus" ? " Da du mit einem Team verbunden bist, gilt das für das ganze Team." : ""} Exportiere vorher eine Sicherung des aktuellen Stands, falls du ihn behalten willst.`)) { setBusy(""); return; }
       const neu = await sicherungEinspielen(x);
       dispatch({ type: "load", db: neu });
       setMeldung({ art: "ok", text: `Sicherung vom ${vom} eingelesen: ${p} Projekte und ${f} Dateien wiederhergestellt.` });
@@ -2311,6 +2710,8 @@ function SicherungView({ db, dispatch }) {
         <button className={btnPrimary} disabled={!!busy} onClick={exportieren}>{busy === "export" ? "erstellt…" : "Sicherung jetzt exportieren"}</button>
       </div>
 
+      <AutoSicherungKarte db={db} />
+
       <div className={`${card} p-4 space-y-3`}>
         <div className="font-medium">Sicherung einlesen</div>
         <p className="text-sm text-stone-600">Stellt einen gesicherten Stand wieder her — auch auf einem anderen Computer oder in einem anderen Browser. <strong>Der aktuelle Stand in diesem Browser wird dabei ersetzt.</strong></p>
@@ -2321,8 +2722,125 @@ function SicherungView({ db, dispatch }) {
       {meldung ? <div className={`text-sm rounded-lg px-3 py-2.5 ${meldung.art === "ok" ? "bg-emerald-50 text-emerald-800 border border-emerald-200" : "bg-red-50 text-red-700 border border-red-200"}`}>{meldung.text}</div> : null}
 
       <div className="text-xs text-stone-500 space-y-1">
-        <p><strong>Wo liegen die Daten?</strong> Ausschliesslich in diesem Browser auf diesem Computer. Die lokale Datei <em>bauadmin.html</em> und der geteilte Link haben je einen eigenen, getrennten Speicher.</p>
+        <p><strong>Wo liegen die Daten?</strong> In diesem Browser auf diesem Computer{team.status !== "aus" ? " und im Team-Ordner" : ""}. Die lokale Datei <em>bauadmin.html</em> und der geteilte Link haben je einen eigenen, getrennten Speicher.</p>
         <p><strong>Empfehlung:</strong> Mindestens wöchentlich sichern und die Datei ausserhalb des Computers ablegen. Nach sieben Tagen ohne Sicherung erinnert dich die App.</p>
+      </div>
+    </div>
+  );
+}
+
+function useTeamInfo() {
+  const [info, setInfo] = useState(teamInfo);
+  useEffect(() => { const f = () => setInfo(teamInfo()); team.hoerer.add(f); const iv = setInterval(f, 15000); return () => { team.hoerer.delete(f); clearInterval(iv); }; }, []);
+  return info;
+}
+function useAutoInfo() {
+  const [info, setInfo] = useState(autoInfo);
+  useEffect(() => { const f = () => setInfo(autoInfo()); auto.hoerer.add(f); return () => auto.hoerer.delete(f); }, []);
+  return info;
+}
+function OrdnerNichtMoeglich() {
+  return <div className="text-sm rounded-lg px-3 py-2.5 bg-stone-100 text-stone-600">Diese Funktion braucht direkten Zugriff auf einen Ordner. Sie steht nur in der <strong>lokal geöffneten bauadmin.html</strong> mit <strong>Chrome oder Edge</strong> zur Verfügung — nicht im geteilten Link und nicht in Safari oder Firefox.</div>;
+}
+function AutoSicherungKarte({ db }) {
+  const a = useAutoInfo();
+  const [busy, setBusy] = useState(false);
+  const [fehler, setFehler] = useState("");
+  const los = async (fn) => { setBusy(true); setFehler(""); try { await fn(); } catch (e) { if (e?.name !== "AbortError") setFehler(e.message || String(e)); } setBusy(false); };
+  return (
+    <div className={`${card} p-4 space-y-3`}>
+      <div className="font-medium">Automatische Sicherung in einen Ordner</div>
+      <p className="text-sm text-stone-600">BauAdmin schreibt nach jeder Änderung (spätestens nach 1½ Minuten) eine Sicherungsdatei in einen Ordner deiner Wahl — am besten auf ein Netzlaufwerk oder einen OneDrive-Ordner. Pro Tag entsteht eine Datei; Dateien älter als {AUTO_TAGE} Tage werden entfernt.</p>
+      {!ORDNER_MOEGLICH ? <OrdnerNichtMoeglich /> : a.status === "aus" ? (
+        <button className={btnPrimary} disabled={busy} onClick={() => los(() => autoEinrichten(db))}>{busy ? "richtet ein…" : "Ordner wählen und einschalten"}</button>
+      ) : (
+        <div className="space-y-2">
+          <div className={`text-sm rounded-lg px-3 py-2 ${a.status === "aktiv" && !a.fehler ? "bg-emerald-50 text-emerald-800" : "bg-amber-50 text-amber-800"}`}>
+            {a.status === "aktiv" ? <>Eingeschaltet · Ordner <strong>{a.name}</strong>{a.letzte ? <> · zuletzt gesichert {zeitVor(a.letzte)} ({new Date(a.letzte).toLocaleString("de-CH")})</> : null}</> : <>Pausiert — der Browser braucht deine Erlaubnis, wieder in den Ordner <strong>{a.name}</strong> zu schreiben.</>}
+            {a.fehler ? <div className="mt-1">{a.fehler}</div> : null}
+          </div>
+          <div className="flex gap-2 flex-wrap">
+            {a.status === "pausiert" && <button className={btnPrimary} disabled={busy} onClick={() => los(autoFortsetzen)}>Fortsetzen</button>}
+            {a.status === "aktiv" && <button className={btnGhost} disabled={busy} onClick={() => los(() => autoSchreiben(db))}>{busy ? "sichert…" : "Jetzt sichern"}</button>}
+            <button className={btnGhost} disabled={busy} onClick={() => los(() => autoEinrichten(db))}>Anderen Ordner wählen</button>
+            <button className={`${btnGhost} text-red-700`} disabled={busy} onClick={() => los(autoAus)}>Ausschalten</button>
+          </div>
+        </div>
+      )}
+      {fehler && <div className="text-sm text-red-700">{fehler}</div>}
+    </div>
+  );
+}
+
+function TeamView({ db }) {
+  const t = useTeamInfo();
+  const [name, setName] = useState(t.name || "");
+  const [busy, setBusy] = useState("");
+  const [fehler, setFehler] = useState("");
+  const los = async (was, fn) => { setBusy(was); setFehler(""); try { await fn(); } catch (e) { if (e?.name !== "AbortError") setFehler(e.message || String(e)); } setBusy(""); };
+  const nameOk = name.trim().length >= 2;
+  if (!ORDNER_MOEGLICH) return <div className="space-y-4 max-w-3xl"><OrdnerNichtMoeglich /></div>;
+  return (
+    <div className="space-y-4 max-w-3xl">
+      {t.status === "aus" ? (<>
+        <div className={`${card} p-4 space-y-3`}>
+          <div className="font-medium">Gemeinsam arbeiten über einen Ordner</div>
+          <p className="text-sm text-stone-600">Alle im Team wählen denselben Ordner auf dem Netzlaufwerk. Jede Person schreibt ihre Änderungen in eine eigene Datei darin; BauAdmin liest die Änderungen der anderen alle paar Sekunden ein. So kann niemand die Arbeit eines anderen überschreiben. Ändern zwei Personen gleichzeitig <em>dasselbe Feld</em>, gilt die spätere Änderung.</p>
+          <Field label="Dein Name (erscheint bei deinen Änderungen)"><input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} placeholder="z.B. Raffael Luterbach" /></Field>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className={`${card} p-4 space-y-2`}>
+            <div className="font-medium">Neues Team einrichten</div>
+            <p className="text-sm text-stone-600">Wähle einen <strong>leeren Ordner</strong> auf dem Netzlaufwerk. Deine Daten in diesem Browser werden zum gemeinsamen Startstand.</p>
+            <button className={btnPrimary} disabled={!nameOk || !!busy} onClick={() => los("einrichten", () => teamEinrichten(name.trim(), db))}>{busy === "einrichten" ? "richtet ein…" : "Ordner wählen und einrichten"}</button>
+          </div>
+          <div className={`${card} p-4 space-y-2`}>
+            <div className="font-medium">Bestehendem Team beitreten</div>
+            <p className="text-sm text-stone-600">Wähle den Team-Ordner, den eine Kollegin oder ein Kollege eingerichtet hat. <strong>Deine Daten in diesem Browser werden durch den Team-Stand ersetzt.</strong></p>
+            <button className={btnPrimary} disabled={!nameOk || !!busy} onClick={() => { if (window.confirm("Dem Team beitreten?\n\nDie Daten in diesem Browser werden durch den gemeinsamen Stand ersetzt. Exportiere vorher eine Sicherung, falls du etwas davon behalten willst.")) los("beitreten", () => teamBeitreten(name.trim())); }}>{busy === "beitreten" ? "verbindet…" : "Ordner wählen und beitreten"}</button>
+          </div>
+        </div>
+        {!nameOk && <p className="text-xs text-stone-500">Bitte zuerst deinen Namen eintragen.</p>}
+      </>) : (<>
+        <div className={`${card} p-4 space-y-3`}>
+          <div className="flex items-start justify-between gap-3 flex-wrap">
+            <div>
+              <div className="font-medium">Team-Ordner <span className="font-semibold">{t.ordnerName || "–"}</span></div>
+              <div className="text-sm text-stone-500">Angemeldet als <strong>{t.name || "?"}</strong>{t.letzterAbgleich ? ` · abgeglichen ${zeitVor(t.letzterAbgleich)}` : ""}</div>
+            </div>
+            <span className={`text-xs rounded-full px-2.5 py-1 font-medium ${t.status === "verbunden" && !t.fehler ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>{t.status === "verbunden" ? (t.fehler ? "Verbindungsproblem" : "verbunden") : t.status === "verbinde" ? "verbindet…" : "getrennt"}</span>
+          </div>
+          {t.fehler && <div className="text-sm rounded-lg px-3 py-2 bg-amber-50 text-amber-800">{t.fehler}</div>}
+          {t.ausstehend > 0 && <div className="text-sm text-stone-600">{t.ausstehend} Änderung{t.ausstehend === 1 ? "" : "en"} warten auf die Übertragung.</div>}
+          <div className="flex gap-2 flex-wrap">
+            {t.status !== "verbunden" && <button className={btnPrimary} disabled={!!busy} onClick={() => los("verbinden", () => teamVerbinden(true))}>{busy === "verbinden" ? "verbindet…" : "Wieder verbinden"}</button>}
+            {t.status === "verbunden" && <button className={btnGhost} disabled={!!busy} onClick={() => los("abgleich", async () => { await teamSchreiben(); team.anwesendGelesen = 0; await teamAbgleichen(); })}>Jetzt abgleichen</button>}
+            <button className={`${btnGhost} text-red-700`} disabled={!!busy} onClick={() => { if (window.confirm("Die Verbindung zum Team-Ordner trennen?\n\nDie Daten bleiben in diesem Browser, werden aber nicht mehr abgeglichen. Später kannst du wieder beitreten.")) los("trennen", teamTrennen); }}>Verbindung trennen</button>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-[220px_1fr] gap-4">
+          <div className={`${card} p-4`}>
+            <div className="font-medium mb-2">Gerade online</div>
+            {!t.anwesend.length ? <p className="text-sm text-stone-400">–</p> : <ul className="space-y-1 text-sm">{t.anwesend.map((a, i) => <li key={i} className="flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-emerald-500" />{a.name}{a.ich ? <span className="text-stone-400">(du)</span> : null}</li>)}</ul>}
+          </div>
+          <div className={`${card} p-4`}>
+            <div className="font-medium mb-2">Letzte Änderungen</div>
+            {!t.aktivitaet.length ? <p className="text-sm text-stone-400">Noch keine Änderungen seit der Einrichtung.</p> : (
+              <ul className="divide-y divide-stone-100 text-sm">{t.aktivitaet.map((x, i) => (
+                <li key={i} className="py-1.5 flex gap-3"><span className="w-28 shrink-0 text-stone-500">{x.ich ? "du" : x.wer}</span><span className="flex-1 min-w-0">{x.was}</span><span className="text-stone-400 shrink-0 text-xs">{zeitVor(x.t)}</span></li>
+              ))}</ul>
+            )}
+          </div>
+        </div>
+        <div className={`${card} p-4 space-y-2`}>
+          <Field label="Dein Name"><div className="flex gap-2"><input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} /><button className={btnGhost} disabled={!nameOk || name.trim() === t.name} onClick={() => teamNameAendern(name.trim())}>Übernehmen</button></div></Field>
+        </div>
+      </>)}
+      {fehler && <div className="text-sm rounded-lg px-3 py-2.5 bg-red-50 text-red-700 border border-red-200">{fehler}</div>}
+      <div className="text-xs text-stone-500 space-y-1">
+        <p><strong>Voraussetzungen:</strong> lokal geöffnete bauadmin.html in Chrome oder Edge, Schreibrecht auf den Ordner für alle. Am zuverlässigsten ist ein Netzlaufwerk im Büro; OneDrive/Dropbox funktionieren, übertragen aber mit Verzögerung.</p>
+        <p><strong>Ohne Verbindung</strong> (z.B. unterwegs) arbeitest du normal weiter — die Änderungen werden gesammelt und beim nächsten Verbinden übertragen.</p>
+        <p><strong>Grenzen:</strong> Mehrere Personen in derselben Ausschreibung/demselben LV gleichzeitig: pro Ausschreibung gilt die jeweils letzte Änderung der Positionsliste. Eine Sicherung einlesen ersetzt die Daten für das ganze Team.</p>
       </div>
     </div>
   );
@@ -2699,10 +3217,18 @@ function App() {
   const setView = (v) => { setViewRoh(v); setMenuOffen(false); try { window.scrollTo(0, 0); } catch (e) {} };
   const firstSave = useRef(true);
 
+  // Team-Abgleich und automatische Sicherung brauchen Zugriff auf den aktuellen Stand
+  const dbRef = useRef(db); dbRef.current = db;
+  const teamStand = useTeamInfo();
+  const autoStand = useAutoInfo();
   useEffect(() => {
-    loadDB().then((stored) => {
-      if (stored && stored.projekte && stored.projekte.length && stored.positionen && stored.positionen.length) dispatch({ type: "load", db: normalize(stored) });
+    team.dbJetzt = () => dbRef.current;
+    team.uebernehmen = (neu) => dispatch({ type: "load", db: neu });
+    loadDB().then(async (stored) => {
+      let start = dbRef.current;
+      if (stored && stored.projekte && stored.projekte.length && stored.positionen && stored.positionen.length) { start = normalize(stored); dispatch({ type: "load", db: start }); }
       setLoaded(true);
+      if (ORDNER_MOEGLICH) { autoStart(); teamStart(start); }
     });
   }, []);
   // Speichern darf nie still scheitern — ein Fehler bleibt sichtbar, bis ein Speichern wieder gelingt
@@ -2711,12 +3237,14 @@ function App() {
     if (!loaded) return;
     if (firstSave.current) { firstSave.current = false; return; }
     saveDB(db).then(() => setSpeicherFehler("")).catch((e) => setSpeicherFehler(e.message || "Speichern fehlgeschlagen."));
+    teamLokal(db);
+    autoVormerken(db);
   }, [db, loaded]);
 
   // Erinnerung, wenn seit mehr als 7 Tagen keine Sicherung exportiert wurde (pro Sitzung ausblendbar)
   const [erinnerungWeg, setErinnerungWeg] = useState(() => { try { return sessionStorage.getItem("bauadmin:erinnerung") === "weg"; } catch (e) { return false; } });
-  const sicherungTage = tageSeit(db.meta?.letzteSicherung);
-  const sicherungFaellig = loaded && !erinnerungWeg && view !== "sicherung" && (sicherungTage === null || sicherungTage > 7);
+  const sicherungTage = autoStand.status === "aktiv" && autoStand.letzte ? tageSeit(autoStand.letzte) : tageSeit(db.meta?.letzteSicherung);
+  const sicherungFaellig = loaded && !erinnerungWeg && view !== "sicherung" && autoStand.status === "aus" && (sicherungTage === null || sicherungTage > 7);
   function erinnerungAusblenden() { setErinnerungWeg(true); try { sessionStorage.setItem("bauadmin:erinnerung", "weg"); } catch (e) {} }
 
   const [hilfe, setHilfe] = useState(() => { try { return localStorage.getItem("bauadmin:hilfe") !== "0"; } catch (e) { return true; } });
@@ -2731,7 +3259,7 @@ function App() {
   const ks = useKostenStand(d, projekt);
   const rollen = projektRollen(db, projekt);
 
-  const navGlobal = [["adressstamm", "Adressstamm"], ["vorlage", "PDF-Vorlage"], ["sicherung", "Sicherung"]];
+  const navGlobal = [["adressstamm", "Adressstamm"], ["vorlage", "PDF-Vorlage"], ["sicherung", "Sicherung"], ["team", "Team"]];
   const nav = [
     ["projekt", "Projekt"], ["beteiligte", "Beteiligte"], ["listen", "Listen"],
     ["dashboard", "Kostenübersicht"], ["kv", "KV / BKP-Positionen"], ["mutationen", "Mutationen"], ["umbuchungen", "Umbuchungen"],
@@ -2761,6 +3289,24 @@ function App() {
           </div>
         </div>
       ) : null}
+      {teamStand.status === "getrennt" && view !== "team" ? (
+        <div className="bg-sky-100 text-sky-900 border-b border-sky-300 text-sm print:hidden">
+          <div className="max-w-[1480px] mx-auto px-3 sm:px-5 py-1.5 sm:py-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+            <strong>Team-Ordner nicht verbunden.</strong>
+            <span className="hidden md:inline flex-1 min-w-0">{teamStand.fehler || "Deine Änderungen werden gesammelt und beim Verbinden übertragen."}{teamStand.ausstehend ? ` (${teamStand.ausstehend} warten)` : ""}</span>
+            <button className="ml-auto md:ml-0 bg-sky-700 text-white rounded px-3 py-0.5 sm:py-1 font-medium" onClick={() => teamVerbinden(true)}>Verbinden</button>
+          </div>
+        </div>
+      ) : null}
+      {autoStand.status === "pausiert" && view !== "sicherung" ? (
+        <div className="bg-amber-100 text-amber-900 border-b border-amber-300 text-sm print:hidden">
+          <div className="max-w-[1480px] mx-auto px-3 sm:px-5 py-1.5 sm:py-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+            <strong>Automatische Sicherung pausiert.</strong>
+            <span className="hidden md:inline flex-1 min-w-0">Der Browser fragt nach jedem Neustart einmal nach der Erlaubnis für den Ordner «{autoStand.name}».</span>
+            <button className="ml-auto md:ml-0 bg-amber-700 text-white rounded px-3 py-0.5 sm:py-1 font-medium" onClick={autoFortsetzen}>Fortsetzen</button>
+          </div>
+        </div>
+      ) : null}
       <header className="bg-stone-900 text-white print:hidden sticky top-0 z-30 lg:static">
         <div className="max-w-[1480px] mx-auto px-3 sm:px-5 py-2 sm:py-3 flex items-center justify-between gap-2 sm:gap-3">
           <div className="flex items-center gap-3 shrink-0">
@@ -2768,6 +3314,12 @@ function App() {
             <div className="hidden sm:block"><div className="font-semibold leading-tight">BauAdmin</div><div className="text-[11px] text-stone-400 leading-tight">Kostenkontrolle nach BKP</div></div>
           </div>
           <div className="flex items-center gap-2 min-w-0">
+            {teamStand.status !== "aus" && (
+              <button className={`shrink-0 h-8 px-2.5 rounded-md text-xs font-medium ${teamStand.status === "verbunden" && !teamStand.fehler ? "bg-emerald-800/60 hover:bg-emerald-800 text-emerald-50" : "bg-amber-600 hover:bg-amber-700 text-white"}`}
+                title={teamStand.status === "verbunden" ? `Team-Ordner «${teamStand.ordnerName}» · online: ${teamStand.anwesend.map((a) => a.name).join(", ")}` : "Team-Ordner nicht verbunden"} onClick={() => setView("team")}>
+                👥<span className="hidden sm:inline"> {teamStand.status !== "verbunden" ? "getrennt" : teamStand.fehler ? "nicht erreichbar" : `${Math.max(1, teamStand.anwesend.length)} online`}</span>{teamStand.ausstehend ? " ⟳" : ""}
+              </button>
+            )}
             <select className="bg-stone-800 border border-stone-700 rounded-md px-2 sm:px-3 py-1.5 text-sm min-w-0 max-w-[46vw] sm:max-w-none" value={db.aktiv} onChange={(e) => dispatch({ type: "setAktiv", id: e.target.value })}>
               {db.projekte.map((pr) => <option key={pr.id} value={pr.id}>{pr.name}</option>)}
             </select>
@@ -2807,6 +3359,7 @@ function App() {
           {view === "projekt" && <ProjektView projekt={projekt} dispatch={dispatch} db={db} />}
           {view === "adressstamm" && <AdressstammView firmen={firmen} db={db} dispatch={dispatch} />}
           {view === "sicherung" && <SicherungView db={db} dispatch={dispatch} />}
+          {view === "team" && <TeamView db={db} />}
           {view === "vorlage" && <VorlageEditor wert={db.vorlage} titel="Vorlage für alle PDF-Dokumente" hinweis="Logo, Kopf- und Fusszeilen gelten projektübergreifend. Im Reiter «Projekt» lässt sich für ein einzelnes Projekt eine abweichende Vorlage setzen." onAendern={(v) => dispatch({ type: "setVorlage", vorlage: v })} />}
           {view === "beteiligte" && <ProjektBeteiligteView db={db} dispatch={dispatch} projektId={db.aktiv} firmen={firmen} />}
           {view === "listen" && <ListenView db={db} dispatch={dispatch} projektId={db.aktiv} projekt={projekt} d={d} />}
@@ -2940,7 +3493,14 @@ function ProjektNeu({ dispatch, setView }) {
 function ProjektView({ projekt, dispatch, db }) {
   const [f, setF] = useState({ ...projekt });
   const [saved, setSaved] = useState(false);
-  useEffect(() => { setF({ ...projekt }); setSaved(false); }, [projekt?.id]);
+  // Änderungen von aussen (z.B. aus dem Team) übernehmen, solange hier nichts ungespeichert ist
+  const stammRef = useRef(projekt);
+  useEffect(() => {
+    const alt = stammRef.current;
+    stammRef.current = projekt;
+    if (projekt?.id !== alt?.id) { setF({ ...projekt }); setSaved(false); return; }
+    setF((jetzt) => (JSON.stringify(jetzt) === JSON.stringify({ ...alt }) ? { ...projekt } : jetzt));
+  }, [projekt]);
   const wSum = parseBetrag(f.gewichtPreis) + parseBetrag(f.gewichtReferenzen) + parseBetrag(f.gewichtLehrlinge);
   function save() {
     dispatch({ type: "update", coll: "projekte", id: projekt.id, patch: { ...f, mwstSatz: parseBetrag(f.mwstSatz), teuerungsReserve: parseBetrag(f.teuerungsReserve), gewichtPreis: parseBetrag(f.gewichtPreis), gewichtReferenzen: parseBetrag(f.gewichtReferenzen), gewichtLehrlinge: parseBetrag(f.gewichtLehrlinge) } });
