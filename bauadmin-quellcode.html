@@ -461,12 +461,17 @@ async function belegLoeschen(id) { await belegTx("readwrite", (s) => s.delete(id
 const logoSpeichern = belegSpeichern;
 const logoLaden = belegLaden;
 function normalize(db) {
-  db.projekte = db.projekte.map((p) => ({ mwstSatz: 8.1, teuerungsReserve: 0, strasse: "", plzOrt: "", bauherrAdresse: "", bauleitung: "", gewichtPreis: 70, gewichtReferenzen: 20, gewichtLehrlinge: 10, ...p, kond: { ...LEERE_KOND, ...(p.kond || {}) } }));
+  db.projekte = db.projekte.map((p) => ({ mwstSatz: 8.1, teuerungsReserve: 0, strasse: "", plzOrt: "", bauherrAdresse: "", bauleitung: "", gewichtPreis: 70, gewichtReferenzen: 20, gewichtLehrlinge: 10, gf: 0, gv: 0, ...p, kond: { ...LEERE_KOND, ...(p.kond || {}) } }));
   db.positionen = (db.positionen || []).map((p) => ({ parentId: null, notiz: "", ...p }));
   ["mutationen", "umbuchungen", "vertraege", "nachtraege", "rechnungen", "angebote", "rapporte", "erwartungen", "snapshots", "beteiligte", "listen", "vergauftraege"].forEach((c) => { if (!db[c]) db[c] = []; });
   if (!db.firmen) db.firmen = [];
   if (!db.kataloge) db.kataloge = [];
   if (db.bkpKatalog === undefined) db.bkpKatalog = null;
+  if (db.ebkpKatalog === undefined) db.ebkpKatalog = null;
+  if (db.ebkpSchluessel === undefined) db.ebkpSchluessel = null;
+  if (!db.ausmassVersionen) db.ausmassVersionen = [];
+  if (!db.kennwertKatalog) db.kennwertKatalog = [];
+  db.ausmassVersionen = db.ausmassVersionen.map((v) => ({ genauigkeit: "schaetzung", positionen: [], erstellt: v.erstellt || today(), ...v }));
   db.angebote = (db.angebote || []).map((a) => ({ kondEigen: false, kond: null, ...a, positionen: (a.positionen || []).map((pz) => ({ art: "normal", bemerkung: "", fabrikat: "", ...pz })) }));
   db.vorlage = { logoId: "", logoName: "", logoBreiteHoch: 120, logoBreiteQuer: 150, logoPos: "links", kopf: ["", "", ""], fuss: ["", ""], seitenzahl: true, ...(db.vorlage || {}) };
   db.projekte = db.projekte.map((pr) => ({ ...pr, vorlageEigen: pr.vorlageEigen || false, vorlage: pr.vorlage || null }));
@@ -569,6 +574,8 @@ function reducer(db, a) {
     case "setVorlage": return { ...db, vorlage: a.vorlage };
     case "setMeta": return { ...db, meta: { ...(db.meta || {}), ...a.patch } };
     case "setBkpKatalog": return { ...db, bkpKatalog: a.katalog };
+    case "setEbkpKatalog": return { ...db, ebkpKatalog: a.katalog };
+    case "setEbkpSchluessel": return { ...db, ebkpSchluessel: a.schluessel };
     case "positionenZurueck": return { ...db, positionen: [...db.positionen.filter((x) => x.projektId !== a.projektId), ...a.items] };
     case "add": return { ...db, [a.coll]: [...db[a.coll], a.item] };
     case "addMany": return { ...db, [a.coll]: [...db[a.coll], ...a.items] };
@@ -843,6 +850,90 @@ function useKostenStand(d, projekt) {
   }, [d, projekt]);
 }
 
+// ——— KV Ausmass: Rechenkern ———
+const AUSMASS_EINHEITEN = { m2: "m²", m3: "m³", m: "m", stk: "Stk./pausch." };
+// Formel sicher auswerten: nur Ziffern, + - * / ( ) . , und Leerzeichen zugelassen
+function ausmassFormelWert(formel) {
+  const t = String(formel ?? "").trim();
+  if (!t) return 0;
+  const bereinigt = t.replace(/,/g, ".");
+  if (!/^[0-9+\-*/().\s]+$/.test(bereinigt)) return NaN;
+  try {
+    // eslint-disable-next-line no-new-func
+    const v = Function('"use strict"; return (' + bereinigt + ")")();
+    return typeof v === "number" && isFinite(v) ? v : NaN;
+  } catch (e) { return NaN; }
+}
+function ausmassZeilenSumme(zeilen) { return (zeilen || []).reduce((s, z) => { const v = ausmassFormelWert(z.formel); return s + (isNaN(v) ? 0 : v); }, 0); }
+// Eigene Menge/Kosten einer Position (nur für Positionen ohne Kinder relevant)
+function ausmassEigen(pos) {
+  const menge = ausmassZeilenSumme(pos.zeilen);
+  return { menge, kosten: menge * (Number(pos.kennwert) || 0) };
+}
+// Baum mit Roll-up-Summen — analog useKostenStand, aber nur die Kosten werden hochgerechnet (Mengen sind je Einheit nicht additiv)
+function ausmassBaum(version) {
+  const positionen = version.positionen || [];
+  const eig = {}; positionen.forEach((p) => { eig[p.id] = ausmassEigen(p); });
+  const childrenOf = {}; positionen.forEach((p) => { const k = p.parentId || "__root"; (childrenOf[k] = childrenOf[k] || []).push(p.id); });
+  const roll = {};
+  function computeRoll(id) {
+    if (roll[id]) return roll[id];
+    const kinder = childrenOf[id] || [];
+    let kosten = eig[id].kosten;
+    kinder.forEach((cid) => { kosten += computeRoll(cid).kosten; });
+    return (roll[id] = { kosten });
+  }
+  positionen.forEach((p) => computeRoll(p.id));
+  const ordered = orderedPositions(positionen).map((p) => ({ pos: p, depth: p.depth, eigen: eig[p.id], roll: roll[p.id], hasChildren: (childrenOf[p.id] || []).length > 0 }));
+  const total = positionen.reduce((s, p) => s + (p.parentId ? 0 : roll[p.id].kosten), 0);
+  return { ordered, total };
+}
+// eBKP-H-Kosten (nur Blattpositionen, mit eigenem Ausmass) nach BKP aufteilen — Prozentsätze aus dem Schlüssel
+function ebkpNachBkpAufgeteilt(version, effektiv) {
+  const { ordered } = ausmassBaum(version);
+  const ziel = {}; const unbekannt = [];
+  ordered.forEach((z) => {
+    if (z.hasChildren) return;
+    const kosten = z.eigen.kosten;
+    if (Math.abs(kosten) < 0.005) return;
+    if (version.system === "bkp") { ziel[z.pos.bkp] = (ziel[z.pos.bkp] || 0) + kosten; return; }
+    const ziele = ebkpZieleFuer(z.pos.bkp, effektiv);
+    if (!ziele.length) { unbekannt.push({ code: z.pos.bkp, bezeichnung: z.pos.bezeichnung, kosten }); return; }
+    const summeAnteil = ziele.reduce((s, x) => s + (Number(x.anteilPct) || 0), 0) || 100;
+    ziele.forEach((x) => { ziel[x.bkp] = (ziel[x.bkp] || 0) + kosten * (Number(x.anteilPct) || 0) / summeAnteil; });
+  });
+  return { ziel, unbekannt };
+}
+function ausmassKennwertVorschlag(katalog, code, system) {
+  const treffer = (katalog || []).filter((k) => k.system === system && k.code === code);
+  return treffer.length ? treffer[treffer.length - 1] : null;
+}
+const GENAUIGKEITEN = {
+  schaetzung: { label: "Kostenschätzung", spanne: "±20–25%" },
+  voranschlag: { label: "Kostenvoranschlag", spanne: "±10–15%" },
+  anschlag: { label: "Kostenanschlag", spanne: "±5%" },
+};
+// Kette der übergeordneten Codes (für automatisch erzeugte Elternpositionen) — je nach System
+function codeKette(code, system) {
+  if (system === "bkp") {
+    const ganz = code.split(".")[0];
+    const kette = [];
+    for (let i = 1; i <= ganz.length; i++) kette.push(ganz.slice(0, i));
+    if (code.includes(".")) kette.push(code);
+    return kette;
+  }
+  const m = /^([A-Z])(\d*)(\.(.+))?$/.exec(code);
+  if (!m) return [code];
+  const kette = [m[1]];
+  if (m[2]) kette.push(m[1] + m[2]);
+  if (m[4] !== undefined) kette.push(code);
+  return kette;
+}
+function ausmassPositionEntfernen(positionen, id) {
+  const weg = new Set([id]); let added = true;
+  while (added) { added = false; positionen.forEach((p) => { if (p.parentId && weg.has(p.parentId) && !weg.has(p.id)) { weg.add(p.id); added = true; } }); }
+  return positionen.filter((p) => !weg.has(p.id));
+}
 function posSelectOptions(positionen) {
   return orderedPositions(positionen).map((p) => ({ id: p.id, depth: p.depth, label: "  ".repeat(p.depth) + (p.depth ? "↳ " : "") + p.bkp + " " + p.bezeichnung }));
 }
@@ -905,6 +996,16 @@ const HILFE = {
   kv: ["① KV importieren (CSV mit BKP; Bezeichnung; Betrag), Positionen einzeln erfassen — oder den BKP-Katalog einblenden und dort Preise eintippen (auch 0).",
     "«+ Bem.» hinterlegt je Position eine interne Bemerkung zur Herleitung des Betrags — sie erscheint auf keinem Druckdokument.",
     "«↶ Rückgängig» nimmt die letzten Schritte zurück; Änderungen und Löschungen werden vorher abgefragt.", "② Unterpositionen (z.B. 211.1) werden automatisch der Hauptposition (211) zugeordnet.", "Das KV ist die Budget-Basis — alle anderen Reiter bauen darauf auf."],
+  ausmass: ["Kostenschätzung nach Ausmass und Kennwerten — wahlweise nach eBKP-H (Elemente) oder direkt nach BKP (Gewerke).",
+    "① Version anlegen (System + Genauigkeitsgrad wählen). ② Positionen aus dem Katalog hinzufügen. ③ Je Position Einheit, Kennwert (CHF/Einheit) und Ausmass-Zeilen (Formel) erfassen.",
+    "eBKP-H-Kosten werden über den Umschlüsselungs-Schlüssel den BKP-Codes zugeordnet — mit Prozentsatz, falls ein Element mehrere Gewerke betrifft.",
+    "Mehrere Versionen (Varianten) sind möglich; erst wenn eine Version fertig ist, wird sie komplett per Knopf ins KV übernommen.",
+    "Der eingebaute eBKP-H-Katalog und der Umschlüsselungs-Schlüssel sind eine eigene Annäherung — bei Bedarf per CSV ersetzen oder im Schlüssel-Editor anpassen."],
+  ausmass: ["Kostenschätzung nach Ausmass und Kennwerten — wahlweise nach eBKP-H (Elemente) oder direkt nach BKP (Gewerke).",
+    "① Version anlegen (System + Genauigkeitsgrad wählen). ② Positionen aus dem Katalog hinzufügen. ③ Je Position Einheit, Kennwert (CHF/Einheit) und Ausmass-Zeilen (Formel) erfassen.",
+    "eBKP-H-Kosten werden über den Umschlüsselungs-Schlüssel den BKP-Codes zugeordnet — mit Prozentsatz, falls ein Element mehrere Gewerke betrifft.",
+    "Mehrere Versionen (Varianten) sind möglich; erst wenn eine Version fertig ist, wird sie komplett per Knopf ins KV übernommen.",
+    "Der eingebaute eBKP-H-Katalog und der Umschlüsselungs-Schlüssel sind eine eigene Annäherung — bei Bedarf per CSV ersetzen oder im Schlüssel-Editor anpassen."],
   mutationen: ["Mutationen ändern das Budget einer Position (+/−), z.B. bei Projektänderungen.", "Für Verschiebungen zwischen zwei BKP nutze «Umbuchungen» — dann bleibt das Gesamtbudget gleich."],
   umbuchungen: ["Budget von einer BKP-Position in eine andere verschieben.", "Das Gesamtbudget bleibt unverändert."],
   vertraege: ["① Vertrag erfassen (oder aus einer Ausschreibung vergeben) — mit Konditionen, Rückbehalt und Garantie.", "② Nachträge direkt am Vertrag erfassen; sie erben die %-Konditionen.", "③ Werkvertrag drucken über den Knopf am Vertrag.", "Die Garantie-Übersicht oben zeigt ablaufende Fristen und Rückbehalte."],
@@ -1908,6 +2009,110 @@ const BKP_KATALOG_ROH = `0|Grundstück
 998|Spezialisten 2
 998.2|Bauökonom
 999|Übriges`;
+// eBKP-H-Katalog (Elementbasierte Kostengliederung Hochbau, SN 506 511): Hauptgruppen (Buchstabe)
+// und Elementgruppen (Buchstabe+Ziffer). Eigene Annäherung an die CRB-Norm auf zwei Ebenen —
+// nicht gegen die aktuelle amtliche Fassung geprüft. Bei Abweichungen: per CSV ersetzen
+// (Spalten eBKP-H;Bezeichnung, wie beim BKP-Katalog).
+const EBKP_KATALOG_ROH = `A|Grundstück
+A1|Grundstückswert
+A2|Erschliessung, Baurechte
+A9|Grundstücksnebenkosten
+B|Vorbereitung
+B1|Untersuchungen, Gutachten
+B2|Rückbau, Abbruch
+B3|Baustelleneinrichtung, Provisorien
+B4|Altlastensanierung
+B9|Übrige Vorbereitung
+C|Konstruktion — Gebäude
+C1|Baugrube
+C2|Fundation, Bodenplatte
+C3|Wände Untergeschoss
+C4|Stützen, Decken Untergeschoss
+C5|Wände, Stützen Erd-/Obergeschoss (tragend)
+C6|Decken Erd-/Obergeschoss
+C7|Dachkonstruktion (tragend)
+C8|Treppen, Rampen (Rohbau)
+C9|Übrige Konstruktion
+D|Technik — Gebäude
+D1|Elektroanlagen
+D2|Kommunikations-, Sicherheitsanlagen
+D3|Wärmeerzeugung, Heizungsanlagen
+D4|Lüftungs-, Klimaanlagen
+D5|Sanitäranlagen
+D6|Transportanlagen (Lifte)
+D7|Gebäudeautomation, MSRL
+D8|Löschanlagen, Sicherheitstechnik
+D9|Übrige Gebäudetechnik
+E|Gebäudehülle (Fassade, Bedachung)
+E1|Fassade, äussere Wandbekleidung
+E2|Fenster, Aussentüren
+E3|Bedachung, Dachabdichtung
+E4|Sonnenschutz
+E9|Übrige Gebäudehülle
+G|Ausbau (innen)
+G1|Wände, Wandbekleidungen innen
+G2|Decken, Deckenbekleidungen innen
+G3|Bodenbeläge
+G4|Innentüren
+G5|Fixe Ausstattung, Einbaumöbel
+G9|Übriger Ausbau
+H|Umgebung
+H1|Terraingestaltung
+H2|Gartenanlagen, Bepflanzung
+H3|Wege, Plätze, Beläge aussen
+H4|Erschliessungsleitungen auf dem Grundstück
+H9|Übrige Umgebung
+Z|Baunebenkosten, Ausstattung
+Z1|Bewilligungen, Gebühren
+Z2|Honorare Planer
+Z3|Versicherungen, Finanzierung
+Z4|Mehrwertsteuer, Reserven
+Z5|Bewegliche Ausstattung, Mobiliar
+Z9|Übrige Nebenkosten`;
+function ebkpTiefe(code) {
+  if (code.includes(".")) return 2;
+  return /^[A-Z]$/.test(code) ? 0 : 1;
+}
+function ebkpKatalogLesen(roh) {
+  return String(roh || "").split("\n").map((z) => {
+    const i = z.indexOf("|");
+    if (i < 0) return null;
+    const code = z.slice(0, i).trim(), bez = z.slice(i + 1).trim();
+    if (!code || !bez) return null;
+    return { code, bez, tiefe: ebkpTiefe(code) };
+  }).filter(Boolean);
+}
+// Aus einer hochgeladenen CSV (Spalten: eBKP-H;Bezeichnung)
+function ebkpKatalogAusCsv(text) {
+  return String(text).split(/\r?\n/).slice(1).map((l) => { const t = l.split(/[;,\t]/); return [(t[0] || "").trim(), (t[1] || "").trim()]; })
+    .filter(([c, b]) => c && b && !/^total/i.test(b))
+    .map(([code, bez]) => ({ code, bez, tiefe: ebkpTiefe(code) }));
+}
+
+// Umschlüsselungs-Schlüssel eBKP-H → BKP: eigene Annäherung, je Element ein oder mehrere
+// BKP-Ziele mit Prozentanteil (muss zusammen 100% ergeben). Editierbar, mit CSV ersetzbar.
+const EBKP_SCHLUESSEL_STANDARD = {
+  A1: [["011", 100]], A2: [["05", 60], ["06", 40]], A9: [["02", 100]],
+  B1: [["10", 100]], B2: [["112", 100]], B3: [["13", 100]], B4: [["113", 100]], B9: [["19", 100]],
+  C1: [["20", 100]], C2: [["211", 100]], C3: [["211", 100]], C4: [["211", 100]], C5: [["211", 100]],
+  C6: [["211", 100]], C7: [["214", 60], ["211", 40]], C8: [["211", 100]], C9: [["219", 100]],
+  D1: [["23", 100]], D2: [["235", 100]], D3: [["242", 100]], D4: [["244", 70], ["246", 30]],
+  D5: [["25", 100]], D6: [["261", 100]], D7: [["237", 50], ["248", 50]], D8: [["257", 100]], D9: [["269", 100]],
+  E1: [["226", 50], ["227", 50]], E2: [["221", 100]], E3: [["224", 60], ["225", 40]], E4: [["228", 100]], E9: [["229", 100]],
+  G1: [["271", 60], ["282", 40]], G2: [["271", 100]], G3: [["281", 100]], G4: [["273", 100]], G5: [["273", 100]], G9: [["279", 100]],
+  H1: [["40", 100]], H2: [["42", 100]], H3: [["41", 100]], H4: [["45", 100]], H9: [["49", 100]],
+  Z1: [["51", 100]], Z2: [["29", 100]], Z3: [["53", 50], ["54", 50]], Z4: [["57", 50], ["58", 50]], Z5: [["90", 100]], Z9: [["56", 100]],
+};
+// Normalisierte Form (überall {bkp, anteilPct}-Objekte) — sowohl für den Standard als auch für
+// einen vom Benutzer bearbeiteten Schlüssel (db.ebkpSchluessel), damit beide gleich behandelt werden.
+function ebkpSchluesselStandardNormalisiert() {
+  const m = {};
+  Object.entries(EBKP_SCHLUESSEL_STANDARD).forEach(([code, ziele]) => { m[code] = ziele.map(([bkp, anteilPct]) => ({ bkp, anteilPct })); });
+  return m;
+}
+function ebkpSchluesselEffektiv(db) { return db.ebkpSchluessel || ebkpSchluesselStandardNormalisiert(); }
+function ebkpZieleFuer(code, effektiv) { return (effektiv[code] || []).slice(); }
+
 function bkpKatalogLesen(roh) {
   return String(roh || "").split("\n").map((z) => {
     const i = z.indexOf("|");
@@ -3262,7 +3467,7 @@ function App() {
   const navGlobal = [["adressstamm", "Adressstamm"], ["vorlage", "PDF-Vorlage"], ["sicherung", "Sicherung"], ["team", "Team"]];
   const nav = [
     ["projekt", "Projekt"], ["beteiligte", "Beteiligte"], ["listen", "Listen"],
-    ["dashboard", "Kostenübersicht"], ["kv", "KV / BKP-Positionen"], ["mutationen", "Mutationen"], ["umbuchungen", "Umbuchungen"],
+    ["dashboard", "Kostenübersicht"], ["ausmass", "KV Ausmass"], ["kv", "KV / BKP-Positionen"], ["mutationen", "Mutationen"], ["umbuchungen", "Umbuchungen"],
     ["lv", "Leistungsverzeichnisse"], ["angebote", "Angebotsvergleich und Vergabeanträge"], ["vertraege", "Verträge & Nachträge"],
     ["rapporte", "Rapporte"], ["rechnungen", "Rechnungen"], ["vergauftraege", "Vergütungsaufträge"],
     ["erwartungen", "Erwartungen"], ["abrechnung", "Bauabrechnung"], ["baustelle", "Kompaktansicht"],
@@ -3364,6 +3569,7 @@ function App() {
           {view === "beteiligte" && <ProjektBeteiligteView db={db} dispatch={dispatch} projektId={db.aktiv} firmen={firmen} />}
           {view === "listen" && <ListenView db={db} dispatch={dispatch} projektId={db.aktiv} projekt={projekt} d={d} />}
           {view === "dashboard" && <Dashboard ks={ks} d={d} dispatch={dispatch} projektId={db.aktiv} projekt={projekt} db={db} />}
+          {view === "ausmass" && <AusmassView db={db} dispatch={dispatch} projektId={db.aktiv} projekt={projekt} />}
           {view === "kv" && <KvView d={d} dispatch={dispatch} projektId={db.aktiv} ks={ks} projekt={projekt} db={db} />}
           {view === "mutationen" && <MutationenView d={d} dispatch={dispatch} projektId={db.aktiv} />}
           {view === "umbuchungen" && <UmbuchungenView d={d} dispatch={dispatch} projektId={db.aktiv} />}
@@ -3503,7 +3709,7 @@ function ProjektView({ projekt, dispatch, db }) {
   }, [projekt]);
   const wSum = parseBetrag(f.gewichtPreis) + parseBetrag(f.gewichtReferenzen) + parseBetrag(f.gewichtLehrlinge);
   function save() {
-    dispatch({ type: "update", coll: "projekte", id: projekt.id, patch: { ...f, mwstSatz: parseBetrag(f.mwstSatz), teuerungsReserve: parseBetrag(f.teuerungsReserve), gewichtPreis: parseBetrag(f.gewichtPreis), gewichtReferenzen: parseBetrag(f.gewichtReferenzen), gewichtLehrlinge: parseBetrag(f.gewichtLehrlinge) } });
+    dispatch({ type: "update", coll: "projekte", id: projekt.id, patch: { ...f, mwstSatz: parseBetrag(f.mwstSatz), teuerungsReserve: parseBetrag(f.teuerungsReserve), gewichtPreis: parseBetrag(f.gewichtPreis), gewichtReferenzen: parseBetrag(f.gewichtReferenzen), gewichtLehrlinge: parseBetrag(f.gewichtLehrlinge), gf: parseBetrag(f.gf), gv: parseBetrag(f.gv) } });
     setSaved(true); setTimeout(() => setSaved(false), 2000);
   }
   return (
@@ -3531,6 +3737,14 @@ function ProjektView({ projekt, dispatch, db }) {
           <Field label="Teuerungsreserve % (auf KV rev.)"><input className={inputCls} value={f.teuerungsReserve} onChange={(e) => setF({ ...f, teuerungsReserve: e.target.value })} /></Field>
         </div>
         <p className="text-xs text-stone-400">Alle Beträge im Tool sind netto. MwSt und Teuerungsreserve werden in der Bauabrechnung separat ausgewiesen.</p>
+      </div>
+      <div className={`${card} p-5 space-y-3`}>
+        <h2 className="font-semibold">Bezugsgrössen</h2>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Geschossfläche GF (m²)"><input className={inputCls} value={f.gf} onChange={(e) => setF({ ...f, gf: e.target.value })} /></Field>
+          <Field label="Gebäudevolumen GV (m³)"><input className={inputCls} value={f.gv} onChange={(e) => setF({ ...f, gv: e.target.value })} /></Field>
+        </div>
+        <p className="text-xs text-stone-400">Für die Kennzahlen CHF/m² GF und CHF/m³ GV im KV Ausmass und im Versionsvergleich. Leer lassen, wenn (noch) nicht bekannt.</p>
       </div>
       <div className={`${card} p-5 space-y-3`}>
         <h2 className="font-semibold">Angebotsbewertung — Standard-Gewichtung {wSum !== 100 && <span className="text-red-600 text-sm font-normal">(Summe {wSum}% — sollte 100% sein)</span>}</h2>
@@ -3904,6 +4118,538 @@ function KvImport({ onClose, onImport }) {
       </div>
       <div className="flex justify-end gap-2 pt-4"><button className={btnGhost} onClick={onClose}>Abbrechen</button><button className={btnPrimary} disabled={!preview.length} onClick={() => onImport(preview)}>{preview.length} Positionen importieren</button></div>
     </Modal>
+  );
+}
+
+// =========================================================================
+//  KV AUSMASS: Ausmass und Kennwerte nach eBKP-H oder BKP, mehrere Versionen,
+//  Übernahme des fertigen Stands in den effektiven KV
+// =========================================================================
+function AusmassKatalogPanel({ system, katalog, eigenerKatalog, vorhanden, onAufnehmen, onSchliessen, onCsv, onStandard }) {
+  const [q, setQ] = useState("");
+  const [zu, setZu] = useState({});
+  const [eigenCode, setEigenCode] = useState("");
+  const [eigenBez, setEigenBez] = useState("");
+  const dateiRef = useRef(null);
+  const hatKinder = useMemo(() => {
+    const m = new Set();
+    katalog.forEach((x, i) => { const n = katalog[i + 1]; if (n && n.tiefe > x.tiefe) m.add(x.code); });
+    return m;
+  }, [katalog]);
+  const sichtbar = useMemo(() => {
+    const t = q.trim().toLowerCase();
+    if (t) return katalog.filter((x) => (x.code + " " + x.bez).toLowerCase().includes(t)).slice(0, 300);
+    const out = []; let zugeklappt = null;
+    katalog.forEach((x) => { if (zugeklappt !== null) { if (x.tiefe > zugeklappt) return; zugeklappt = null; } out.push(x); if (zu[x.code]) zugeklappt = x.tiefe; });
+    return out;
+  }, [katalog, q, zu]);
+  const csvErsetzen = async (datei) => {
+    if (!datei) return;
+    try {
+      const neu = system === "ebkph" ? ebkpKatalogAusCsv(await datei.text()) : bkpKatalogAusCsv(await datei.text());
+      if (!neu.length) { window.alert("In dieser Datei wurden keine Positionen gefunden."); return; }
+      if (window.confirm(`${neu.length} Positionen gelesen. Den mitgelieferten Katalog dadurch ersetzen?`)) onCsv(neu);
+    } catch (e) { window.alert("Die Datei konnte nicht gelesen werden: " + e.message); }
+  };
+  return (
+    <div className={`${card} flex flex-col`} style={{ maxHeight: "78vh" }}>
+      <div className="px-3 py-2.5 border-b border-stone-100 space-y-2">
+        <div className="flex items-center gap-2">
+          <span className="font-medium text-sm">{system === "ebkph" ? "eBKP-H-Katalog" : "BKP-Katalog"}</span>
+          <span className="text-xs text-stone-400">{katalog.length} Positionen{eigenerKatalog ? " · eigene Liste" : ""}</span>
+          <button className="ml-auto text-stone-400 hover:text-stone-700 text-sm" title="Katalog ausblenden" onClick={onSchliessen}>✕</button>
+        </div>
+        <input className={inputCls} placeholder="Code oder Stichwort suchen…" value={q} onChange={(e) => setQ(e.target.value)} />
+        <div className="flex items-center gap-3">
+          <input ref={dateiRef} type="file" accept=".csv,text/csv" className="hidden" onChange={(e) => { csvErsetzen(e.target.files[0]); e.target.value = ""; }} />
+          <button className="text-xs text-stone-500 hover:underline" onClick={() => dateiRef.current?.click()}>Katalog ersetzen (CSV)</button>
+          {eigenerKatalog ? <button className="text-xs text-stone-500 hover:underline" onClick={onStandard}>Standard wiederherstellen</button> : null}
+        </div>
+        <p className="text-xs text-stone-400">Doppelklick oder «+» fügt die Position hinzu — übergeordnete Ebenen entstehen automatisch.</p>
+      </div>
+      <div className="overflow-y-auto divide-y divide-stone-50">
+        {!sichtbar.length ? <div className="p-4 text-sm text-stone-500">Nichts gefunden.</div> : sichtbar.map((x) => {
+          const drin = vorhanden.has(x.code);
+          const gruppe = x.tiefe === 0;
+          return (
+            <div key={x.code} className={`flex items-center gap-2 px-3 py-1 hover:bg-stone-50 ${drin ? "bg-emerald-50/40" : ""}`}
+              style={{ paddingLeft: 12 + x.tiefe * 12 }}
+              onDoubleClick={() => { if (!drin) onAufnehmen(x); }}>
+              {!q && hatKinder.has(x.code) ? <button className="text-stone-300 hover:text-stone-600 text-[9px] w-3 shrink-0" onClick={() => setZu({ ...zu, [x.code]: !zu[x.code] })}>{zu[x.code] ? "▶" : "▼"}</button> : <span className="w-3 shrink-0" />}
+              <span className={`tabular-nums text-xs shrink-0 w-[52px] ${gruppe ? "font-semibold text-stone-600" : "text-stone-500"}`}>{x.code}</span>
+              <span className={`flex-1 min-w-0 truncate text-sm ${gruppe ? "font-medium" : ""}`}>{x.bez}</span>
+              {drin ? <span className="text-xs text-emerald-700 shrink-0">✓</span> : <button className="text-xs text-orange-800 hover:underline shrink-0" onClick={() => onAufnehmen(x)}>+ hinzufügen</button>}
+            </div>
+          );
+        })}
+      </div>
+      <div className="px-3 py-2.5 border-t border-stone-100 space-y-1.5">
+        <p className="text-xs text-stone-400">Code fehlt im Katalog? Direkt hinzufügen:</p>
+        <div className="flex gap-1.5">
+          <input className="w-20 text-xs border border-stone-200 rounded px-1.5 py-1" placeholder="Code" value={eigenCode} onChange={(e) => setEigenCode(e.target.value)} />
+          <input className="flex-1 min-w-0 text-xs border border-stone-200 rounded px-1.5 py-1" placeholder="Bezeichnung" value={eigenBez} onChange={(e) => setEigenBez(e.target.value)} />
+          <button className="text-xs text-orange-800 hover:underline shrink-0" disabled={!eigenCode.trim() || !eigenBez.trim()} onClick={() => { onAufnehmen({ code: eigenCode.trim(), bez: eigenBez.trim() }); setEigenCode(""); setEigenBez(""); }}>+ Add</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AusmassZeilenModal({ pos, onClose, onSave }) {
+  const [zeilen, setZeilen] = useState((pos.zeilen || []).map((z) => ({ ...z })));
+  const summe = ausmassZeilenSumme(zeilen);
+  const patch = (id, f) => setZeilen(zeilen.map((z) => (z.id === id ? { ...z, ...f } : z)));
+  return (
+    <Modal title={`Ausmass · ${pos.bkp} ${pos.bezeichnung}`} onClose={onClose} wide>
+      <div className="space-y-2">
+        <div className="max-h-[50vh] overflow-y-auto">
+          <table className="w-full text-sm">
+            <thead className="text-stone-500 text-xs"><tr><th className="text-left font-medium pb-1">Bezeichnung</th><th className="text-left font-medium pb-1 w-56">Formel</th><th className="text-right font-medium pb-1 w-32">Menge</th><th className="w-8"></th></tr></thead>
+            <tbody>
+              {!zeilen.length ? <tr><td colSpan={4} className="text-center text-stone-400 py-4 text-sm">Noch keine Zeilen — «+ Zeile» unten.</td></tr> : zeilen.map((z) => {
+                const wert = ausmassFormelWert(z.formel);
+                return (
+                  <tr key={z.id} className="border-t border-stone-100">
+                    <td className="py-1 pr-2"><input className={inputCls} value={z.bezeichnung} onChange={(e) => patch(z.id, { bezeichnung: e.target.value })} placeholder="z.B. OG1 Wohnung 3" /></td>
+                    <td className="py-1 pr-2"><input className={`${inputCls} font-mono`} value={z.formel} onChange={(e) => patch(z.id, { formel: e.target.value })} placeholder="12.5*3.2" /></td>
+                    <td className="py-1 text-right tabular-nums">{isNaN(wert) ? <span className="text-red-600 text-xs">ungültig</span> : wert.toLocaleString("de-CH", { maximumFractionDigits: 2 })}</td>
+                    <td className="py-1 text-right"><button className="text-red-600 text-xs" onClick={() => setZeilen(zeilen.filter((x) => x.id !== z.id))}>×</button></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+            <tfoot><tr className="border-t-2 border-stone-300 font-semibold"><td colSpan={2} className="pt-1.5">Summe</td><td className="pt-1.5 text-right tabular-nums">{summe.toLocaleString("de-CH", { maximumFractionDigits: 2 })} {AUSMASS_EINHEITEN[pos.einheit]}</td><td></td></tr></tfoot>
+          </table>
+        </div>
+        <button className={btnGhost} onClick={() => setZeilen([...zeilen, { id: uid(), bezeichnung: "", formel: "" }])}>+ Zeile</button>
+        <p className="text-xs text-stone-400">Formel z.B. «12.5*3.2» (Fläche) oder «24-1.2*2.1» (mit Abzug). Nur Zahlen und + − × ÷ ( ) sind zulässig.</p>
+        <div className="flex justify-end gap-2 pt-2"><button className={btnGhost} onClick={onClose}>Abbrechen</button><button className={btnPrimary} onClick={() => onSave(zeilen)}>Übernehmen</button></div>
+      </div>
+    </Modal>
+  );
+}
+
+function SchluesselEditor({ db, dispatch, onClose }) {
+  const [q, setQ] = useState("");
+  const eigen = db.ebkpSchluessel;
+  const effektiv = ebkpSchluesselEffektiv(db);
+  const katalog = useMemo(() => (db.ebkpKatalog || ebkpKatalogLesen(EBKP_KATALOG_ROH)).filter((x) => x.tiefe === 1), [db.ebkpKatalog]);
+  const sichtbar = q.trim() ? katalog.filter((x) => (x.code + " " + x.bez).toLowerCase().includes(q.trim().toLowerCase())) : katalog;
+
+  function speichern(code, ziele) { dispatch({ type: "setEbkpSchluessel", schluessel: { ...effektiv, [code]: ziele } }); }
+  function zeileAendern(code, i, patch) { speichern(code, (effektiv[code] || []).map((z, j) => (j === i ? { ...z, ...patch } : z))); }
+  function zeileEntfernen(code, i) { speichern(code, (effektiv[code] || []).filter((_, j) => j !== i)); }
+  function zeileHinzu(code) { speichern(code, [...(effektiv[code] || []), { bkp: "", anteilPct: 100 }]); }
+  function zurueckAufStandard(code) {
+    const neu = { ...effektiv };
+    if (EBKP_SCHLUESSEL_STANDARD[code]) neu[code] = EBKP_SCHLUESSEL_STANDARD[code].map(([bkp, anteilPct]) => ({ bkp, anteilPct }));
+    else delete neu[code];
+    dispatch({ type: "setEbkpSchluessel", schluessel: neu });
+  }
+
+  return (
+    <Modal title="Umschlüsselung eBKP-H → BKP" onClose={onClose} wide>
+      <div className="space-y-3">
+        <div className="flex items-center gap-2">
+          <input className={inputCls} placeholder="eBKP-H-Code oder Stichwort…" value={q} onChange={(e) => setQ(e.target.value)} />
+          {eigen && <button className="text-xs text-stone-500 hover:underline shrink-0" onClick={() => { if (window.confirm("Den ganzen Schlüssel auf den mitgelieferten Standard zurücksetzen?")) dispatch({ type: "setEbkpSchluessel", schluessel: null }); }}>Ganzen Schlüssel zurücksetzen</button>}
+        </div>
+        <div className="max-h-[55vh] overflow-y-auto divide-y divide-stone-100">
+          {sichtbar.map((x) => {
+            const ziele = effektiv[x.code] || [];
+            const summe = ziele.reduce((s, z) => s + (Number(z.anteilPct) || 0), 0);
+            return (
+              <div key={x.code} className="py-2">
+                <div className="flex items-center gap-2 text-sm">
+                  <span className="font-medium tabular-nums w-14">{x.code}</span><span className="flex-1">{x.bez}</span>
+                  <span className={`text-xs tabular-nums ${ziele.length && summe !== 100 ? "text-amber-700" : "text-stone-400"}`}>{summe}%</span>
+                  <button className="text-xs text-stone-400 hover:text-orange-800" title="Auf Standard zurücksetzen" onClick={() => zurueckAufStandard(x.code)}>↺</button>
+                </div>
+                <div className="pl-16 mt-1 space-y-1">
+                  {ziele.map((z, i) => (
+                    <div key={i} className="flex items-center gap-1.5">
+                      <input className="w-24 text-xs border border-stone-200 rounded px-1.5 py-0.5" placeholder="BKP-Code" value={z.bkp} onChange={(e) => zeileAendern(x.code, i, { bkp: e.target.value })} />
+                      <input className="w-16 text-xs border border-stone-200 rounded px-1.5 py-0.5 text-right" value={z.anteilPct} onChange={(e) => zeileAendern(x.code, i, { anteilPct: e.target.value })} />
+                      <span className="text-xs text-stone-400">%</span>
+                      <button className="text-red-600 text-xs" onClick={() => zeileEntfernen(x.code, i)}>×</button>
+                    </div>
+                  ))}
+                  <button className="text-xs text-orange-800 hover:underline" onClick={() => zeileHinzu(x.code)}>+ BKP-Ziel</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <p className="text-xs text-stone-400">Die Prozentsätze je Zeile sollten zusammen 100% ergeben. Diese Zuordnung ist eine eigene Annäherung an die eBKP-H-Norm und nicht amtlich geprüft — bitte vor produktivem Einsatz kontrollieren und bei Bedarf anpassen.</p>
+        <div className="flex justify-end"><button className={btnPrimary} onClick={onClose}>Fertig</button></div>
+      </div>
+    </Modal>
+  );
+}
+
+function KennwertBibliothekModal({ db, dispatch, onClose }) {
+  const liste = [...(db.kennwertKatalog || [])].sort((a, b) => (a.system + a.code).localeCompare(b.system + b.code, "de", { numeric: true }));
+  return (
+    <Modal title="Kennwert-Bibliothek" onClose={onClose} wide>
+      {!liste.length ? <p className="text-sm text-stone-500">Noch keine Kennwerte gespeichert. Beim Bearbeiten einer Ausmass-Position lässt sich der Kennwert per 💾 hier ablegen und in künftigen Projekten wiederverwenden.</p> : (
+        <div className="max-h-[55vh] overflow-y-auto">
+          <table className="w-full text-sm">
+            <thead className="text-stone-500 text-xs"><tr><th className="text-left font-medium pb-1">System</th><th className="text-left font-medium pb-1">Code</th><th className="text-left font-medium pb-1">Bezeichnung</th><th className="text-right font-medium pb-1">Kennwert</th><th className="w-8"></th></tr></thead>
+            <tbody>{liste.map((k) => (
+              <tr key={k.id} className="border-t border-stone-100">
+                <td className="py-1 pr-2">{k.system === "ebkph" ? "eBKP-H" : "BKP"}</td>
+                <td className="py-1 pr-2 tabular-nums">{k.code}</td>
+                <td className="py-1 pr-2">{k.bezeichnung}</td>
+                <td className="py-1 text-right tabular-nums">{chf(k.kennwert)} / {AUSMASS_EINHEITEN[k.einheit]}</td>
+                <td className="py-1 text-right"><button className="text-red-600 text-xs" onClick={() => dispatch({ type: "remove", coll: "kennwertKatalog", id: k.id })}>×</button></td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+      )}
+      <div className="flex justify-end pt-3"><button className={btnPrimary} onClick={onClose}>Schliessen</button></div>
+    </Modal>
+  );
+}
+
+function AusmassVergleich({ versionen, db, projekt, onClose }) {
+  const effektiv = useMemo(() => ebkpSchluesselEffektiv(db), [db.ebkpSchluessel]);
+  const spalten = useMemo(() => versionen.map((v) => ({ v, ziel: ebkpNachBkpAufgeteilt(v, effektiv).ziel })), [versionen, effektiv]);
+  const gruppen = Object.keys(BKP_GROUPS).filter((g) => g !== "?");
+  const summeGruppe = (ziel, g) => Object.entries(ziel).reduce((s, [code, betrag]) => (bkpGroup(code) === g ? s + betrag : s), 0);
+  const totalVon = (ziel) => Object.values(ziel).reduce((s, x) => s + x, 0);
+  const gf = Number(projekt?.gf) || 0, gv = Number(projekt?.gv) || 0;
+  return (
+    <Modal title="Versionen vergleichen" onClose={onClose} wide>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="text-stone-500 text-xs"><tr><th className="text-left font-medium pb-1.5 pr-3">BKP-Gruppe</th>{spalten.map(({ v }) => <th key={v.id} className="text-right font-medium pb-1.5 px-2 whitespace-nowrap">{v.name}</th>)}</tr></thead>
+          <tbody>
+            {gruppen.filter((g) => spalten.some(({ ziel }) => summeGruppe(ziel, g) !== 0)).map((g) => (
+              <tr key={g} className="border-t border-stone-100"><td className="py-1 pr-3"><span className="font-medium">{g}</span> <span className="text-stone-500">{BKP_GROUPS[g]}</span></td>
+                {spalten.map(({ v, ziel }) => <td key={v.id} className="py-1 px-2 text-right tabular-nums">{chf(summeGruppe(ziel, g))}</td>)}
+              </tr>
+            ))}
+            <tr className="border-t-2 border-stone-300 font-semibold"><td className="py-1.5 pr-3">Total</td>{spalten.map(({ v, ziel }) => <td key={v.id} className="py-1.5 px-2 text-right tabular-nums">{chf(totalVon(ziel))}</td>)}</tr>
+            {gf > 0 && <tr className="text-xs text-stone-500"><td className="py-1 pr-3">CHF/m² GF</td>{spalten.map(({ v, ziel }) => <td key={v.id} className="py-1 px-2 text-right tabular-nums">{chf(totalVon(ziel) / gf)}</td>)}</tr>}
+            {gv > 0 && <tr className="text-xs text-stone-500"><td className="py-1 pr-3">CHF/m³ GV</td>{spalten.map(({ v, ziel }) => <td key={v.id} className="py-1 px-2 text-right tabular-nums">{chf(totalVon(ziel) / gv)}</td>)}</tr>}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-xs text-stone-400 mt-3">Die Kosten je BKP-Gruppe entstehen bei eBKP-H-Versionen über den Umschlüsselungs-Schlüssel — bei nicht zugeordneten Codes fehlt der entsprechende Betrag hier.</p>
+      <div className="flex justify-end pt-3"><button className={btnPrimary} onClick={onClose}>Schliessen</button></div>
+    </Modal>
+  );
+}
+
+function AusmassUebernehmenModal({ version, db, dispatch, projektId, onClose, onSchluessel }) {
+  const effektiv = useMemo(() => ebkpSchluesselEffektiv(db), [db.ebkpSchluessel]);
+  const { ziel, unbekannt } = useMemo(() => ebkpNachBkpAufgeteilt(version, effektiv), [version, effektiv]);
+  const bkpKatalog = useMemo(() => db.bkpKatalog || bkpKatalogLesen(BKP_KATALOG_ROH), [db.bkpKatalog]);
+  const bkpBez = (code) => (bkpKatalog.find((x) => x.code === code) || {}).bez || "";
+  const bestehende = useMemo(() => (db.positionen || []).filter((p) => p.projektId === projektId), [db.positionen, projektId]);
+  const zeilen = useMemo(() => Object.entries(ziel).map(([code, betrag]) => ({ code, betrag: Math.round(betrag), vorhanden: bestehende.find((p) => p.bkp === code) || null }))
+    .sort((a, b) => a.code.localeCompare(b.code, "de", { numeric: true })), [ziel, bestehende]);
+  const [aktionen, setAktionen] = useState(null);
+  const [fertig, setFertig] = useState(null);
+  useEffect(() => { if (!aktionen) setAktionen(Object.fromEntries(zeilen.map((z) => [z.code, z.vorhanden ? "ueberschreiben" : "neu"]))); }, [zeilen]);
+
+  function uebernehmen() {
+    let arbeit = [...bestehende];
+    const idVon = new Map(arbeit.map((p) => [p.bkp, p.id]));
+    const hinweis = `Übernommen aus KV Ausmass «${version.name}» am ${today().split("-").reverse().join(".")}`;
+    let neu = 0, ueberschrieben = 0, uebersprungen = 0;
+    zeilen.forEach((z) => {
+      const modus = aktionen[z.code];
+      if (modus === "ueberspringen") { uebersprungen++; return; }
+      if (z.vorhanden) {
+        arbeit = arbeit.map((p) => (p.id === z.vorhanden.id ? { ...p, kv: z.betrag, notiz: p.notiz || hinweis } : p));
+        ueberschrieben++;
+        return;
+      }
+      codeKette(z.code, "bkp").forEach((code) => {
+        if (idVon.has(code)) return;
+        const kat = bkpKatalog.find((x) => x.code === code);
+        const eltern = codeKette(z.code, "bkp")[codeKette(z.code, "bkp").indexOf(code) - 1];
+        const id = uid();
+        arbeit.push({ id, projektId, bkp: code, bezeichnung: kat ? kat.bez : code, kv: code === z.code ? z.betrag : 0, notiz: code === z.code ? hinweis : "", parentId: eltern ? (idVon.get(eltern) || null) : null });
+        idVon.set(code, id);
+      });
+      neu++;
+    });
+    dispatch({ type: "positionenZurueck", projektId, items: arbeit });
+    setFertig({ neu, ueberschrieben, uebersprungen });
+  }
+
+  if (fertig) return (
+    <Modal title="Ins KV übernommen" onClose={onClose}>
+      <p className="text-sm text-stone-700">{fertig.neu} neue Position{fertig.neu === 1 ? "" : "en"} angelegt, {fertig.ueberschrieben} bestehende überschrieben{fertig.uebersprungen ? `, ${fertig.uebersprungen} übersprungen` : ""}.</p>
+      <div className="flex justify-end pt-3"><button className={btnPrimary} onClick={onClose}>Schliessen</button></div>
+    </Modal>
+  );
+
+  if (version.system === "ebkph" && unbekannt.length > 0) return (
+    <Modal title="Umschlüsselung unvollständig" onClose={onClose} wide>
+      <p className="text-sm text-stone-700 mb-2">Diese eBKP-H-Positionen haben noch kein Ziel im Umschlüsselungs-Schlüssel:</p>
+      <ul className="text-sm space-y-1 mb-3">{unbekannt.map((u) => <li key={u.code} className="flex justify-between"><span>{u.code} {u.bezeichnung}</span><span className="tabular-nums text-stone-500">{chf(u.kosten)}</span></li>)}</ul>
+      <p className="text-xs text-stone-500 mb-3">Ergänze zuerst den Schlüssel, dann kannst du übernehmen.</p>
+      <div className="flex justify-end gap-2"><button className={btnGhost} onClick={onClose}>Abbrechen</button><button className={btnPrimary} onClick={() => { onClose(); onSchluessel(); }}>Schlüssel bearbeiten</button></div>
+    </Modal>
+  );
+
+  return (
+    <Modal title="Ins KV übernehmen" onClose={onClose} wide>
+      {!zeilen.length ? <p className="text-sm text-stone-500">Diese Version enthält keine Kosten.</p> : (<>
+        <p className="text-sm text-stone-600 mb-2">Version «{version.name}» als KV-Beträge übernehmen. Bei bereits bestehenden Positionen kannst du je Zeile wählen.</p>
+        <div className="max-h-[50vh] overflow-y-auto border border-stone-200 rounded-md">
+          <table className="w-full text-sm">
+            <thead className="bg-stone-50 text-stone-500 text-xs sticky top-0"><tr><th className="text-left font-medium px-3 py-1.5">BKP</th><th className="text-right font-medium px-3 py-1.5">Betrag</th><th className="text-left font-medium px-3 py-1.5 w-64">Aktion</th></tr></thead>
+            <tbody>
+              {zeilen.map((z) => (
+                <tr key={z.code} className="border-t border-stone-100">
+                  <td className="px-3 py-1.5">{z.code} {bkpBez(z.code)}</td>
+                  <td className="px-3 py-1.5 text-right tabular-nums">{chf(z.betrag)}</td>
+                  <td className="px-3 py-1.5">
+                    {z.vorhanden ? (
+                      <div className="inline-flex rounded-md border border-stone-200 overflow-hidden text-xs">
+                        <button className={`px-2 py-1 ${aktionen?.[z.code] === "ueberschreiben" ? "bg-orange-800 text-white" : "bg-white"}`} onClick={() => setAktionen({ ...aktionen, [z.code]: "ueberschreiben" })}>Überschreiben ({chf(z.vorhanden.kv)}→{chf(z.betrag)})</button>
+                        <button className={`px-2 py-1 ${aktionen?.[z.code] === "ueberspringen" ? "bg-stone-700 text-white" : "bg-white"}`} onClick={() => setAktionen({ ...aktionen, [z.code]: "ueberspringen" })}>Überspringen</button>
+                      </div>
+                    ) : <span className="text-xs text-emerald-700">neu anlegen</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="flex justify-end gap-2 pt-3"><button className={btnGhost} onClick={onClose}>Abbrechen</button><button className={btnPrimary} disabled={!aktionen} onClick={uebernehmen}>Übernehmen</button></div>
+      </>)}
+    </Modal>
+  );
+}
+
+function AusmassVersionEditor({ version, db, dispatch, projektId, projekt, onZurueck, onUmbenennen, onDuplizieren, onLoeschen, onSchluessel, onBibliothek }) {
+  const [katalogOffen, setKatalogOffen] = useState(false);
+  const [zeilenFuer, setZeilenFuer] = useState(null);
+  const [uebernehmenOffen, setUebernehmenOffen] = useState(false);
+  const [pdfBusy, setPdfBusy] = useState(false);
+  const positionen = version.positionen || [];
+  const { ordered, total } = useMemo(() => ausmassBaum(version), [version]);
+  const katalog = useMemo(() => (version.system === "ebkph" ? (db.ebkpKatalog || ebkpKatalogLesen(EBKP_KATALOG_ROH)) : (db.bkpKatalog || bkpKatalogLesen(BKP_KATALOG_ROH))), [db.ebkpKatalog, db.bkpKatalog, version.system]);
+  const vorhanden = useMemo(() => new Set(positionen.map((p) => p.bkp)), [positionen]);
+
+  function setPositionen(neu) { dispatch({ type: "update", coll: "ausmassVersionen", id: version.id, patch: { positionen: neu } }); }
+  function patchPosition(id, patch) { setPositionen(positionen.map((p) => (p.id === id ? { ...p, ...patch } : p))); }
+  function entfernen(id) {
+    const kinder = (function zaehle(pid) { const k = positionen.filter((x) => x.parentId === pid); return k.length + k.reduce((s2, x) => s2 + zaehle(x.id), 0); })(id);
+    const p = positionen.find((x) => x.id === id);
+    if (!window.confirm(kinder ? `${p.bkp} ${p.bezeichnung} und ${kinder} Unterposition${kinder === 1 ? "" : "en"} löschen?` : `${p.bkp} ${p.bezeichnung} löschen?`)) return;
+    setPositionen(ausmassPositionEntfernen(positionen, id));
+  }
+  function aufnehmen(eintrag) {
+    if (vorhanden.has(eintrag.code)) { window.alert(`${eintrag.code} ist bereits in dieser Version.`); return; }
+    const kette = codeKette(eintrag.code, version.system);
+    const idVon = new Map(positionen.map((p) => [p.bkp, p.id]));
+    const neue = [];
+    kette.forEach((code) => {
+      if (idVon.has(code)) return;
+      const kat = katalog.find((x) => x.code === code);
+      const eltern = kette[kette.indexOf(code) - 1];
+      const id = uid();
+      neue.push({ id, bkp: code, bezeichnung: code === eintrag.code ? eintrag.bez : (kat ? kat.bez : code), parentId: eltern ? (idVon.get(eltern) || null) : null, einheit: "m2", kennwert: 0, zeilen: [] });
+      idVon.set(code, id);
+    });
+    if (neue.length) setPositionen([...positionen, ...neue]);
+  }
+  function kennwertSpeichernInBibliothek(pos) {
+    const bestehend = (db.kennwertKatalog || []).find((k) => k.system === version.system && k.code === pos.bkp);
+    const item = { id: bestehend ? bestehend.id : uid(), system: version.system, code: pos.bkp, bezeichnung: pos.bezeichnung, einheit: pos.einheit, kennwert: Number(pos.kennwert) || 0 };
+    if (bestehend) dispatch({ type: "update", coll: "kennwertKatalog", id: bestehend.id, patch: item });
+    else dispatch({ type: "add", coll: "kennwertKatalog", item });
+  }
+
+  const g = GENAUIGKEITEN[version.genauigkeit] || GENAUIGKEITEN.schaetzung;
+  const gf = Number(projekt?.gf) || 0, gv = Number(projekt?.gv) || 0;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-2 print:hidden">
+        <button className={btnGhost} onClick={onZurueck}>← Alle Versionen</button>
+        <div className="flex gap-2 flex-wrap">
+          <button className={btnGhost} onClick={onUmbenennen}>Umbenennen</button>
+          <button className={btnGhost} onClick={onDuplizieren}>Duplizieren</button>
+          {version.system === "ebkph" && <button className={btnGhost} onClick={onSchluessel}>Umschlüsselung</button>}
+          <button className={btnGhost} onClick={onBibliothek}>Kennwert-Bibliothek</button>
+          <button className={btnGhost} disabled={pdfBusy || !ordered.length} onClick={async () => {
+            setPdfBusy(true);
+            try { const bytes = await baueAusmassPdf(version, { projekt, db, gf, gv }); pdfSpeichern(bytes, `KV-Ausmass_${version.name.replace(/[^\w]+/g, "_")}_${(projekt?.name || "").replace(/[^\w]+/g, "_")}.pdf`); }
+            catch (e) { window.alert("Das PDF konnte nicht erzeugt werden: " + e.message); }
+            setPdfBusy(false);
+          }}>{pdfBusy ? "erzeugt…" : "📄 PDF"}</button>
+          <button className={btnPrimary} disabled={!ordered.length} onClick={() => setUebernehmenOffen(true)}>Ins KV übernehmen</button>
+          <button className="text-red-600 text-xs self-center hover:underline" onClick={onLoeschen}>Version löschen</button>
+        </div>
+      </div>
+      <div className={`${card} p-4 flex items-center justify-between flex-wrap gap-3`}>
+        <div>
+          <div className="font-semibold text-lg">{version.name}</div>
+          <div className="text-sm text-stone-500">{version.system === "ebkph" ? "eBKP-H" : "BKP"} · {g.label} ({g.spanne})</div>
+        </div>
+        <div className="text-right">
+          <div className="text-2xl font-semibold tabular-nums">{chf(total)}</div>
+          {gf > 0 && <div className="text-xs text-stone-500">{chf(total / gf)} CHF/m² GF</div>}
+          {gv > 0 && <div className="text-xs text-stone-500">{chf(total / gv)} CHF/m³ GV</div>}
+        </div>
+      </div>
+      <div className="flex gap-2 print:hidden">
+        <button className={katalogOffen ? btnPrimary : btnGhost} onClick={() => setKatalogOffen(!katalogOffen)}>{katalogOffen ? `${version.system === "ebkph" ? "eBKP-H" : "BKP"}-Katalog ausblenden` : `+ Position aus ${version.system === "ebkph" ? "eBKP-H" : "BKP"}-Katalog`}</button>
+      </div>
+      <div className={katalogOffen ? "grid grid-cols-1 xl:grid-cols-[minmax(340px,420px)_1fr] gap-4 items-start" : ""}>
+        {katalogOffen && <AusmassKatalogPanel system={version.system} katalog={katalog} eigenerKatalog={version.system === "ebkph" ? db.ebkpKatalog : db.bkpKatalog} vorhanden={vorhanden} onAufnehmen={aufnehmen} onSchliessen={() => setKatalogOffen(false)}
+          onCsv={(neu) => dispatch({ type: version.system === "ebkph" ? "setEbkpKatalog" : "setBkpKatalog", katalog: neu })}
+          onStandard={() => { if (window.confirm("Zum mitgelieferten Katalog zurückkehren?")) dispatch({ type: version.system === "ebkph" ? "setEbkpKatalog" : "setBkpKatalog", katalog: null }); }} />}
+        <div className="min-w-0 space-y-4">
+          {!ordered.length ? <Empty text={katalogOffen ? "Noch keine Positionen. Klicke links eine Zeile doppelt oder auf «+ hinzufügen»." : "Noch keine Positionen. Blende den Katalog ein, um welche hinzuzufügen."} /> : (
+            <div className={`${card} overflow-x-auto`}>
+              <table className="w-full text-sm">
+                <thead className="bg-stone-50 text-stone-500 text-xs"><tr>
+                  <th className="text-left font-medium px-3 py-2">Code / Bezeichnung</th>
+                  <th className="text-left font-medium px-3 py-2 w-24">Einheit</th>
+                  <th className="text-right font-medium px-3 py-2 w-28">Kennwert</th>
+                  <th className="text-right font-medium px-3 py-2 w-32">Ausmass</th>
+                  <th className="text-right font-medium px-3 py-2 w-32">Kosten</th>
+                  <th className="px-3 py-2 w-12"></th>
+                </tr></thead>
+                <tbody>
+                  {ordered.map((z) => {
+                    const vorschlag = ausmassKennwertVorschlag(db.kennwertKatalog, z.pos.bkp, version.system);
+                    return (
+                      <tr key={z.pos.id} className={`border-t border-stone-100 ${z.hasChildren ? "bg-stone-50/40" : ""}`}>
+                        <td className="px-3 py-2" style={{ paddingLeft: 12 + z.depth * 18 }}><span className={`tabular-nums ${z.hasChildren ? "font-semibold" : "font-medium"}`}>{z.pos.bkp}</span> <span className={z.hasChildren ? "font-semibold" : ""}>{z.pos.bezeichnung}</span></td>
+                        <td className="px-3 py-2">{!z.hasChildren && (
+                          <select className="text-xs rounded border border-stone-200 px-1 py-0.5 bg-white" value={z.pos.einheit} onChange={(e) => patchPosition(z.pos.id, { einheit: e.target.value })}>
+                            {Object.entries(AUSMASS_EINHEITEN).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+                          </select>
+                        )}</td>
+                        <td className="px-3 py-2 text-right">{!z.hasChildren && (<>
+                          <ZahlZelle wert={z.pos.kennwert} onSpeichern={(n) => patchPosition(z.pos.id, { kennwert: n })} className="w-20 text-right text-xs tabular-nums border border-stone-200 rounded px-1.5 py-0.5" />
+                          <div className="flex items-center justify-end gap-1.5 mt-0.5">
+                            {vorschlag && Number(vorschlag.kennwert) !== Number(z.pos.kennwert) ? <button className="text-[10px] text-stone-400 hover:text-orange-800" title={`Aus Bibliothek übernehmen: ${chf(vorschlag.kennwert)}`} onClick={() => patchPosition(z.pos.id, { kennwert: vorschlag.kennwert })}>↺ {chf(vorschlag.kennwert)}</button> : null}
+                            <button className="text-[10px] text-stone-400 hover:text-orange-800" title="Aktuellen Kennwert in der Bibliothek speichern" onClick={() => kennwertSpeichernInBibliothek(z.pos)}>💾</button>
+                          </div>
+                        </>)}</td>
+                        <td className="px-3 py-2 text-right">{!z.hasChildren && (
+                          <button className="text-xs hover:underline tabular-nums" onClick={() => setZeilenFuer(z.pos)}>
+                            {z.eigen.menge ? `${z.eigen.menge.toLocaleString("de-CH", { maximumFractionDigits: 2 })} ${AUSMASS_EINHEITEN[z.pos.einheit]}` : "Ausmass +"}
+                            {(z.pos.zeilen || []).length > 0 ? ` (${z.pos.zeilen.length})` : ""}
+                          </button>
+                        )}</td>
+                        <td className="px-3 py-2 text-right tabular-nums font-medium">{chf(z.hasChildren ? z.roll.kosten : z.eigen.kosten)}</td>
+                        <td className="px-3 py-2 text-right"><button className="text-red-600 hover:underline text-xs" onClick={() => entfernen(z.pos.id)}>Lö.</button></td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+                <tfoot><tr className="border-t-2 border-stone-300 font-semibold bg-stone-50">
+                  <td className="px-3 py-2" colSpan={4}>Total</td><td className="px-3 py-2 text-right tabular-nums">{chf(total)}</td><td></td>
+                </tr></tfoot>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
+      {zeilenFuer && <AusmassZeilenModal pos={zeilenFuer} onClose={() => setZeilenFuer(null)} onSave={(zeilen) => { patchPosition(zeilenFuer.id, { zeilen }); setZeilenFuer(null); }} />}
+      {uebernehmenOffen && <AusmassUebernehmenModal version={version} db={db} dispatch={dispatch} projektId={projektId} onClose={() => setUebernehmenOffen(false)} onSchluessel={() => { setUebernehmenOffen(false); onSchluessel(); }} />}
+    </div>
+  );
+}
+
+function AusmassView({ db, dispatch, projektId, projekt }) {
+  const versionen = (db.ausmassVersionen || []).filter((v) => v.projektId === projektId).sort((a, b) => String(b.erstellt).localeCompare(String(a.erstellt)));
+  const [offenId, setOffenId] = useState(null);
+  const [neu, setNeu] = useState(null);
+  const [schluesselOffen, setSchluesselOffen] = useState(false);
+  const [bibliothekOffen, setBibliothekOffen] = useState(false);
+  const [vergleichOffen, setVergleichOffen] = useState(false);
+  const offen = versionen.find((v) => v.id === offenId);
+
+  function anlegen(f) {
+    const id = uid();
+    dispatch({ type: "add", coll: "ausmassVersionen", item: { id, projektId, name: f.name.trim() || "Neue Version", system: f.system, genauigkeit: f.genauigkeit, erstellt: new Date().toISOString(), positionen: [] } });
+    setNeu(null);
+    setOffenId(id);
+  }
+  function duplizieren(v) {
+    const id = uid();
+    dispatch({ type: "add", coll: "ausmassVersionen", item: { ...v, id, name: v.name + " (Kopie)", erstellt: new Date().toISOString(), positionen: (v.positionen || []).map((p) => ({ ...p, zeilen: (p.zeilen || []).map((z) => ({ ...z })) })) } });
+  }
+  function umbenennen(v) { const n = window.prompt("Neuer Name für diese Version:", v.name); if (n && n.trim()) dispatch({ type: "update", coll: "ausmassVersionen", id: v.id, patch: { name: n.trim() } }); }
+  function loeschen(v) { if (window.confirm(`Version «${v.name}» endgültig löschen?`)) { dispatch({ type: "remove", coll: "ausmassVersionen", id: v.id }); if (offenId === v.id) setOffenId(null); } }
+
+  if (offen) return (<>
+    <AusmassVersionEditor version={offen} db={db} dispatch={dispatch} projektId={projektId} projekt={projekt}
+      onZurueck={() => setOffenId(null)} onUmbenennen={() => umbenennen(offen)} onDuplizieren={() => duplizieren(offen)} onLoeschen={() => loeschen(offen)}
+      onSchluessel={() => setSchluesselOffen(true)} onBibliothek={() => setBibliothekOffen(true)} />
+    {schluesselOffen && <SchluesselEditor db={db} dispatch={dispatch} onClose={() => setSchluesselOffen(false)} />}
+    {bibliothekOffen && <KennwertBibliothekModal db={db} dispatch={dispatch} onClose={() => setBibliothekOffen(false)} />}
+  </>);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex gap-2 flex-wrap print:hidden">
+        <button className={btnPrimary} onClick={() => setNeu({ name: "", system: "ebkph", genauigkeit: "schaetzung" })}>+ Neue Version</button>
+        {versionen.length > 1 && <button className={btnGhost} onClick={() => setVergleichOffen(true)}>Versionen vergleichen</button>}
+        <button className={btnGhost} onClick={() => setSchluesselOffen(true)}>Umschlüsselung eBKP-H → BKP</button>
+        <button className={btnGhost} onClick={() => setBibliothekOffen(true)}>Kennwert-Bibliothek</button>
+      </div>
+      {!versionen.length ? <Empty text="Noch kein KV Ausmass für dieses Projekt. Lege eine neue Version an, um Mengen und Kennwerte nach eBKP-H oder BKP zu erfassen." /> : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+          {versionen.map((v) => {
+            const { total } = ausmassBaum(v);
+            const g = GENAUIGKEITEN[v.genauigkeit] || GENAUIGKEITEN.schaetzung;
+            return (
+              <div key={v.id} className={`${card} p-4 cursor-pointer hover:border-orange-300`} onClick={() => setOffenId(v.id)}>
+                <div className="flex items-start justify-between gap-2">
+                  <div className="font-semibold truncate">{v.name}</div>
+                  <span className="text-[10px] rounded-full px-2 py-0.5 bg-stone-100 text-stone-600 shrink-0">{v.system === "ebkph" ? "eBKP-H" : "BKP"}</span>
+                </div>
+                <div className="text-xs text-stone-500 mt-0.5">{g.label} ({g.spanne}) · {(v.positionen || []).length} Positionen</div>
+                <div className="text-lg font-semibold tabular-nums mt-2">{chf(total)}</div>
+                <div className="text-xs text-stone-400 mt-2">Erstellt {new Date(v.erstellt).toLocaleDateString("de-CH")}</div>
+                <div className="flex gap-3 mt-2 text-xs" onClick={(e) => e.stopPropagation()}>
+                  <button className="text-stone-500 hover:underline" onClick={() => umbenennen(v)}>Umbenennen</button>
+                  <button className="text-stone-500 hover:underline" onClick={() => duplizieren(v)}>Duplizieren</button>
+                  <button className="text-red-600 hover:underline" onClick={() => loeschen(v)}>Löschen</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {neu && (
+        <Modal title="Neue Ausmass-Version" onClose={() => setNeu(null)}>
+          <div className="space-y-3">
+            <Field label="Name"><input className={inputCls} autoFocus value={neu.name} onChange={(e) => setNeu({ ...neu, name: e.target.value })} placeholder="z.B. Standard, Minergie, Variante A" /></Field>
+            <Field label="System">
+              <div className="flex gap-4 text-sm">
+                <label className="inline-flex items-center gap-1.5"><input type="radio" checked={neu.system === "ebkph"} onChange={() => setNeu({ ...neu, system: "ebkph" })} /> eBKP-H (Elemente)</label>
+                <label className="inline-flex items-center gap-1.5"><input type="radio" checked={neu.system === "bkp"} onChange={() => setNeu({ ...neu, system: "bkp" })} /> BKP (Gewerke)</label>
+              </div>
+            </Field>
+            <Field label="Genauigkeitsgrad">
+              <select className={inputCls} value={neu.genauigkeit} onChange={(e) => setNeu({ ...neu, genauigkeit: e.target.value })}>
+                {Object.entries(GENAUIGKEITEN).map(([k, g]) => <option key={k} value={k}>{g.label} ({g.spanne})</option>)}
+              </select>
+            </Field>
+            <p className="text-xs text-stone-400">Das System lässt sich nach dem Anlegen nicht mehr ändern.</p>
+            <div className="flex justify-end gap-2 pt-1"><button className={btnGhost} onClick={() => setNeu(null)}>Abbrechen</button><button className={btnPrimary} disabled={!neu.name.trim()} onClick={() => anlegen(neu)}>Anlegen</button></div>
+          </div>
+        </Modal>
+      )}
+      {schluesselOffen && <SchluesselEditor db={db} dispatch={dispatch} onClose={() => setSchluesselOffen(false)} />}
+      {bibliothekOffen && <KennwertBibliothekModal db={db} dispatch={dispatch} onClose={() => setBibliothekOffen(false)} />}
+      {vergleichOffen && <AusmassVergleich versionen={versionen} db={db} projekt={projekt} onClose={() => setVergleichOffen(false)} />}
+    </div>
   );
 }
 
@@ -4407,6 +5153,70 @@ async function baueKvPdf(ctx) {
     bl.text("Total inkl. MwSt", { size: 10, fett: true });
     bl.text("CHF " + chfPdf(basis * (1 + satz / 100)), { rechts, size: 10, fett: true });
   }
+  bl.abschliessen();
+  return doc.save();
+}
+
+// ---------- KV Ausmass als PDF ----------
+async function baueAusmassPdf(version, ctx) {
+  const { projekt, db, gf, gv } = ctx;
+  const rollen = projektRollen(db, projekt);
+  const { ordered, total } = ausmassBaum(version);
+  const doc = await PDFLib.PDFDocument.create();
+  const schriften = { normal: await doc.embedFont(PDFLib.StandardFonts.Helvetica), fett: await doc.embedFont(PDFLib.StandardFonts.HelveticaBold) };
+  const { v: vorlage, logoBild } = await pdfVorlage(doc, db, projekt);
+  const grau = PDFLib.rgb(0.45, 0.42, 0.40);
+  const bl = pdfBlatt(doc, schriften, A4, vorlage, logoBild);
+  const rechts = A4.breite - RAND;
+  const g = GENAUIGKEITEN[version.genauigkeit] || GENAUIGKEITEN.schaetzung;
+  const titel = `KV Ausmass — ${version.name}`;
+  const zusatz = `${version.system === "ebkph" ? "eBKP-H" : "BKP"} · ${g.label} (${g.spanne})`;
+
+  const spalten = [
+    { l: "Einheit", w: 44, f: (z) => (z.hasChildren ? "" : AUSMASS_EINHEITEN[z.pos.einheit] || "") },
+    { l: "Kennwert", w: 66, f: (z) => (z.hasChildren ? "" : chfPdf(z.pos.kennwert)) },
+    { l: "Menge", w: 66, f: (z) => (z.hasChildren ? "" : (z.eigen.menge ? z.eigen.menge.toLocaleString("de-CH", { maximumFractionDigits: 2 }) : "–")) },
+    { l: "Kosten", w: 86, f: (z) => chfPdf(z.hasChildren ? z.roll.kosten : z.eigen.kosten), fett: true },
+  ];
+  const gesamtW = spalten.reduce((a, c) => a + c.w, 0);
+  const textB = rechts - RAND - gesamtW;
+  const spX = (i) => RAND + textB + spalten.slice(0, i + 1).reduce((a, c) => a + c.w, 0);
+
+  const kopf = (fortsetzung) => {
+    pdfKopf(bl, titel, projekt, rollen, zusatz + (fortsetzung ? "  ·  Fortsetzung" : ""), vorlage);
+    spalten.forEach((c, i) => bl.text(c.l, { rechts: spX(i) - 4, size: 7.5, farbe: grau }));
+    bl.y -= 9; bl.linie(RAND, rechts, bl.y, 0.8, PDFLib.rgb(0.55, 0.52, 0.50)); bl.y -= 14;
+  };
+  kopf(false);
+
+  ordered.forEach((z) => {
+    const zeilenAnz = z.hasChildren ? 0 : (z.pos.zeilen || []).filter((x) => x.formel).length;
+    if (bl.y - (16 + zeilenAnz * 11) < bl.untenRand + 20) { bl.neueSeite(); kopf(true); }
+    const gruppe = z.hasChildren;
+    const size = gruppe ? 9 : 8.5;
+    bl.text(z.pos.bkp, { x: RAND + 4 + z.depth * 12, size, fett: gruppe });
+    const bez = bl.umbruch(z.pos.bezeichnung, textB - 60 - z.depth * 12, size, gruppe)[0] || "";
+    bl.text(bez, { x: RAND + 46 + z.depth * 12, size, fett: gruppe });
+    spalten.forEach((c, i) => bl.text(c.f(z), { rechts: spX(i) - 4, size, fett: gruppe || c.fett }));
+    bl.y -= gruppe ? 15 : 13;
+    if (!gruppe) {
+      (z.pos.zeilen || []).filter((x) => x.formel).forEach((zl) => {
+        const wert = ausmassFormelWert(zl.formel);
+        bl.text(`· ${zl.bezeichnung || "–"} (${zl.formel})`, { x: RAND + 62 + z.depth * 12, size: 7.5, farbe: grau });
+        bl.text(isNaN(wert) ? "–" : wert.toLocaleString("de-CH", { maximumFractionDigits: 2 }), { rechts: spX(2) - 4, size: 7.5, farbe: grau });
+        bl.y -= 11;
+      });
+    }
+    if (gruppe) bl.linie(RAND, rechts, bl.y + 5, 0.3, PDFLib.rgb(0.91, 0.90, 0.89));
+  });
+
+  bl.platz(70);
+  bl.y -= 8; bl.linie(RAND, rechts, bl.y, 1.2, PDFLib.rgb(0.13, 0.12, 0.11)); bl.y -= 17;
+  bl.text("Total", { size: 10, fett: true });
+  bl.text(chfPdf(total), { rechts, size: 10, fett: true });
+  bl.y -= 16;
+  if (gf > 0) { bl.text(`CHF/m² Geschossfläche (${chfPdf(gf)} m²)`, { size: 8.5, farbe: grau }); bl.text(chfPdf(total / gf), { rechts, size: 8.5, farbe: grau }); bl.y -= 12; }
+  if (gv > 0) { bl.text(`CHF/m³ Gebäudevolumen (${chfPdf(gv)} m³)`, { size: 8.5, farbe: grau }); bl.text(chfPdf(total / gv), { rechts, size: 8.5, farbe: grau }); bl.y -= 12; }
   bl.abschliessen();
   return doc.save();
 }
