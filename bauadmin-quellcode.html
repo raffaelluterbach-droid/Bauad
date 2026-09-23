@@ -3553,7 +3553,7 @@ function App() {
           <div className="mb-4">
             <div className="flex items-start justify-between gap-3">
               <h1 className="text-xl font-semibold">{[...navGlobal, ...nav].find((n) => n[0] === view)?.[1]}</h1>
-              <button className={`${btnGhost} print:hidden shrink-0`} title="Diese Ansicht drucken (quer, A4)" onClick={() => window.print()}>🖨<span className="hidden sm:inline"> Drucken</span></button>
+              <button className={`${btnGhost} print:hidden shrink-0`} title="Diese Ansicht drucken (quer, A4)" onClick={() => { if (window.claude && typeof window.claude.use === "function") { window.alert("Drucken ist in dieser geteilten Ansicht nicht möglich — das eingebettete Fenster lässt den System-Druckdialog nicht zu. Öffne dafür die lokale bauadmin.html; dort funktioniert «Drucken» normal."); return; } window.print(); }}>🖨<span className="hidden sm:inline"> Drucken</span></button>
               <span className="hidden print:inline text-xs text-stone-500">Stand {today().split("-").reverse().join(".")}</span>
             </div>
             {navGlobal.some((n) => n[0] === view)
@@ -4735,7 +4735,7 @@ function VertraegeView({ d, dispatch, projektId, projekt, firmen, db }) {
     rows.push(
       <div key={v.id} className={card}>
         <button className="w-full text-left px-3 py-2.5 flex items-center gap-2.5 hover:bg-stone-50/70 rounded-xl" onClick={() => setOffeneVertraege(offen ? offeneVertraege.filter((x) => x !== v.id) : [...offeneVertraege, v.id])}>
-          <span className={`text-stone-400 text-[10px] shrink-0 ${offen ? "rotate-90" : ""}`} style={{ display: "inline-block", transition: "transform .15s" }}>▶</span>
+          <span className={`print:hidden text-stone-400 text-[10px] shrink-0 ${offen ? "rotate-90" : ""}`} style={{ display: "inline-block", transition: "transform .15s" }}>▶</span>
           <span className="shrink-0 inline-block bg-orange-50 text-orange-800 font-semibold tabular-nums text-xs rounded px-1.5 py-0.5">{pos ? pos.bkp : "—"}</span>
           <span className="font-medium tabular-nums text-sm shrink-0 whitespace-nowrap min-w-[58px]">{v.nr || "—"}</span>
           <span className="font-medium truncate flex-1 min-w-0">{v.unternehmer}</span>
@@ -6518,7 +6518,7 @@ function AngebotCard({ a, d, dispatch, projektId, projekt, onEdit, db, rollen, k
   return (
     <div className={card}>
       <button className="w-full text-left px-3 py-2.5 flex items-center gap-2.5 hover:bg-stone-50/70 rounded-xl" onClick={() => setOffen(!offen)}>
-        <span className="text-stone-400 text-[10px] shrink-0" style={{ display: "inline-block", transition: "transform .15s", transform: offen ? "rotate(90deg)" : "none" }}>▶</span>
+        <span className="print:hidden text-stone-400 text-[10px] shrink-0" style={{ display: "inline-block", transition: "transform .15s", transform: offen ? "rotate(90deg)" : "none" }}>▶</span>
         <span className="shrink-0 inline-block bg-orange-50 text-orange-800 font-semibold tabular-nums text-xs rounded px-1.5 py-0.5">{posKurz}</span>
         <span className="font-medium truncate flex-1 min-w-0">{a.titel || "Ohne Titel"}</span>
         {isLv ? <span className="text-[10px] bg-stone-100 text-stone-600 rounded px-1.5 py-0.5 shrink-0">LV · {(a.positionen || []).length} Pos.</span> : null}
