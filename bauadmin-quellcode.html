@@ -535,6 +535,7 @@ function normalize(db) {
     return n;
   });
   db.rechnungen = db.rechnungen.map((r) => ({ typ: r.typ || "rechnung", beleg: null, buchungsNr: "", ...r }));
+  db.rapporte = (db.rapporte || []).map((r) => ({ beleg: null, ...r }));
   // Bestehende Rechnungen je Projekt nach Datum nachnummerieren
   db.projekte.forEach((pr) => {
     const offen = db.rechnungen.filter((r) => r.projektId === pr.id && !r.buchungsNr).sort((a, b) => (a.datum || "").localeCompare(b.datum || ""));
@@ -1013,7 +1014,7 @@ const HILFE = {
   rechnungen: ["Rechnungen auf einen Vertrag buchen (oder direkt auf eine BKP-Position).", "Rechnungs-PDF in den Reiter ziehen: Vertrag, Betrag, Datum und Nummer werden vorgeschlagen, das PDF wird als Beleg angehängt.", "Auf ein bestehendes «+ PDF» gezogen, wird das PDF nur dort als Beleg hinterlegt.", "Status-Ablauf: erfasst → geprüft → bezahlt. Nur «bezahlt» zählt in die Spalte Bezahlt.", "«Druck» erstellt eine Zahlungsfreigabe zum Unterschreiben.", "Rot in fakt./soll = mehr fakturiert als vertraglich vereinbart."],
   lv: ["① LV importieren (.crbx aus Messerli/CRB) oder Positionen manuell erfassen.", "② Leere Offerte als CSV oder .crbx an die Unternehmer senden.", "③ Zurückerhaltene Offerten je Firma einlesen (⬇) — Preise erscheinen automatisch in der Matrix. Oder Preise direkt eintippen.", "④ Vergleichen (günstigster Preis grün) und unten «vergeben» — als neuer Vertrag oder zu einem bestehenden dazu.", "Vergabeantrag drucken für die Bauherrschaft."],
   angebote: ["Offerten vergleichen und vergeben: je Unternehmer eine Spalte mit der Konditionen-Staffel von brutto bis netto.", "Bieter fügst du aus dem Adressstamm hinzu — mehrere auf einmal.", "Hier entstehen auch Vergabeantrag, Positionsvergleich und das Leistungsverzeichnis als PDF."],
-  rapporte: ["Regierapporte auf Verträge buchen (Stunden × Ansatz + Material).", "Solange das Regiebudget des Vertrags nicht überschritten ist, ändert sich die Prognose nicht — erst der Überschuss fliesst als Erwartung ein."],
+  rapporte: ["Regierapporte auf Verträge buchen (Stunden × Ansatz + Material).", "Solange das Regiebudget des Vertrags nicht überschritten ist, ändert sich die Prognose nicht — erst der Überschuss fliesst als Erwartung ein.", "«Bearb.» ändert einen erfassten Rapport nachträglich; unter «Beleg» lässt sich ein PDF des Regierapports hinterlegen (Knopf oder Ziehen-und-Ablegen)."],
   erwartungen: ["Erwartete Mehrkosten erfassen, die noch in keinem Nachtrag stecken.", "Prognose = Vertrag (oder KV) + Erwartung. Regie-Überschüsse erscheinen automatisch."],
   baustelle: ["Die Kompaktansicht für Handy und Tablet: Kostenstand, offene Rechnungen und Verträge auf einen Blick.", "Rechnungen lassen sich hier als geprüft oder bezahlt markieren und neue Rechnungs-PDFs erfassen.", "Auf dem Handy startet BauAdmin direkt in dieser Ansicht."],
   abrechnung: ["Die Gesamtübersicht nach BKP — netto oder brutto, mit Detailzeilen (▸).", "Doppelklick auf Erwartung/Prognose setzt den Wert direkt.", "Excel-Export (mit Detailblatt) oder PDF für die Bauherrschaft — Spalten und Einzelrechnungen sind dabei wählbar.", "Klick auf eine Rechnung öffnet ihren Beleg; fehlt er, kannst du ihn gleich anhängen."],
@@ -6009,11 +6010,11 @@ function VergauftraegeView({ db, d, dispatch, projektId, projekt, ks, firmen }) 
   );
 }
 
-function BelegFeld({ rechnung, dispatch }) {
+function BelegFeld({ record, coll, dispatch }) {
   const [busy, setBusy] = useState(false);
   const [ueber, setUeber] = useState(false);
   const ref = useRef(null);
-  const hat = !!rechnung.beleg;
+  const hat = !!record.beleg;
 
   const uebernehmen = async (datei) => {
     if (!datei) return;
@@ -6021,16 +6022,16 @@ function BelegFeld({ rechnung, dispatch }) {
     if (datei.size > 25 * 1024 * 1024) { window.alert("Die Datei ist grösser als 25 MB. Bitte vorher verkleinern."); return; }
     setBusy(true);
     try {
-      const id = rechnung.beleg?.id || uid();
+      const id = record.beleg?.id || uid();
       await belegSpeichern(id, datei);
-      dispatch({ type: "update", coll: "rechnungen", id: rechnung.id, patch: { beleg: { id, name: datei.name, groesse: datei.size, datum: today() } } });
+      dispatch({ type: "update", coll, id: record.id, patch: { beleg: { id, name: datei.name, groesse: datei.size, datum: today() } } });
     } catch (e) { window.alert("Beleg konnte nicht gespeichert werden: " + e.message); }
     setBusy(false);
   };
 
   const ansehen = async () => {
     try {
-      const blob = await belegLaden(rechnung.beleg.id);
+      const blob = await belegLaden(record.beleg.id);
       if (!blob) { window.alert("Der Beleg wurde nicht gefunden — bitte neu hochladen."); return; }
       const url = URL.createObjectURL(blob);
       window.open(url, "_blank");
@@ -6039,9 +6040,9 @@ function BelegFeld({ rechnung, dispatch }) {
   };
 
   const entfernen = async () => {
-    if (!window.confirm("Beleg zu dieser Rechnung entfernen?")) return;
-    try { await belegLoeschen(rechnung.beleg.id); } catch (e) {}
-    dispatch({ type: "update", coll: "rechnungen", id: rechnung.id, patch: { beleg: null } });
+    if (!window.confirm("Beleg entfernen?")) return;
+    try { await belegLoeschen(record.beleg.id); } catch (e) {}
+    dispatch({ type: "update", coll, id: record.id, patch: { beleg: null } });
   };
 
   return (
@@ -6050,12 +6051,12 @@ function BelegFeld({ rechnung, dispatch }) {
       onDragLeave={() => setUeber(false)}
       onDrop={(e) => { e.preventDefault(); e.stopPropagation(); setUeber(false); uebernehmen(e.dataTransfer.files[0]); }}
       className={`inline-flex items-center gap-1.5 rounded px-1 ${ueber ? "ring-2 ring-orange-500 bg-orange-50" : ""}`}
-      title={hat ? rechnung.beleg.name : "PDF hierher ziehen oder klicken"}
+      title={hat ? record.beleg.name : "PDF hierher ziehen oder klicken"}
     >
       <input ref={ref} type="file" accept="application/pdf,.pdf" className="hidden" onChange={(e) => { uebernehmen(e.target.files[0]); e.target.value = ""; }} />
       {busy ? <span className="text-xs text-stone-400">lädt…</span> : hat ? (
         <>
-          <button className="print-keep text-xs text-orange-800 hover:underline max-w-[110px] truncate" onClick={ansehen}>📄 {rechnung.beleg.name}</button>
+          <button className="print-keep text-xs text-orange-800 hover:underline max-w-[110px] truncate" onClick={ansehen}>📄 {record.beleg.name}</button>
           <button className="text-xs text-stone-400 hover:text-stone-700" title="Beleg ersetzen" onClick={() => ref.current?.click()}>↻</button>
           <button className="text-xs text-stone-400 hover:text-red-600" title="Beleg entfernen" onClick={entfernen}>×</button>
         </>
@@ -6432,7 +6433,7 @@ function RechnungenView({ d, dispatch, projektId, projekt, db }) {
                 <td className="px-3 py-2 text-right tabular-nums whitespace-nowrap">{chf(r.betrag)}</td>
                 <td className="px-3 py-2"><select className={`text-xs rounded px-1.5 py-0.5 border-0 ${statusCol[r.status]}`} value={r.status} onChange={(e) => dispatch({ type: "update", coll: "rechnungen", id: r.id, patch: { status: e.target.value } })}><option value="erfasst">erfasst</option><option value="geprueft">geprüft</option><option value="bezahlt">bezahlt</option></select></td>
                 <td className={`px-3 py-2 text-right tabular-nums text-xs whitespace-nowrap ${ueber ? "text-red-600 font-medium" : "text-stone-500"}`}>{pv ? `${chf(pv.fakt)} / ${chf(pv.soll)}` : "–"}</td>
-                <td className="px-3 py-2"><BelegFeld rechnung={r} dispatch={dispatch} /></td>
+                <td className="px-3 py-2"><BelegFeld record={r} coll="rechnungen" dispatch={dispatch} /></td>
                 <td className="px-3 py-2 text-right whitespace-nowrap"><button className="text-stone-600 text-xs hover:underline mr-2" title="Zahlungsfreigabe als PDF" onClick={async () => {
                   try {
                     const v = d.vertraege.find((x) => x.id === r.vertragId);
@@ -7307,9 +7308,34 @@ function VergabeModal({ info, vertraege, dispatch, projektId, onClose, db, rolle
   );
 }
 
+function RapportEditor({ r, vertraege, vLabel, onClose, onSave }) {
+  const [f, setF] = useState({ vertragId: r.vertragId || "", datum: r.datum || today(), beschrieb: r.beschrieb || "", stunden: r.stunden ?? "", ansatz: r.ansatz ?? "", material: r.material ?? "" });
+  return (
+    <Modal title="Rapport bearbeiten" onClose={onClose}>
+      <div className="space-y-3">
+        <Field label="Vertrag"><select className={inputCls} value={f.vertragId} onChange={(e) => setF({ ...f, vertragId: e.target.value })}><option value="">wählen…</option>{vertraege.map((v) => <option key={v.id} value={v.id}>{vLabel(v.id)}</option>)}</select></Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Datum"><input type="date" className={inputCls} value={f.datum} onChange={(e) => setF({ ...f, datum: e.target.value })} /></Field>
+          <Field label="Beschrieb"><input className={inputCls} value={f.beschrieb} onChange={(e) => setF({ ...f, beschrieb: e.target.value })} /></Field>
+        </div>
+        <div className="grid grid-cols-3 gap-3">
+          <Field label="Std."><input className={inputCls} value={f.stunden} onChange={(e) => setF({ ...f, stunden: e.target.value })} /></Field>
+          <Field label="Ansatz"><input className={inputCls} value={f.ansatz} onChange={(e) => setF({ ...f, ansatz: e.target.value })} /></Field>
+          <Field label="Material"><input className={inputCls} value={f.material} onChange={(e) => setF({ ...f, material: e.target.value })} /></Field>
+        </div>
+        <div className="flex justify-end gap-2 pt-1">
+          <button className={btnGhost} onClick={onClose}>Abbrechen</button>
+          <button className={btnPrimary} disabled={!f.vertragId} onClick={() => onSave({ ...f, stunden: parseBetrag(f.stunden), ansatz: parseBetrag(f.ansatz), material: parseBetrag(f.material) })}>Speichern</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 function RapporteView({ d, dispatch, projektId }) {
   const [f, setF] = useState({ vertragId: "", datum: today(), beschrieb: "", stunden: "", ansatz: "", material: "" });
   const [importOpen, setImportOpen] = useState(false);
+  const [editFor, setEditFor] = useState(null);
   const vertragOf = (id) => d.vertraege.find((x) => x.id === id);
   const vLabel = (id) => { const v = vertragOf(id); if (!v) return "— (Vertrag fehlt)"; const p = d.positionen.find((x) => x.id === v.positionId); return `${v.unternehmer}${p ? " · " + p.bkp : ""}`; };
   const totalNetto = d.rapporte.reduce((s, r) => s + rapportNetto(r, vertragOf(r.vertragId)), 0);
@@ -7352,12 +7378,13 @@ function RapporteView({ d, dispatch, projektId }) {
 
       {!d.rapporte.length ? <Empty text="Keine Rapporte erfasst." /> : (
         <div className={`${card} overflow-x-auto`}><table className="w-full text-sm">
-          <thead className="bg-stone-50 text-stone-500 text-xs"><tr><th className="text-left font-medium px-3 py-2">Datum</th><th className="text-left font-medium px-3 py-2">Vertrag</th><th className="text-left font-medium px-3 py-2">Beschrieb</th><th className="text-right font-medium px-3 py-2">Std.</th><th className="text-right font-medium px-3 py-2">Ansatz</th><th className="text-right font-medium px-3 py-2">Material</th><th className="text-right font-medium px-3 py-2">Betrag</th><th className="text-right font-medium px-3 py-2">netto n. Kond.</th><th className="w-12"></th></tr></thead>
-          <tbody>{d.rapporte.map((r) => { const v = vertragOf(r.vertragId); return (<tr key={r.id} className="border-t border-stone-100"><td className="px-3 py-2 tabular-nums text-stone-500">{r.datum}</td><td className="px-3 py-2">{vLabel(r.vertragId)}</td><td className="px-3 py-2 text-stone-600">{r.beschrieb}</td><td className="px-3 py-2 text-right tabular-nums">{r.stunden || "–"}</td><td className="px-3 py-2 text-right tabular-nums">{r.ansatz ? chf(r.ansatz) : "–"}</td><td className="px-3 py-2 text-right tabular-nums">{r.material ? chf(r.material) : "–"}</td><td className="px-3 py-2 text-right tabular-nums">{chf(rapportBetrag(r))}</td><td className="px-3 py-2 text-right tabular-nums font-medium">{chf(rapportNetto(r, v))}</td><td className="px-3 py-2 text-right"><button className="text-red-600 text-xs hover:underline" onClick={() => dispatch({ type: "remove", coll: "rapporte", id: r.id })}>Lö.</button></td></tr>); })}</tbody>
-          <tfoot><tr className="border-t-2 border-stone-300 font-semibold bg-stone-50"><td className="px-3 py-2" colSpan={7}>Total Regie netto</td><td className="px-3 py-2 text-right tabular-nums">{chf(totalNetto)}</td><td></td></tr></tfoot>
+          <thead className="bg-stone-50 text-stone-500 text-xs"><tr><th className="text-left font-medium px-3 py-2">Datum</th><th className="text-left font-medium px-3 py-2">Vertrag</th><th className="text-left font-medium px-3 py-2">Beschrieb</th><th className="text-right font-medium px-3 py-2">Std.</th><th className="text-right font-medium px-3 py-2">Ansatz</th><th className="text-right font-medium px-3 py-2">Material</th><th className="text-right font-medium px-3 py-2">Betrag</th><th className="text-right font-medium px-3 py-2">netto n. Kond.</th><th className="text-left font-medium px-3 py-2">Beleg</th><th className="w-20"></th></tr></thead>
+          <tbody>{d.rapporte.map((r) => { const v = vertragOf(r.vertragId); return (<tr key={r.id} className="border-t border-stone-100"><td className="px-3 py-2 tabular-nums text-stone-500">{r.datum}</td><td className="px-3 py-2">{vLabel(r.vertragId)}</td><td className="px-3 py-2 text-stone-600">{r.beschrieb}</td><td className="px-3 py-2 text-right tabular-nums">{r.stunden || "–"}</td><td className="px-3 py-2 text-right tabular-nums">{r.ansatz ? chf(r.ansatz) : "–"}</td><td className="px-3 py-2 text-right tabular-nums">{r.material ? chf(r.material) : "–"}</td><td className="px-3 py-2 text-right tabular-nums">{chf(rapportBetrag(r))}</td><td className="px-3 py-2 text-right tabular-nums font-medium">{chf(rapportNetto(r, v))}</td><td className="px-3 py-2"><BelegFeld record={r} coll="rapporte" dispatch={dispatch} /></td><td className="px-3 py-2 text-right whitespace-nowrap"><button className="text-orange-800 text-xs hover:underline mr-2" onClick={() => setEditFor(r)}>Bearb.</button><button className="text-red-600 text-xs hover:underline" onClick={() => { if (window.confirm("Diesen Rapport löschen?")) dispatch({ type: "remove", coll: "rapporte", id: r.id }); }}>Lö.</button></td></tr>); })}</tbody>
+          <tfoot><tr className="border-t-2 border-stone-300 font-semibold bg-stone-50"><td className="px-3 py-2" colSpan={7}>Total Regie netto</td><td className="px-3 py-2 text-right tabular-nums">{chf(totalNetto)}</td><td colSpan={2}></td></tr></tfoot>
         </table></div>
       )}
       {importOpen && <RapportImport vertraege={d.vertraege} onClose={() => setImportOpen(false)} onImport={(rows) => { dispatch({ type: "addMany", coll: "rapporte", items: rows.map((r) => ({ id: uid(), projektId, ...r })) }); setImportOpen(false); }} />}
+      {editFor && <RapportEditor r={editFor} vertraege={d.vertraege} vLabel={vLabel} onClose={() => setEditFor(null)} onSave={(patch) => { dispatch({ type: "update", coll: "rapporte", id: editFor.id, patch }); setEditFor(null); }} />}
     </div>
   );
 }
