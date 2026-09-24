@@ -6483,6 +6483,27 @@ const POSARTEN = [
   { k: "eventual", l: "Eventual", kurz: "Ev", hilfe: "bepreist, ausserhalb des Totals" },
   { k: "per", l: "Per", kurz: "Per", hilfe: "Preis pro Einheit, ausserhalb des Totals" },
 ];
+const EINHEITEN = ["m", "m2", "m3", "kg", "t", "Stk", "h", "LE", "pauschal"];
+function EinheitFeld({ value, onChange, className }) {
+  const bekannt = EINHEITEN.includes(value);
+  const [eigen, setEigen] = useState(!bekannt && !!value);
+  const cls = className || inputCls;
+  if (eigen) {
+    return (
+      <span className="flex items-center gap-1">
+        <input className={cls} value={value} onChange={(e) => onChange(e.target.value)} placeholder="Einheit" autoFocus />
+        <button type="button" className="text-[10px] text-stone-400 hover:underline whitespace-nowrap" onClick={() => setEigen(false)} title="Aus Liste wählen">Liste</button>
+      </span>
+    );
+  }
+  return (
+    <select className={cls} value={bekannt ? value : ""} onChange={(e) => { if (e.target.value === "__eigen") setEigen(true); else onChange(e.target.value); }}>
+      <option value="">—</option>
+      {EINHEITEN.map((e) => <option key={e} value={e}>{e}</option>)}
+      <option value="__eigen">Andere…</option>
+    </select>
+  );
+}
 const posArtLabel = (k) => (POSARTEN.find((x) => x.k === (k || "normal")) || POSARTEN[0]).l;
 function bieterNichtGewertet(b, a) {
   if (!a || a.modus !== "lv") return 0;
@@ -6573,18 +6594,64 @@ function AngebotBieterBereich({ a, d, dispatch, projekt, firmen, neuBieter, onVe
       </div>
 
       <div className="flex items-center justify-between flex-wrap gap-2">
-        <span className="text-xs font-medium text-stone-500 uppercase tracking-wide">Bieter, Konditionen{isLv ? " & Preise" : ""}</span>
+        <span className="text-xs font-medium text-stone-500 uppercase tracking-wide">Bieter, Konditionen & Bewertung</span>
         <div className="flex gap-3 flex-wrap">
           <button className="text-orange-800 text-xs hover:underline" onClick={() => setStammOffen(true)}>+ Bieter aus Adressstamm</button>
           <button className="text-stone-500 text-xs hover:underline" onClick={() => setBieter([...bieter, neuBieter(a)])}>+ leere Zeile</button>
-          <button className="text-orange-800 text-xs hover:underline" onClick={() => setOfferFor({ aId: a.id, bieterIndex: null })}>+ Offerte importieren</button>
+          {isLv && <button className="text-orange-800 text-xs hover:underline" onClick={() => setOfferFor({ aId: a.id, bieterIndex: null })}>+ Offerte importieren</button>}
           {isLv && <button className="text-stone-500 text-xs hover:underline" onClick={exportVergleich}>Vergleich als CSV</button>}
         </div>
       </div>
       {stammOffen && <BieterAusStamm firmen={firmen} vorhanden={bieter.map((b) => String(b.name || "").trim().toLowerCase())} onUebernehmen={bieterAusStamm} onClose={() => setStammOffen(false)} />}
       <datalist id={"firmenliste-" + a.id}>{(firmen || []).map((fa) => <option key={fa.id} value={fa.name} />)}</datalist>
 
-      {isLv ? (
+      {bieter.length === 0 ? <p className="text-sm text-stone-400">Noch keine Bieter — aus dem Adressstamm hinzufügen oder eine leere Zeile anlegen.</p> : (
+        <div className={`${card} overflow-x-auto`}>
+          <table className="w-full text-xs">
+            <thead className="bg-stone-50 text-stone-500"><tr>
+              <th className="px-2 py-1.5 text-left min-w-[150px]">Unternehmer</th>
+              <th className="px-2 py-1.5 text-right min-w-[90px]">Brutto</th>
+              <th className="px-2 py-1.5 text-right w-16">Rabatt %</th>
+              <th className="px-2 py-1.5 text-right w-20">Pauschal</th>
+              <th className="px-2 py-1.5 text-right w-16">Skonto %</th>
+              <th className="px-2 py-1.5 text-right w-16">Bauabz. %</th>
+              <th className="px-2 py-1.5 text-right w-20">Rundung</th>
+              <th className="px-2 py-1.5 text-right min-w-[90px]">Netto</th>
+              <th className="px-2 py-1.5 text-right w-16">Referenz</th>
+              <th className="px-2 py-1.5 text-right w-16">Lehrling</th>
+              <th className="px-2 py-1.5 text-left min-w-[140px]">Bemerkung</th>
+              <th className="px-1"></th>
+            </tr></thead>
+            <tbody>{bieter.map((b, bi) => (
+              <tr key={bi} className="border-t border-stone-100">
+                <td className="px-2 py-1">
+                  <input className="w-full text-xs px-1 py-0.5 border border-stone-200 rounded font-medium" list={"firmenliste-" + a.id} placeholder={`Firma ${bi + 1}`} value={b.name} onChange={(e) => patchBieter(bi, { name: e.target.value })} />
+                  {isLv && (
+                    <div className="flex gap-2 mt-0.5 text-[11px]">
+                      <button className="text-orange-800 hover:underline" title="Offerte importieren" onClick={() => setOfferFor({ aId: a.id, bieterIndex: bi })}>⬇ Import</button>
+                      <button className="text-stone-500 hover:underline" title="Export für diesen Bieter" onClick={() => exportBieter(b, "csv")}>⬆ Export</button>
+                    </div>
+                  )}
+                </td>
+                {!isLv && <td className="px-2 py-1"><input className={cell} value={b.brutto} onChange={(e) => patchBieter(bi, { brutto: e.target.value })} /></td>}
+                {isLv && <td className="px-2 py-1 text-right tabular-nums text-stone-500">{chf(bieterBrutto(b, a))}</td>}
+                <td className="px-2 py-1"><input className={cell} value={b.rabattPct} onChange={(e) => patchBieter(bi, { rabattPct: e.target.value })} /></td>
+                <td className="px-2 py-1"><input className={cell} value={b.pauschalabzug} onChange={(e) => patchBieter(bi, { pauschalabzug: e.target.value })} /></td>
+                <td className="px-2 py-1"><input className={cell} value={b.skontoPct} onChange={(e) => patchBieter(bi, { skontoPct: e.target.value })} /></td>
+                <td className="px-2 py-1"><input className={cell} value={b.bauabzuegePct} onChange={(e) => patchBieter(bi, { bauabzuegePct: e.target.value })} /></td>
+                <td className="px-2 py-1"><input className={cell} value={b.rundung} onChange={(e) => patchBieter(bi, { rundung: e.target.value })} /></td>
+                <td className="px-2 py-1 text-right tabular-nums font-medium">{chf(bieterNetto(b, a))}</td>
+                <td className="px-2 py-1"><input className={cell} value={b.referenzPunkte} onChange={(e) => patchBieter(bi, { referenzPunkte: e.target.value })} /></td>
+                <td className="px-2 py-1"><input className={cell} value={b.lehrlingPunkte} onChange={(e) => patchBieter(bi, { lehrlingPunkte: e.target.value })} /></td>
+                <td className="px-2 py-1"><input className="w-full text-xs px-1 py-0.5 border border-stone-200 rounded" value={b.bemerkung} onChange={(e) => patchBieter(bi, { bemerkung: e.target.value })} /></td>
+                <td className="px-1 text-center"><button className="text-red-500 text-sm" title="Entfernen" onClick={() => delBieter(bi)}>×</button></td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+      )}
+
+      {isLv && (
         positionen.length === 0 ? <p className="text-sm text-stone-400">Noch keine Positionen — im Reiter «Leistungsverzeichnisse» importieren oder erfassen.</p> : (
         <div className={`${card} overflow-auto`} style={{ maxHeight: "70vh" }}>
           <table className="text-xs border-collapse">
@@ -6594,16 +6661,8 @@ function AngebotBieterBereich({ a, d, dispatch, projekt, firmen, neuBieter, onVe
                 <th className="text-left px-2 py-2 border-b border-stone-200">Einh.</th>
                 <th className="text-right px-2 py-2 border-b border-stone-200">Menge</th>
                 {bieter.map((b, bi) => (
-                  <th key={bi} className="px-2 py-1.5 border-b border-l border-stone-200 align-top min-w-[118px]">
-                    <input className="w-full text-xs px-1 py-0.5 border border-stone-200 rounded font-medium" list={"firmenliste-" + a.id} placeholder={"Firma " + (bi + 1)} value={b.name} onChange={(e) => patchBieter(bi, { name: e.target.value })} />
-                    <div className="flex items-center justify-between mt-1">
-                      <span className="text-[11px] text-stone-500 tabular-nums">{chf(bieterBrutto(b, a))}</span>
-                      <span className="flex gap-1.5 text-sm">
-                        <button className="text-orange-800" title="Offerte importieren" onClick={() => setOfferFor({ aId: a.id, bieterIndex: bi })}>⬇</button>
-                        <button className="text-stone-500" title="Export für diesen Bieter" onClick={() => exportBieter(b, "csv")}>⬆</button>
-                        <button className="text-red-500" title="Entfernen" onClick={() => delBieter(bi)}>✕</button>
-                      </span>
-                    </div>
+                  <th key={bi} className="px-2 py-1.5 border-b border-l border-stone-200 align-top min-w-[100px] text-left font-medium">
+                    {b.name || <span className="text-stone-300 font-normal">Firma {bi + 1}</span>}
                   </th>
                 ))}
               </tr>
@@ -6618,6 +6677,7 @@ function AngebotBieterBereich({ a, d, dispatch, projekt, firmen, neuBieter, onVe
                       <span className="tabular-nums text-stone-500">{p.npk}</span> {p.bezeichnung || <span className="text-stone-300">—</span>}
                       <button className="ml-1 text-orange-700 text-[10px] hover:underline align-top" title="Langtext, Bemerkung und Fabrikat" onClick={() => setDetail(p)}>ⓘ</button>
                       {p.fabrikat ? <span className="block text-[10px] text-stone-400">Fabrikat: {p.fabrikat}</span> : null}
+                      {p.bemerkung ? <span className="block text-[10px] text-amber-700">💬 {p.bemerkung}</span> : null}
                       {!istGewertet(p) ? <span className="block text-[10px] text-amber-700">{posArtLabel(p.art)} — ausserhalb des Vergleichstotals</span> : null}
                     </td>
                     <td className="px-2 py-1 text-stone-500 whitespace-nowrap">{p.einheit}</td>
@@ -6640,44 +6700,6 @@ function AngebotBieterBereich({ a, d, dispatch, projekt, firmen, neuBieter, onVe
           </table>
         </div>
         )
-      ) : (
-        <div className={`${card} overflow-x-auto`}>
-          <table className="w-full text-sm">
-            <thead className="bg-stone-50 text-stone-500 text-xs"><tr>
-              <th className="px-2 py-1.5 text-left min-w-[140px]">Firma</th><th className="px-2 py-1.5 text-right min-w-[90px]">Brutto</th><th className="px-2 py-1.5 text-right w-16">Rabatt %</th><th className="px-2 py-1.5 text-right w-20">Pauschal</th><th className="px-2 py-1.5 text-right w-16">Skonto %</th><th className="px-2 py-1.5 text-right w-16">Bauabz. %</th><th className="px-2 py-1.5 text-right w-20">Rundung</th><th className="px-2 py-1.5 text-right min-w-[90px]">Netto</th><th className="px-1"></th>
-            </tr></thead>
-            <tbody>{bieter.map((b, bi) => (
-              <tr key={bi} className="border-t border-stone-100">
-                <td className="px-2 py-1"><input className="w-full text-xs px-1 py-0.5 border border-stone-200 rounded" list={"firmenliste-" + a.id} placeholder={`Firma ${bi + 1}`} value={b.name} onChange={(e) => patchBieter(bi, { name: e.target.value })} /></td>
-                <td className="px-2 py-1"><input className={cell} value={b.brutto} onChange={(e) => patchBieter(bi, { brutto: e.target.value })} /></td>
-                <td className="px-2 py-1"><input className={cell} value={b.rabattPct} onChange={(e) => patchBieter(bi, { rabattPct: e.target.value })} /></td>
-                <td className="px-2 py-1"><input className={cell} value={b.pauschalabzug} onChange={(e) => patchBieter(bi, { pauschalabzug: e.target.value })} /></td>
-                <td className="px-2 py-1"><input className={cell} value={b.skontoPct} onChange={(e) => patchBieter(bi, { skontoPct: e.target.value })} /></td>
-                <td className="px-2 py-1"><input className={cell} value={b.bauabzuegePct} onChange={(e) => patchBieter(bi, { bauabzuegePct: e.target.value })} /></td>
-                <td className="px-2 py-1"><input className={cell} value={b.rundung} onChange={(e) => patchBieter(bi, { rundung: e.target.value })} /></td>
-                <td className="px-2 py-1 text-right tabular-nums font-medium">{chf(bieterNetto(b, a))}</td>
-                <td className="px-1 text-center"><button className="text-red-500 text-sm" title="Entfernen" onClick={() => delBieter(bi)}>×</button></td>
-              </tr>
-            ))}</tbody>
-          </table>
-        </div>
-      )}
-
-      {bieter.length > 0 && (
-        <div className={`${card} overflow-x-auto`}>
-          <div className="px-3 py-2 bg-stone-50 text-sm font-medium border-b border-stone-200">Bewertungspunkte (0–100) & Bemerkung</div>
-          <table className="w-full text-xs">
-            <thead className="text-stone-500"><tr><th className="text-left px-2 py-1.5">Unternehmer</th><th className="px-2 py-1.5 text-right">Referenz</th><th className="px-2 py-1.5 text-right">Lehrling</th><th className="px-2 py-1.5 text-left">Bemerkung</th></tr></thead>
-            <tbody>{bieter.map((b, bi) => (
-              <tr key={bi} className="border-t border-stone-100">
-                <td className="px-2 py-1 font-medium whitespace-nowrap">{b.name || ("Firma " + (bi + 1))}</td>
-                <td className="px-2 py-1"><input className={cell} value={b.referenzPunkte} onChange={(e) => patchBieter(bi, { referenzPunkte: e.target.value })} /></td>
-                <td className="px-2 py-1"><input className={cell} value={b.lehrlingPunkte} onChange={(e) => patchBieter(bi, { lehrlingPunkte: e.target.value })} /></td>
-                <td className="px-2 py-1"><input className="w-full text-xs px-1 py-0.5 border border-stone-200 rounded" value={b.bemerkung} onChange={(e) => patchBieter(bi, { bemerkung: e.target.value })} /></td>
-              </tr>
-            ))}</tbody>
-          </table>
-        </div>
       )}
 
       {named.length > 0 && (
@@ -6754,6 +6776,7 @@ function AngebotBieterBereich({ a, d, dispatch, projekt, firmen, neuBieter, onVe
     </div>
   );
 }
+
 
 function AngebotCard({ a, d, dispatch, projektId, projekt, onEdit, db, rollen, ks, neuBieter }) {
   const nw = nutzwerte(a, projekt);
@@ -7045,6 +7068,7 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen, db,
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const [posForm, setPosForm] = useState({ code: "", bezeichnung: "", einheit: "", menge: "" });
+  const [posMsg, setPosMsg] = useState("");
   const [waehlerOffen, setWaehlerOffen] = useState(false);
   // Gewählte Katalogpositionen ans Ende der Ausschreibung hängen (Dubletten überspringen)
   const positionenAufnehmen = (neue) => {
@@ -7097,13 +7121,15 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen, db,
     setBusy(false); if (fileRef.current) fileRef.current.value = "";
   }
   function addPosition() {
-    if (!a || !posForm.code) return;
-    const code = posForm.code.replace(/[^0-9]/g, "");
-    if (!code) { setMsg("Bitte eine numerische NPK-Nummer eingeben."); return; }
-    if ((a.positionen || []).some((p) => p.code === code)) { setMsg("Position existiert bereits."); return; }
-    const pos = { id: uid(), catalog: code.slice(0, 3) || "000", code, npk: code.slice(0, 3) + "." + code.slice(3), bezeichnung: posForm.bezeichnung, langtext: [], einheit: posForm.einheit, menge: parseBetrag(posForm.menge), preis: 0 };
+    if (!a || (!posForm.code.trim() && !posForm.bezeichnung.trim())) { setPosMsg("Bitte mindestens eine Bezeichnung oder eine NPK-Nummer eingeben."); return; }
+    let code = posForm.code.replace(/[^0-9]/g, "");
+    let npk = code ? code.slice(0, 3) + "." + code.slice(3) : "manuell";
+    if (!code) code = "9" + String(Date.now()).slice(-8);
+    if ((a.positionen || []).some((p) => p.code === code)) { setPosMsg("Eine Position mit dieser NPK-Nummer existiert bereits."); return; }
+    const pos = { id: uid(), catalog: code.slice(0, 3) || "000", code, npk, bezeichnung: posForm.bezeichnung, langtext: [], einheit: posForm.einheit, bemerkung: "", menge: parseBetrag(posForm.menge), preis: 0 };
     dispatch({ type: "update", coll: "angebote", id: a.id, patch: { modus: "lv", positionen: [...(a.positionen || []), pos] } });
-    setPosForm({ code: "", bezeichnung: "", einheit: "", menge: "" }); setMsg("");
+    setPosForm({ code: "", bezeichnung: "", einheit: "", menge: "" });
+    setPosMsg("✓ Position «" + (pos.bezeichnung || pos.npk) + "» hinzugefügt.");
   }
   function exportLeer(fmt) {
     if (!a) return;
@@ -7150,12 +7176,15 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen, db,
               <span className="ml-auto text-xs text-stone-500">{positionen.length} Positionen · {[...new Set(positionen.map((p) => "NPK " + p.catalog))].join(", ") || "—"}</span>
             </div>
             {showAddPos && (
-              <div className="grid grid-cols-1 md:grid-cols-[120px_1fr_90px_90px_auto] gap-2 items-end border-t border-stone-100 pt-3">
-                <Field label="NPK/Code"><input className={inputCls} value={posForm.code} onChange={(e) => setPosForm({ ...posForm, code: e.target.value })} placeholder="661.211" /></Field>
-                <Field label="Bezeichnung"><input className={inputCls} value={posForm.bezeichnung} onChange={(e) => setPosForm({ ...posForm, bezeichnung: e.target.value })} /></Field>
-                <Field label="Einheit"><input className={inputCls} value={posForm.einheit} onChange={(e) => setPosForm({ ...posForm, einheit: e.target.value })} placeholder="m2" /></Field>
-                <Field label="Menge"><input className={inputCls} value={posForm.menge} onChange={(e) => setPosForm({ ...posForm, menge: e.target.value })} /></Field>
-                <button className={btnPrimary} disabled={!posForm.code} onClick={addPosition}>+ Position</button>
+              <div className="border-t border-stone-100 pt-3 space-y-2">
+                <div className="grid grid-cols-1 md:grid-cols-[120px_1fr_90px_90px_auto] gap-2 items-end">
+                  <Field label="NPK/Code (optional)"><input className={inputCls} value={posForm.code} onChange={(e) => setPosForm({ ...posForm, code: e.target.value })} placeholder="661.211" /></Field>
+                  <Field label="Bezeichnung"><input className={inputCls} value={posForm.bezeichnung} onChange={(e) => setPosForm({ ...posForm, bezeichnung: e.target.value })} /></Field>
+                  <Field label="Einheit"><EinheitFeld value={posForm.einheit} onChange={(v) => setPosForm({ ...posForm, einheit: v })} /></Field>
+                  <Field label="Menge"><input className={inputCls} value={posForm.menge} onChange={(e) => setPosForm({ ...posForm, menge: e.target.value })} /></Field>
+                  <button className={btnPrimary} disabled={!posForm.code.trim() && !posForm.bezeichnung.trim()} onClick={addPosition}>+ Position</button>
+                </div>
+                {posMsg && <div className="text-sm bg-orange-50 text-orange-900 rounded-md px-3 py-2">{posMsg}</div>}
               </div>
             )}
           </div>
@@ -7166,10 +7195,11 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen, db,
                 <thead className="sticky top-0 z-20">
                   <tr className="bg-stone-100">
                     <th className="text-left px-2 py-2 border-b border-stone-200 min-w-[70px]">NPK</th>
-                    <th className="text-left px-2 py-2 border-b border-stone-200 min-w-[220px]">Bezeichnung</th>
+                    <th className="text-left px-2 py-2 border-b border-stone-200 min-w-[200px]">Bezeichnung</th>
                     <th className="text-left px-2 py-2 border-b border-stone-200">Art</th>
-                    <th className="text-left px-2 py-2 border-b border-stone-200">Einh.</th>
+                    <th className="text-left px-2 py-2 border-b border-stone-200 min-w-[90px]">Einh.</th>
                     <th className="text-right px-2 py-2 border-b border-stone-200">Menge</th>
+                    <th className="text-left px-2 py-2 border-b border-stone-200 min-w-[160px]">Bemerkung</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -7180,7 +7210,6 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen, db,
                         <span>{p.bezeichnung || <span className="text-stone-300">—</span>}</span>
                         <button className="ml-1 text-orange-700 text-[10px] hover:underline align-top" title="Langtext, Bemerkung und Fabrikat bearbeiten" onClick={() => setDetail(p)}>ⓘ</button>
                         {p.fabrikat ? <span className="block text-[10px] text-stone-400">Fabrikat: {p.fabrikat}</span> : null}
-                        {p.bemerkung ? <span className="block text-[10px] text-amber-700">{p.bemerkung}</span> : null}
                       </td>
                       <td className="px-2 py-1">
                         <select className="text-[11px] rounded border border-stone-200 px-1 py-0.5 bg-white" value={p.art || "normal"} title={(POSARTEN.find((x) => x.k === (p.art || "normal")) || {}).hilfe}
@@ -7188,8 +7217,13 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen, db,
                           {POSARTEN.map((ar) => <option key={ar.k} value={ar.k}>{ar.l}</option>)}
                         </select>
                       </td>
-                      <td className="px-2 py-1 text-stone-500 whitespace-nowrap">{p.einheit}</td>
+                      <td className="px-2 py-1">
+                        <EinheitFeld className="text-xs px-1 py-0.5 border border-stone-200 rounded bg-white w-full" value={p.einheit || ""} onChange={(v) => dispatch({ type: "update", coll: "angebote", id: a.id, patch: { positionen: a.positionen.map((x) => x.code === p.code ? { ...x, einheit: v } : x) } })} />
+                      </td>
                       <td className="px-2 py-1 text-right"><ZahlZelle className="w-16 text-xs text-right tabular-nums bg-transparent border-b border-transparent hover:border-stone-200 focus:border-orange-600 focus:outline-none" wert={p.menge} onSpeichern={(n) => dispatch({ type: "update", coll: "angebote", id: a.id, patch: { positionen: a.positionen.map((x) => x.code === p.code ? { ...x, menge: n } : x) } })} /></td>
+                      <td className="px-2 py-1">
+                        {p.bemerkung ? <span className="text-amber-800 bg-amber-50 rounded px-1.5 py-0.5">💬 {p.bemerkung}</span> : <span className="text-stone-300">—</span>}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
