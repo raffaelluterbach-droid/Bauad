@@ -564,7 +564,7 @@ function normalize(db) {
     a.bieter = (a.bieter || []).map((b) => ({ bemerkung: "", rabattPct: 0, pauschalabzug: 0, skontoPct: 0, bauabzuegePct: 0, rundung: 0, referenzPunkte: 0, lehrlingPunkte: 0, preise: {}, ...b }));
     return a;
   });
-  db.angebote = db.angebote.map((a) => ({ positionen: [], bedingungen: "", modus: (a.positionen && a.positionen.length) ? "lv" : "pauschal", ...a, bieter: (a.bieter || []).map((b) => ({ preise: {}, ...b })) }));
+  db.angebote = db.angebote.map((a) => ({ positionen: [], bedingungen: "", kvManuell: "", modus: (a.positionen && a.positionen.length) ? "lv" : "pauschal", ...a, bieter: (a.bieter || []).map((b) => ({ preise: {}, ...b })) }));
   return db;
 }
 
@@ -5333,19 +5333,21 @@ async function baueVergabeantragPdf(a, ctx) {
   const guenstigst = reihen.length ? Math.min(...reihen.filter((r) => r.netto > 0).map((r) => r.netto)) : 0;
   const pos = d.positionen.find((x) => x.id === a.positionId) || null;
   const z = pos ? ks.ordered.find((x) => x.pos.id === pos.id) : null;
-  const kv = z ? z.roll.kvRevidiert : 0;
+  const manuell = a.kvManuell !== "" && a.kvManuell !== undefined && a.kvManuell !== null && !isNaN(parseBetrag(a.kvManuell)) && parseBetrag(a.kvManuell) !== 0;
+  const kv = manuell ? parseBetrag(a.kvManuell) : (z ? z.roll.kv : 0);
+  const kvRev = manuell ? parseBetrag(a.kvManuell) : (z ? z.roll.kvRevidiert : 0);
 
   // Zeilen des Vergleichs
   const zeilen = [
-    { l: "Angebot brutto", f: (r) => chfPdf(r.brutto), kv: kv ? chfPdf(kv) : "–" },
+    { l: "Angebot brutto", f: (r) => chfPdf(r.brutto), kv: kv ? chfPdf(kv) : "–", kvRev: kvRev ? chfPdf(kvRev) : "–" },
     { l: "Rabatt", f: (r) => Number(r.b.rabattPct) ? r.b.rabattPct + "%" : "–", klein: true },
     { l: "Pauschalabzug", f: (r) => Number(r.b.pauschalabzug) ? chfPdf(r.b.pauschalabzug) : "–", klein: true },
     { l: "Skonto", f: (r) => Number(r.b.skontoPct) ? r.b.skontoPct + "%" : "–", klein: true },
     { l: "Bauabzüge", f: (r) => Number(r.b.bauabzuegePct) ? r.b.bauabzuegePct + "%" : "–", klein: true },
     { l: "Rundung", f: (r) => Number(r.b.rundung) ? chfPdf(r.b.rundung) : "–", klein: true },
-    { l: "Angebot netto", f: (r) => chfPdf(r.netto), fett: true, linieVor: true, kv: kv ? chfPdf(kv) : "–" },
+    { l: "Angebot netto", f: (r) => chfPdf(r.netto), fett: true, linieVor: true, kv: kv ? chfPdf(kv) : "–", kvRev: kvRev ? chfPdf(kvRev) : "–" },
     { l: "gegenüber günstigstem", f: (r) => guenstigst > 0 && r.netto > 0 ? pct(100 * (r.netto - guenstigst) / guenstigst) : "–", ampel: true },
-    { l: "gegenüber KV revidiert", f: (r) => kv > 0 && r.netto > 0 ? chfPdf(r.netto - kv) : "–", ampelBetrag: true },
+    { l: "gegenüber KV revidiert", f: (r) => kvRev > 0 && r.netto > 0 ? chfPdf(r.netto - kvRev) : "–", ampelBetrag: true },
     { l: "Referenzpunkte", f: (r) => String(Number(r.b.referenzPunkte) || 0), klein: true, linieVor: true },
     { l: "Lehrlingspunkte", f: (r) => String(Number(r.b.lehrlingPunkte) || 0), klein: true },
     { l: "Nutzwert", f: (r) => (Number(r.nutz) || 0).toFixed(1), fett: true },
@@ -5363,14 +5365,20 @@ async function baueVergabeantragPdf(a, ctx) {
     const rechts = A4Q.breite - RAND;
     pdfKopf(bl, "Vergabeantrag", projekt, rollen, a.titel + (gruppen.length > 1 ? `  (Blatt ${gi + 1} von ${gruppen.length})` : ""), vorlage);
 
-    const labelB = 165, kvB = kv ? 95 : 0;
+    const labelB = 165, kvSpB = 80, kvAnzahl = (kv ? 1 : 0) + (kvRev ? 1 : 0), kvB = kvAnzahl * kvSpB;
     const start = RAND + labelB + kvB;
     const spB = Math.max(80, (rechts - start) / Math.max(gruppe.length, 1));
     const spX = (i) => start + i * spB + spB - 8;   // rechte Kante der Spalte
+    const kvSpX = (i) => RAND + labelB + (i + 1) * kvSpB - 8;
+    let kvIdx = 0;
+    const kvXfuer = {};
+    if (kv) kvXfuer.kv = kvIdx++;
+    if (kvRev) kvXfuer.kvRev = kvIdx++;
 
     // Kopfzeile: Anbieternamen
     let kopfY = bl.y;
-    if (kv) bl.text("KV revidiert", { rechts: RAND + labelB + kvB - 8, y: kopfY, size: 8, fett: true, farbe: grau });
+    if (kv) bl.text(manuell ? "KV (manuell)" : "KV", { rechts: kvSpX(kvXfuer.kv), y: kopfY, size: 8, fett: true, farbe: grau });
+    if (kvRev) bl.text(manuell ? "KV rev. (manuell)" : "KV rev.", { rechts: kvSpX(kvXfuer.kvRev), y: kopfY, size: 8, fett: true, farbe: grau });
     gruppe.forEach((r, i) => {
       const nameZeilen = bl.umbruch(r.b.name, spB - 10, 8.5, true).slice(0, 2);
       nameZeilen.forEach((zl, k) => bl.text(zl, { rechts: spX(i), y: kopfY - k * 10, size: 8.5, fett: true }));
@@ -5384,12 +5392,13 @@ async function baueVergabeantragPdf(a, ctx) {
       bl.platz(16);
       const size = zl.klein ? 8 : 9;
       bl.text(zl.l, { size, fett: zl.fett, farbe: zl.klein ? grau : undefined });
-      if (kv) bl.text(zl.kv || "", { rechts: RAND + labelB + kvB - 8, size, farbe: grau });
+      if (kv) bl.text(zl.kv || "", { rechts: kvSpX(kvXfuer.kv), size, farbe: grau });
+      if (kvRev) bl.text(zl.kvRev || "", { rechts: kvSpX(kvXfuer.kvRev), size, farbe: grau });
       gruppe.forEach((r, i) => {
         const wert = zl.f(r);
         let farbe;
         if (zl.ampel) farbe = wert === "–" ? grau : (parseFloat(wert) > 0 ? rot : gruen);
-        if (zl.ampelBetrag) { const v = kv > 0 ? r.netto - kv : 0; farbe = wert === "–" ? grau : (v > 0 ? rot : gruen); }
+        if (zl.ampelBetrag) { const v = kvRev > 0 ? r.netto - kvRev : 0; farbe = wert === "–" ? grau : (v > 0 ? rot : gruen); }
         bl.text(wert, { rechts: spX(i), size, fett: zl.fett, farbe });
       });
       bl.y -= zl.klein ? 13 : 15;
@@ -6503,34 +6512,264 @@ function AngeboteView({ d, dispatch, projektId, projekt, db, ks }) {
   const neuBieter = (angebot) => { const k = kondFuerBieter(kondVorgabe(projekt, angebot)); return { name: "", brutto: "", pauschalabzug: "", rundung: "", referenzPunkte: "", lehrlingPunkte: "", bemerkung: "", preise: {}, rabattPct: k.rabattPct || "", skontoPct: k.skontoPct || "", bauabzuegePct: k.bauabzuegePct || "" }; };
   return (
     <div className="space-y-4">
-      <button className={btnPrimary} onClick={() => setEdit({ id: null, titel: "", positionId: "", modus: "pauschal", positionen: [], bedingungen: "", gewichte: { preis: Number(projekt?.gewichtPreis) || 70, referenzen: Number(projekt?.gewichtReferenzen) || 20, lehrlinge: Number(projekt?.gewichtLehrlinge) || 10 }, bieter: [neuBieter(null), neuBieter(null)] })}>+ Ausschreibung / Vergleich</button>
-      <p className="text-xs text-stone-400">Tipp: Leistungsverzeichnisse (NPK) importierst du im Reiter «Leistungsverzeichnisse» — dort kannst du auch mehrere NPK-Kataloge zu einer Ausschreibung zusammenführen. Hier bepreisen die Bieter die Positionen und du vergleichst.</p>
-      {!d.angebote.length ? <Empty text="Keine Angebote erstellt." /> : d.angebote.map((a) => <AngebotCard key={a.id} a={a} d={d} dispatch={dispatch} projektId={projektId} projekt={projekt} onEdit={() => setEdit(a)} db={db} rollen={rollen} ks={ks} />)}
-      {edit && <AngebotEditor angebot={edit} positionen={d.positionen} projekt={projekt} neuBieter={neuBieter} firmen={db.firmen} onClose={() => setEdit(null)} onSave={(a) => { if (a.id) dispatch({ type: "update", coll: "angebote", id: a.id, patch: a }); else dispatch({ type: "add", coll: "angebote", item: { ...a, id: uid(), projektId } }); setEdit(null); }} />}
+      <button className={btnPrimary} onClick={() => setEdit({ id: null, titel: "", positionId: "", kvManuell: "", modus: "pauschal", positionen: [], bedingungen: "", gewichte: { preis: Number(projekt?.gewichtPreis) || 70, referenzen: Number(projekt?.gewichtReferenzen) || 20, lehrlinge: Number(projekt?.gewichtLehrlinge) || 10 }, bieter: [neuBieter(null), neuBieter(null)] })}>+ Ausschreibung / Vergleich</button>
+      <p className="text-xs text-stone-400">Positionen (NPK) importierst oder erfasst du im Reiter «Leistungsverzeichnisse». Hier laufen alle Angaben zu Unternehmern zusammen: Bieter, Preise, Konditionen, Vergleich, Vergabeantrag und Vergabe.</p>
+      {!d.angebote.length ? <Empty text="Keine Angebote erstellt." /> : d.angebote.map((a) => <AngebotCard key={a.id} a={a} d={d} dispatch={dispatch} projektId={projektId} projekt={projekt} onEdit={() => setEdit(a)} db={db} rollen={rollen} ks={ks} neuBieter={neuBieter} />)}
+      {edit && <AngebotEditor angebot={edit} positionen={d.positionen} projekt={projekt} onClose={() => setEdit(null)} onSave={(a) => { if (a.id) dispatch({ type: "update", coll: "angebote", id: a.id, patch: a }); else dispatch({ type: "add", coll: "angebote", item: { ...a, id: uid(), projektId } }); setEdit(null); }} />}
     </div>
   );
 }
 
-function AngebotCard({ a, d, dispatch, projektId, projekt, onEdit, db, rollen, ks }) {
-  const { w, rows, min } = nutzwerte(a, projekt);
-  const [showPos, setShowPos] = useState(false);
+// Alles mit Unternehmerbezug einer Ausschreibung: Konditionsvorgabe, Bieter verwalten,
+// Preise erfassen (Matrix bei LV, Pauschalbetrag sonst), Offerten ein-/auslesen, Rangfolge, Vergabe
+function AngebotBieterBereich({ a, d, dispatch, projekt, firmen, neuBieter, onVergeben }) {
+  const isLv = a.modus === "lv";
+  const positionen = a.positionen || [];
+  const bieter = a.bieter || [];
+  const nw = nutzwerte(a, projekt);
+  const nwByB = new Map(nw.rows.map((r) => [r.b, r]));
+  const rangByB = new Map(nw.rows.map((r, i) => [r.b, i + 1]));
+  const [stammOffen, setStammOffen] = useState(false);
+  const [offerFor, setOfferFor] = useState(null);
+  const [detail, setDetail] = useState(null);
+  const cell = "w-full text-xs px-1 py-0.5 border border-stone-200 rounded text-right tabular-nums focus:border-orange-600 focus:outline-none";
+
+  const setBieter = (arr) => dispatch({ type: "update", coll: "angebote", id: a.id, patch: { bieter: arr } });
+  const patchBieter = (bi, patch) => setBieter(bieter.map((b, i) => (i === bi ? { ...b, ...patch } : b)));
+  const setEp = (bi, code, val) => setBieter(bieter.map((b, i) => (i === bi ? { ...b, preise: { ...(b.preise || {}), [code]: val } } : b)));
+  const delBieter = (bi) => { if (window.confirm(`Bieter «${bieter[bi].name || "ohne Namen"}» aus dieser Ausschreibung entfernen?`)) setBieter(bieter.filter((_, x) => x !== bi)); };
+  const bieterAusStamm = (gewaehlte) => {
+    const vorhanden = new Set(bieter.map((b) => String(b.name || "").trim().toLowerCase()));
+    const neue = gewaehlte.filter((fa) => !vorhanden.has(fa.name.trim().toLowerCase())).map((fa) => ({ ...neuBieter(a), name: fa.name, firmaId: fa.id }));
+    if (neue.length) setBieter([...bieter.filter((b) => b.name || bieter.length <= 1), ...neue]);
+    setStammOffen(false);
+  };
+  function exportBieter(b, fmt) {
+    const base = (a.titel || "LV").replace(/\s+/g, "_") + "_" + (b.name || "Firma").replace(/\s+/g, "");
+    if (fmt === "csv") download(new Blob([buildOfferteCsv(a.titel, positionen, b.preise || {})], { type: "text/csv;charset=utf-8" }), base + ".csv");
+    else download(makeCrbxBlob(buildSia451(a.titel || "LV", positionen, b.preise || {})), base + ".crbx");
+  }
+  function exportVergleich() {
+    const esc = (s) => '"' + String(s == null ? "" : s).replace(/"/g, '""') + '"';
+    const lines = [["NPK", "Bezeichnung", "Einheit", "Menge"].map(esc).concat(bieter.map((b) => esc(b.name || "Firma"))).join(";")];
+    positionen.forEach((p) => lines.push([esc(p.npk), esc(p.bezeichnung), esc(p.einheit), p.menge].concat(bieter.map((b) => parseBetrag((b.preise || {})[p.code]) || "")).join(";")));
+    lines.push(["", esc("Total Brutto"), "", ""].concat(bieter.map((b) => Math.round(bieterBrutto(b, a)))).join(";"));
+    lines.push(["", esc("Total Netto"), "", ""].concat(bieter.map((b) => Math.round(bieterNetto(b, a)))).join(";"));
+    download(new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" }), (a.titel || "Vergleich").replace(/\s+/g, "_") + "_Vergleich.csv");
+  }
+
+  const named = nw.rows.filter((r) => r.b.name);
+
+  return (
+    <div className="space-y-3">
+      <div className={`${card} p-3 bg-stone-50/60`}>
+        <label className="inline-flex items-center gap-2 text-xs font-medium text-stone-500 uppercase tracking-wide mb-2">
+          <input type="checkbox" checked={!!a.kondEigen} onChange={(e) => dispatch({ type: "update", coll: "angebote", id: a.id, patch: { kondEigen: e.target.checked, kond: e.target.checked ? (a.kond || { ...LEERE_KOND, ...(projekt?.kond || {}) }) : a.kond } })} />
+          Eigene Konditionen-Vorgabe für neue Bieter dieser Ausschreibung
+        </label>
+        {a.kondEigen
+          ? <KonditionsFelder wert={a.kond} onAendern={(k) => dispatch({ type: "update", coll: "angebote", id: a.id, patch: { kond: k } })} />
+          : <p className="text-xs text-stone-500">Neue Bieter übernehmen die Konditionen aus dem Projekt: {(() => { const k = { ...LEERE_KOND, ...(projekt?.kond || {}) }; const t = KOND_FELDER.filter((f) => !f.nurVertrag && Number(k[f.k])).map((f) => `${f.l.replace(" %", "")} ${k[f.k]}%`); return t.length ? t.join(" · ") : "keine hinterlegt"; })()}</p>}
+      </div>
+
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <span className="text-xs font-medium text-stone-500 uppercase tracking-wide">Bieter, Konditionen{isLv ? " & Preise" : ""}</span>
+        <div className="flex gap-3 flex-wrap">
+          <button className="text-orange-800 text-xs hover:underline" onClick={() => setStammOffen(true)}>+ Bieter aus Adressstamm</button>
+          <button className="text-stone-500 text-xs hover:underline" onClick={() => setBieter([...bieter, neuBieter(a)])}>+ leere Zeile</button>
+          <button className="text-orange-800 text-xs hover:underline" onClick={() => setOfferFor({ aId: a.id, bieterIndex: null })}>+ Offerte importieren</button>
+          {isLv && <button className="text-stone-500 text-xs hover:underline" onClick={exportVergleich}>Vergleich als CSV</button>}
+        </div>
+      </div>
+      {stammOffen && <BieterAusStamm firmen={firmen} vorhanden={bieter.map((b) => String(b.name || "").trim().toLowerCase())} onUebernehmen={bieterAusStamm} onClose={() => setStammOffen(false)} />}
+      <datalist id={"firmenliste-" + a.id}>{(firmen || []).map((fa) => <option key={fa.id} value={fa.name} />)}</datalist>
+
+      {isLv ? (
+        positionen.length === 0 ? <p className="text-sm text-stone-400">Noch keine Positionen — im Reiter «Leistungsverzeichnisse» importieren oder erfassen.</p> : (
+        <div className={`${card} overflow-auto`} style={{ maxHeight: "70vh" }}>
+          <table className="text-xs border-collapse">
+            <thead className="sticky top-0 z-20">
+              <tr className="bg-stone-100">
+                <th className="sticky left-0 z-30 bg-stone-100 text-left px-2 py-2 border-b border-stone-200 min-w-[150px]">NPK · Bezeichnung</th>
+                <th className="text-left px-2 py-2 border-b border-stone-200">Einh.</th>
+                <th className="text-right px-2 py-2 border-b border-stone-200">Menge</th>
+                {bieter.map((b, bi) => (
+                  <th key={bi} className="px-2 py-1.5 border-b border-l border-stone-200 align-top min-w-[118px]">
+                    <input className="w-full text-xs px-1 py-0.5 border border-stone-200 rounded font-medium" list={"firmenliste-" + a.id} placeholder={"Firma " + (bi + 1)} value={b.name} onChange={(e) => patchBieter(bi, { name: e.target.value })} />
+                    <div className="flex items-center justify-between mt-1">
+                      <span className="text-[11px] text-stone-500 tabular-nums">{chf(bieterBrutto(b, a))}</span>
+                      <span className="flex gap-1.5 text-sm">
+                        <button className="text-orange-800" title="Offerte importieren" onClick={() => setOfferFor({ aId: a.id, bieterIndex: bi })}>⬇</button>
+                        <button className="text-stone-500" title="Export für diesen Bieter" onClick={() => exportBieter(b, "csv")}>⬆</button>
+                        <button className="text-red-500" title="Entfernen" onClick={() => delBieter(bi)}>✕</button>
+                      </span>
+                    </div>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {positionen.map((p) => {
+                const eps = bieter.map((b) => parseBetrag((b.preise || {})[p.code]) || 0);
+                const valid = eps.filter((x) => x > 0); const minEp = valid.length ? Math.min(...valid) : 0;
+                return (
+                  <tr key={p.code} className={`border-b border-stone-100 hover:bg-stone-50/60 ${istGewertet(p) ? "" : "bg-amber-50/40"}`}>
+                    <td className="sticky left-0 z-10 bg-white px-2 py-1">
+                      <span className="tabular-nums text-stone-500">{p.npk}</span> {p.bezeichnung || <span className="text-stone-300">—</span>}
+                      <button className="ml-1 text-orange-700 text-[10px] hover:underline align-top" title="Langtext, Bemerkung und Fabrikat" onClick={() => setDetail(p)}>ⓘ</button>
+                      {p.fabrikat ? <span className="block text-[10px] text-stone-400">Fabrikat: {p.fabrikat}</span> : null}
+                      {!istGewertet(p) ? <span className="block text-[10px] text-amber-700">{posArtLabel(p.art)} — ausserhalb des Vergleichstotals</span> : null}
+                    </td>
+                    <td className="px-2 py-1 text-stone-500 whitespace-nowrap">{p.einheit}</td>
+                    <td className="px-2 py-1 text-right tabular-nums">{p.menge}</td>
+                    {bieter.map((b, bi) => { const ep = eps[bi]; return (
+                      <td key={bi} className={"px-1 py-1 border-l border-stone-100 " + (ep === minEp && ep > 0 ? "bg-emerald-50" : "")}>
+                        <input className={cell} value={(b.preise || {})[p.code] ?? ""} onChange={(e) => setEp(bi, p.code, e.target.value)} placeholder="–" />
+                      </td>
+                    ); })}
+                  </tr>
+                );
+              })}
+            </tbody>
+            <tfoot className="sticky bottom-0 z-20">
+              <tr className="bg-stone-50 font-semibold border-t-2 border-stone-300">
+                <td className="sticky left-0 bg-stone-50 px-2 py-1.5" colSpan={3}>Total Brutto</td>
+                {bieter.map((b, bi) => <td key={bi} className="px-2 py-1.5 text-right tabular-nums border-l border-stone-200">{chf(bieterBrutto(b, a))}</td>)}
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+        )
+      ) : (
+        <div className={`${card} overflow-x-auto`}>
+          <table className="w-full text-sm">
+            <thead className="bg-stone-50 text-stone-500 text-xs"><tr>
+              <th className="px-2 py-1.5 text-left min-w-[140px]">Firma</th><th className="px-2 py-1.5 text-right min-w-[90px]">Brutto</th><th className="px-2 py-1.5 text-right w-16">Rabatt %</th><th className="px-2 py-1.5 text-right w-20">Pauschal</th><th className="px-2 py-1.5 text-right w-16">Skonto %</th><th className="px-2 py-1.5 text-right w-16">Bauabz. %</th><th className="px-2 py-1.5 text-right w-20">Rundung</th><th className="px-2 py-1.5 text-right min-w-[90px]">Netto</th><th className="px-1"></th>
+            </tr></thead>
+            <tbody>{bieter.map((b, bi) => (
+              <tr key={bi} className="border-t border-stone-100">
+                <td className="px-2 py-1"><input className="w-full text-xs px-1 py-0.5 border border-stone-200 rounded" list={"firmenliste-" + a.id} placeholder={`Firma ${bi + 1}`} value={b.name} onChange={(e) => patchBieter(bi, { name: e.target.value })} /></td>
+                <td className="px-2 py-1"><input className={cell} value={b.brutto} onChange={(e) => patchBieter(bi, { brutto: e.target.value })} /></td>
+                <td className="px-2 py-1"><input className={cell} value={b.rabattPct} onChange={(e) => patchBieter(bi, { rabattPct: e.target.value })} /></td>
+                <td className="px-2 py-1"><input className={cell} value={b.pauschalabzug} onChange={(e) => patchBieter(bi, { pauschalabzug: e.target.value })} /></td>
+                <td className="px-2 py-1"><input className={cell} value={b.skontoPct} onChange={(e) => patchBieter(bi, { skontoPct: e.target.value })} /></td>
+                <td className="px-2 py-1"><input className={cell} value={b.bauabzuegePct} onChange={(e) => patchBieter(bi, { bauabzuegePct: e.target.value })} /></td>
+                <td className="px-2 py-1"><input className={cell} value={b.rundung} onChange={(e) => patchBieter(bi, { rundung: e.target.value })} /></td>
+                <td className="px-2 py-1 text-right tabular-nums font-medium">{chf(bieterNetto(b, a))}</td>
+                <td className="px-1 text-center"><button className="text-red-500 text-sm" title="Entfernen" onClick={() => delBieter(bi)}>×</button></td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+      )}
+
+      {bieter.length > 0 && (
+        <div className={`${card} overflow-x-auto`}>
+          <div className="px-3 py-2 bg-stone-50 text-sm font-medium border-b border-stone-200">Bewertungspunkte (0–100) & Bemerkung</div>
+          <table className="w-full text-xs">
+            <thead className="text-stone-500"><tr><th className="text-left px-2 py-1.5">Unternehmer</th><th className="px-2 py-1.5 text-right">Referenz</th><th className="px-2 py-1.5 text-right">Lehrling</th><th className="px-2 py-1.5 text-left">Bemerkung</th></tr></thead>
+            <tbody>{bieter.map((b, bi) => (
+              <tr key={bi} className="border-t border-stone-100">
+                <td className="px-2 py-1 font-medium whitespace-nowrap">{b.name || ("Firma " + (bi + 1))}</td>
+                <td className="px-2 py-1"><input className={cell} value={b.referenzPunkte} onChange={(e) => patchBieter(bi, { referenzPunkte: e.target.value })} /></td>
+                <td className="px-2 py-1"><input className={cell} value={b.lehrlingPunkte} onChange={(e) => patchBieter(bi, { lehrlingPunkte: e.target.value })} /></td>
+                <td className="px-2 py-1"><input className="w-full text-xs px-1 py-0.5 border border-stone-200 rounded" value={b.bemerkung} onChange={(e) => patchBieter(bi, { bemerkung: e.target.value })} /></td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+      )}
+
+      {named.length > 0 && (
+        <div className="overflow-x-auto">
+          <div className="text-xs font-medium text-stone-500 uppercase tracking-wide mb-1">Rangfolge (Nutzwert)</div>
+          <table className="text-sm border-separate" style={{ borderSpacing: 0 }}>
+            <thead>
+              <tr>
+                <th className="text-left font-medium text-xs text-stone-500 py-1 pr-3 sticky left-0 bg-white z-10 min-w-[150px]"></th>
+                {named.map((t, i) => (
+                  <th key={i} className={`text-right font-medium py-1 px-3 min-w-[130px] align-bottom ${i === 0 ? "bg-emerald-50/50" : ""}`}>
+                    <div className="text-[10px] text-stone-400 font-normal">{"Rang " + (i + 1) + (i === 0 ? " · bester Nutzwert" : "")}</div>
+                    <div className="text-stone-800">{t.b.name}</div>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {[
+                { l: "Angebot netto", f: (t) => chf(t.netto), stark: true },
+                { l: "gegenüber günstigstem", f: (t) => nw.min > 0 && t.netto > 0 ? (t.netto === nw.min ? "0.0%" : "+" + (100 * (t.netto - nw.min) / nw.min).toFixed(1) + "%") : "–", ampel: true },
+                { l: "Preispunkte", f: (t) => t.pP.toFixed(1), klein: true, linie: true },
+                { l: "Nutzwert", f: (t) => t.nutz.toFixed(1), stark: true },
+              ].map((zl, ri) => (
+                <tr key={ri} className={zl.linie ? "border-t border-stone-200" : ""}>
+                  <td className={`py-1 pr-3 sticky left-0 bg-white z-10 ${zl.klein ? "text-xs text-stone-500" : "text-stone-700"} ${zl.stark ? "font-semibold" : ""} ${zl.linie ? "border-t border-stone-200" : ""}`}>{zl.l}</td>
+                  {named.map((t, i) => {
+                    let farbe = "";
+                    if (zl.ampel) farbe = t.netto === nw.min && t.netto > 0 ? "text-emerald-700" : "text-red-600";
+                    return <td key={i} className={`py-1 px-3 text-right tabular-nums ${zl.klein ? "text-xs text-stone-500" : ""} ${zl.stark ? "font-semibold" : ""} ${farbe} ${i === 0 ? "bg-emerald-50/50" : ""} ${zl.linie ? "border-t border-stone-200" : ""}`}>{zl.f(t)}</td>;
+                  })}
+                </tr>
+              ))}
+              <tr>
+                <td className="py-2 sticky left-0 bg-white z-10 print:hidden"></td>
+                {named.map((t, i) => (
+                  <td key={i} className={`py-2 px-3 text-right print:hidden ${i === 0 ? "bg-emerald-50/50" : ""}`}>
+                    <button className="text-orange-800 text-xs hover:underline" onClick={() => onVergeben(t.b, t.brutto, t.netto)}>Vergeben →</button>
+                  </td>
+                ))}
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {detail && (
+        <Modal title={detail.npk + " " + (detail.bezeichnung || "")} onClose={() => setDetail(null)} wide>
+          {(() => {
+            const speichern = (patch) => {
+              dispatch({ type: "update", coll: "angebote", id: a.id, patch: { positionen: a.positionen.map((x) => (x.code === detail.code ? { ...x, ...patch } : x)) } });
+              setDetail({ ...detail, ...patch });
+            };
+            return (
+              <div className="space-y-3">
+                <div className="flex flex-wrap gap-4 text-xs text-stone-500">
+                  <span>Einheit {detail.einheit || "—"}</span><span>Menge {detail.menge}</span>
+                  <span>Art: <span className="font-medium text-stone-700">{posArtLabel(detail.art)}</span></span>
+                </div>
+                <Field label="Langtext / Beschrieb">
+                  <textarea className={`${inputCls} min-h-[130px] font-mono text-xs`} value={(detail.langtext || []).join("\n")} onChange={(e) => speichern({ langtext: e.target.value.split("\n") })} placeholder="Beschrieb aus dem Katalog — hier ergänzbar" />
+                </Field>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <Field label="Fabrikat / Typ"><input className={inputCls} value={detail.fabrikat || ""} onChange={(e) => speichern({ fabrikat: e.target.value })} placeholder="z.B. Swisspor EPS 30 oder gleichwertig" /></Field>
+                  <Field label="Bemerkung (intern)"><input className={inputCls} value={detail.bemerkung || ""} onChange={(e) => speichern({ bemerkung: e.target.value })} placeholder="Notiz zur Position" /></Field>
+                </div>
+                <p className="text-xs text-stone-400">Langtext und Fabrikat erscheinen im Leistungsverzeichnis-PDF unter der Position; die Bemerkung bleibt intern. Menge/Einheit/Art werden im Reiter «Leistungsverzeichnisse» erfasst.</p>
+              </div>
+            );
+          })()}
+        </Modal>
+      )}
+      {offerFor && <OfferteImportModal a={a} bieterIndex={offerFor.bieterIndex} dispatch={dispatch} onClose={() => setOfferFor(null)} />}
+    </div>
+  );
+}
+
+function AngebotCard({ a, d, dispatch, projektId, projekt, onEdit, db, rollen, ks, neuBieter }) {
+  const nw = nutzwerte(a, projekt);
   const [posBusy, setPosBusy] = useState(false);
   const [vorschlag, setVorschlag] = useState("");
   const [antragBusy, setAntragBusy] = useState(false);
   const [lvBieter, setLvBieter] = useState("");
   const [lvBusy, setLvBusy] = useState(false);
+  const [vergabeFor, setVergabeFor] = useState(null);
   const isLv = a.modus === "lv";
   const posLabel = (() => { const x = d.positionen.find((p) => p.id === a.positionId); return x ? `${x.bkp} ${x.bezeichnung}` : "ohne BKP-Zuordnung"; })();
-  function vergeben(b, brutto, netto) {
-    if (!a.positionId) { alert("Bitte zuerst eine BKP-Position der Ausschreibung zuordnen (Bearbeiten)."); return; }
-    const kv = kondVorgabe(projekt, a);
-    dispatch({ type: "add", coll: "vertraege", item: { id: uid(), projektId, positionId: a.positionId, unternehmer: b.name, nr: a.titel, betrag: brutto, rabattPct: Number(b.rabattPct) || 0, pauschalabzug: Number(b.pauschalabzug) || 0, skontoPct: Number(b.skontoPct) || 0, bauabzuegePct: Number(b.bauabzuegePct) || 0, rundung: Number(b.rundung) || 0, regieBudget: 0, teuerung: 0, datum: today(), rueckbehaltPct: kv.rueckbehaltPct || 0, garantieJahre: kv.garantieJahre || 2, garantieArt: kv.garantieArt || "", firmaId: (findFirma(db.firmen, b.firmaId, b.name) || {}).id || "", firmaSnap: firmaSnapshot(findFirma(db.firmen, b.firmaId, b.name), ""), bauherrSnap: { bauherr: rollen.bauherr, bauherrAdresse: rollen.bauherrAdresse, bauherrPerson: rollen.bauherrPerson } } });
-    alert(`Vertrag mit ${b.name} erstellt: brutto CHF ${chf(brutto)} → netto CHF ${chf(netto)}. Konditionen übernommen; Regiebudget unter «Verträge» ergänzen.`);
-  }
-  const named = rows.filter((r) => r.b.name);
+  const named = nw.rows.filter((r) => r.b.name);
   const [offen, setOffen] = useState(false);
   const bester = named[0] || null;
   const posKurz = (() => { const x = d.positionen.find((p) => p.id === a.positionId); return x ? x.bkp : "—"; })();
+  const kvManuell = a.kvManuell !== "" && a.kvManuell !== undefined && a.kvManuell !== null && parseBetrag(a.kvManuell) !== 0;
   return (
     <div className={card}>
       <button className="w-full text-left px-3 py-2.5 flex items-center gap-2.5 hover:bg-stone-50/70 rounded-xl" onClick={() => setOffen(!offen)}>
@@ -6547,10 +6786,10 @@ function AngebotCard({ a, d, dispatch, projektId, projekt, onEdit, db, rollen, k
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <div className="font-semibold">{a.titel || "Ohne Titel"} {isLv && <span className="text-xs font-normal bg-orange-50 text-orange-800 rounded px-1.5 py-0.5 align-middle">LV · {(a.positionen || []).length} Pos.</span>}</div>
-          <div className="text-sm text-stone-500">{posLabel} · {named.length} Bieter · Gewichtung Preis {w.preis}% / Ref. {w.referenzen}% / Lehrl. {w.lehrlinge}%</div>
+          <div className="text-sm text-stone-500">{posLabel}{kvManuell ? " · KV manuell: " + chf(parseBetrag(a.kvManuell)) : ""} · {named.length} Bieter · Gewichtung Preis {nw.w.preis}% / Ref. {nw.w.referenzen}% / Lehrl. {nw.w.lehrlinge}%</div>
         </div>
         <div className="flex flex-wrap gap-2 items-center">
-        <button className={btnGhost} onClick={onEdit}>{isLv ? "Bieter bepreisen / bearbeiten" : "Bearbeiten"}</button>
+        <button className={btnGhost} onClick={onEdit}>Titel / BKP / Gewichtung</button>
         <select className="text-xs rounded border border-stone-300 px-2 py-1.5 bg-white" title="Vorgeschlagener Unternehmer" value={vorschlag || (named[0]?.b.name || "")} onChange={(e) => setVorschlag(e.target.value)}>
                   {named.map((r) => <option key={r.b.name} value={r.b.name}>Vorschlag: {r.b.name}</option>)}
                 </select>
@@ -6562,6 +6801,8 @@ function AngebotCard({ a, d, dispatch, projektId, projekt, onEdit, db, rollen, k
                   } catch (e) { window.alert("Der Vergabeantrag konnte nicht erzeugt werden: " + e.message); }
                   setAntragBusy(false);
                 }}>{antragBusy ? "erzeugt…" : "📄 Vergabeantrag (quer)"}</button>
+                {isLv && (
+                <>
                 <select className="text-xs rounded border border-stone-300 px-2 py-1.5 bg-white" title="Leistungsverzeichnis ausgeben" value={lvBieter} onChange={(e) => setLvBieter(e.target.value)}>
                   <option value="">LV ohne Preise (Ausschreibung)</option>
                   {(a.bieter || []).filter((b) => b.name).map((b) => <option key={b.name} value={b.name}>LV mit Preisen: {b.name}</option>)}
@@ -6574,87 +6815,25 @@ function AngebotCard({ a, d, dispatch, projektId, projekt, onEdit, db, rollen, k
                   } catch (e) { window.alert("Das Leistungsverzeichnis konnte nicht erzeugt werden: " + e.message); }
                   setLvBusy(false);
                 }}>{lvBusy ? "erzeugt…" : "📄 LV"}</button>
+                <button className={btnGhost} disabled={posBusy || !(a.positionen || []).length || !named.length} onClick={async () => {
+                  setPosBusy(true);
+                  try {
+                    const bytes = await bauePositionsvergleichPdf(a, { projekt, rollen, db });
+                    pdfSpeichern(bytes, `Positionsvergleich_${(a.titel || "").replace(/[^\w]+/g, "_")}.pdf`);
+                  } catch (e) { window.alert("Der Positionsvergleich konnte nicht erzeugt werden: " + e.message); }
+                  setPosBusy(false);
+                }}>{posBusy ? "erzeugt…" : "📄 Positionsvergleich"}</button>
+                </>
+                )}
         </div>
       </div>
-      {named.length > 0 && (
-        <div className="mt-3 overflow-x-auto">
-          <table className="text-sm border-separate" style={{ borderSpacing: 0 }}>
-            <thead>
-              <tr>
-                <th className="text-left font-medium text-xs text-stone-500 py-1 pr-3 sticky left-0 bg-white z-10 min-w-[150px]"></th>
-                {named.map((t, i) => (
-                  <th key={i} className={`text-right font-medium py-1 px-3 min-w-[130px] align-bottom ${i === 0 ? "bg-emerald-50/50" : ""}`}>
-                    <div className="text-[10px] text-stone-400 font-normal">{"Rang " + (i + 1) + (i === 0 ? " · bester Nutzwert" : "")}</div>
-                    <div className="text-stone-800">{t.b.name}</div>
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {[
-                { l: "Angebot brutto", f: (t) => chf(t.brutto), stark: true },
-                { l: "− Rabatt", f: (t) => Number(t.b.rabattPct) ? `${t.b.rabattPct}%  ${chf(t.brutto * t.b.rabattPct / 100)}` : "–", klein: true },
-                { l: "− Pauschalabzug", f: (t) => Number(t.b.pauschalabzug) ? chf(t.b.pauschalabzug) : "–", klein: true },
-                { l: "− Skonto", f: (t) => Number(t.b.skontoPct) ? `${t.b.skontoPct}%` : "–", klein: true },
-                { l: "− Bauabzüge", f: (t) => Number(t.b.bauabzuegePct) ? `${t.b.bauabzuegePct}%` : "–", klein: true },
-                { l: "± Rundung", f: (t) => Number(t.b.rundung) ? chf(t.b.rundung) : "–", klein: true },
-                { l: "Angebot netto", f: (t) => chf(t.netto), stark: true, linie: true },
-                { l: "gegenüber günstigstem", f: (t) => min > 0 && t.netto > 0 ? (t.netto === min ? "0.0%" : "+" + (100 * (t.netto - min) / min).toFixed(1) + "%") : "–", ampel: true },
-                { l: "Preispunkte", f: (t) => t.pP.toFixed(1), klein: true, linie: true },
-                { l: "Referenzpunkte", f: (t) => String(Number(t.b.referenzPunkte) || 0), klein: true },
-                { l: "Lehrlingspunkte", f: (t) => String(Number(t.b.lehrlingPunkte) || 0), klein: true },
-                { l: "Nutzwert", f: (t) => t.nutz.toFixed(1), stark: true },
-              ].map((zl, ri) => (
-                <tr key={ri} className={zl.linie ? "border-t border-stone-200" : ""}>
-                  <td className={`py-1 pr-3 sticky left-0 bg-white z-10 ${zl.klein ? "text-xs text-stone-500" : "text-stone-700"} ${zl.stark ? "font-semibold" : ""} ${zl.linie ? "border-t border-stone-200" : ""}`}>{zl.l}</td>
-                  {named.map((t, i) => {
-                    let farbe = "";
-                    if (zl.ampel) farbe = t.netto === min && t.netto > 0 ? "text-emerald-700" : "text-red-600";
-                    return <td key={i} className={`py-1 px-3 text-right tabular-nums ${zl.klein ? "text-xs text-stone-500" : ""} ${zl.stark ? "font-semibold" : ""} ${farbe} ${i === 0 ? "bg-emerald-50/50" : ""} ${zl.linie ? "border-t border-stone-200" : ""}`}>{zl.f(t)}</td>;
-                  })}
-                </tr>
-              ))}
-              <tr className="border-t border-stone-200">
-                <td className="py-1.5 pr-3 sticky left-0 bg-white z-10 text-xs text-stone-500 border-t border-stone-200 align-top">Bemerkung</td>
-                {named.map((t, i) => <td key={i} className={`py-1.5 px-3 text-right text-xs text-stone-500 border-t border-stone-200 align-top ${i === 0 ? "bg-emerald-50/50" : ""}`}>{t.b.bemerkung || "–"}</td>)}
-              </tr>
-              <tr>
-                <td className="py-2 sticky left-0 bg-white z-10"></td>
-                {named.map((t, i) => (
-                  <td key={i} className={`py-2 px-3 text-right ${i === 0 ? "bg-emerald-50/50" : ""}`}>
-                    <button className="text-orange-800 text-xs hover:underline" onClick={() => vergeben(t.b, t.brutto, t.netto)}>Vergeben →</button>
-                  </td>
-                ))}
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      )}
-      {isLv && (a.positionen || []).length > 0 && named.length > 0 && (
-        <div className="mt-2">
-          <button className="text-orange-800 text-xs hover:underline print:hidden" onClick={() => setShowPos(!showPos)}>{showPos ? "Positionsvergleich ausblenden" : "Positionsvergleich einblenden"}</button>
-          <button className="text-orange-800 text-xs hover:underline ml-3" disabled={posBusy || !(a.positionen || []).length} onClick={async () => {
-            setPosBusy(true);
-            try {
-              const bytes = await bauePositionsvergleichPdf(a, { projekt, rollen, db });
-              pdfSpeichern(bytes, `Positionsvergleich_${(a.titel || "").replace(/[^\w]+/g, "_")}.pdf`);
-            } catch (e) { window.alert("Der Positionsvergleich konnte nicht erzeugt werden: " + e.message); }
-            setPosBusy(false);
-          }}>{posBusy ? "erzeugt…" : "📄 Positionsvergleich"}</button>
-          {showPos && (
-            <div className="mt-2 overflow-x-auto border border-stone-200 rounded-md"><table className="w-full text-xs">
-              <thead className="bg-stone-50 text-stone-500"><tr><th className="px-2 py-1 text-left">NPK</th><th className="px-2 py-1 text-left">Bezeichnung</th><th className="px-2 py-1 text-right">Menge</th><th className="px-2 py-1">Einh.</th>{named.map((t, i) => <th key={i} className="px-2 py-1 text-right min-w-[80px]">{t.b.name}</th>)}</tr></thead>
-              <tbody>{(a.positionen || []).map((p) => {
-                const eps = named.map((t) => parseBetrag((t.b.preise || {})[p.code]) || 0);
-                const minEp = Math.min(...eps.filter((x) => x > 0).concat([Infinity]));
-                return (<tr key={p.code} className="border-t border-stone-100"><td className="px-2 py-1 tabular-nums">{p.npk}</td><td className="px-2 py-1">{p.bezeichnung}</td><td className="px-2 py-1 text-right tabular-nums">{p.menge}</td><td className="px-2 py-1">{p.einheit}</td>{named.map((t, i) => { const ep = parseBetrag((t.b.preise || {})[p.code]) || 0; return <td key={i} className={`px-2 py-1 text-right tabular-nums ${ep === minEp && ep > 0 ? "text-emerald-600 font-medium" : ""}`}>{ep ? chf(ep) : "–"}</td>; })}</tr>);
-              })}</tbody>
-              <tfoot><tr className="border-t-2 border-stone-300 font-semibold bg-stone-50"><td className="px-2 py-1" colSpan={4}>Total Brutto</td>{named.map((t, i) => <td key={i} className="px-2 py-1 text-right tabular-nums">{chf(t.brutto)}</td>)}</tr></tfoot>
-            </table></div>
-          )}
-        </div>
-      )}
+
+      <div className="mt-3">
+        <AngebotBieterBereich a={a} d={d} dispatch={dispatch} projekt={projekt} firmen={db.firmen} neuBieter={neuBieter} onVergeben={(b, brutto, netto) => setVergabeFor({ a, b, brutto, netto })} />
+      </div>
+
       <p className="text-xs text-stone-400 mt-2">{isLv ? "Brutto = Σ (Menge × Einheitspreis) je Bieter. " : ""}Punkte 1–100. Preispunkte = 100 × günstigstes Netto ÷ Netto. Nutzwert = gewichtete Summe (max. 100).</p>
+      {vergabeFor && <VergabeModal info={vergabeFor} vertraege={d.vertraege} dispatch={dispatch} projektId={projektId} onClose={() => setVergabeFor(null)} db={db} rollen={rollen} />}
       </div>
       )}
     </div>
@@ -6827,35 +7006,20 @@ function PositionsWaehler({ db, d, dispatch, aufnehmen, onClose }) {
   );
 }
 
-function AngebotEditor({ angebot, positionen, projekt, neuBieter, onClose, onSave, firmen }) {
-  const [a, setA] = useState(JSON.parse(JSON.stringify({ modus: "pauschal", positionen: [], bedingungen: "", gewichte: { preis: Number(projekt?.gewichtPreis) || 70, referenzen: Number(projekt?.gewichtReferenzen) || 20, lehrlinge: Number(projekt?.gewichtLehrlinge) || 10 }, ...angebot })));
+function AngebotEditor({ angebot, positionen, projekt, onClose, onSave }) {
+  const [a, setA] = useState(JSON.parse(JSON.stringify({ kvManuell: "", gewichte: { preis: Number(projekt?.gewichtPreis) || 70, referenzen: Number(projekt?.gewichtReferenzen) || 20, lehrlinge: Number(projekt?.gewichtLehrlinge) || 10 }, ...angebot })));
   const opts = posSelectOptions(positionen);
   const isLv = a.modus === "lv";
-  const setB = (bi, k, v) => { const b = [...a.bieter]; b[bi] = { ...b[bi], [k]: v }; setA({ ...a, bieter: b }); };
-  const setEp = (bi, code, v) => { const b = [...a.bieter]; b[bi] = { ...b[bi], preise: { ...(b[bi].preise || {}), [code]: v } }; setA({ ...a, bieter: b }); };
-  const [stammOffen, setStammOffen] = useState(false);
-  const bieterAusStamm = (gewaehlte) => {
-    const vorhanden = new Set((a.bieter || []).map((b) => String(b.name || "").trim().toLowerCase()));
-    const neue = gewaehlte.filter((fa) => !vorhanden.has(fa.name.trim().toLowerCase()))
-      .map((fa) => ({ ...neuBieter(a), name: fa.name, firmaId: fa.id }));
-    if (neue.length) setA({ ...a, bieter: [...(a.bieter || []).filter((b) => b.name || (a.bieter || []).length <= 1), ...neue] });
-    setStammOffen(false);
-  };
-  const delB = (bi) => setA({ ...a, bieter: a.bieter.filter((_, x) => x !== bi) });
   const setW = (k, v) => setA({ ...a, gewichte: { ...a.gewichte, [k]: v } });
   const wSum = (Number(a.gewichte.preis) || 0) + (Number(a.gewichte.referenzen) || 0) + (Number(a.gewichte.lehrlinge) || 0);
-  const cell = "w-full text-xs px-1 py-0.5 border border-stone-200 rounded text-right tabular-nums";
-  const bruttoOf = (b) => bieterBrutto({ ...b }, a);
   return (
-    <>
-    {stammOffen && <BieterAusStamm firmen={firmen} vorhanden={(a.bieter || []).map((b) => String(b.name || "").trim().toLowerCase())} onUebernehmen={bieterAusStamm} onClose={() => setStammOffen(false)} />}
-    <Modal title={angebot.id ? "Ausschreibung bearbeiten" : "Neue Ausschreibung / Angebotsvergleich"} onClose={onClose} wide>
+    <Modal title={angebot.id ? "Ausschreibung bearbeiten" : "Neue Ausschreibung / Angebotsvergleich"} onClose={onClose}>
       <div className="space-y-4">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <Field label="Titel / Arbeitsgattung"><input className={inputCls} value={a.titel} onChange={(e) => setA({ ...a, titel: e.target.value })} placeholder="z.B. Unterlagsböden BKP 281" /></Field>
           <Field label="BKP-Position (für Vergabe)"><select className={inputCls} value={a.positionId || ""} onChange={(e) => setA({ ...a, positionId: e.target.value })}><option value="">— zuordnen —</option>{opts.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</select></Field>
         </div>
-        <div className="text-xs text-stone-500">Bepreisung: <span className="font-medium">{isLv ? `Leistungsverzeichnis (${(a.positionen || []).length} Positionen) — Bieter füllen Einheitspreise` : "Pauschale Angebotssumme je Bieter"}</span>{isLv ? "" : " · LV importierst du im Reiter «Leistungsverzeichnisse»"}</div>
+        <div className="text-xs text-stone-500">Bepreisung: <span className="font-medium">{isLv ? `Leistungsverzeichnis (${(a.positionen || []).length} Positionen) — Bieter füllen Einheitspreise` : "Pauschale Angebotssumme je Bieter"}</span>{isLv ? "" : " · LV importierst du im Reiter «Leistungsverzeichnisse»"}. Bieter, Preise und Konditionen bearbeitest du direkt in der aufgeklappten Karte im Angebotsvergleich.</div>
         <div className={`${card} p-3 bg-stone-50/60`}>
           <div className="text-xs font-medium text-stone-500 uppercase tracking-wide mb-2">Gewichtung % (Vorgabe aus Projekt, hier übersteuerbar) {wSum !== 100 && <span className="text-red-600 normal-case">(Summe {wSum}% — sollte 100% sein)</span>}</div>
           <div className="grid grid-cols-3 gap-3">
@@ -6864,75 +7028,22 @@ function AngebotEditor({ angebot, positionen, projekt, neuBieter, onClose, onSav
             <Field label="Lehrlingsausbildung %"><input className={inputCls} value={a.gewichte.lehrlinge} onChange={(e) => setW("lehrlinge", e.target.value)} /></Field>
           </div>
         </div>
-        <div className={`${card} p-3 bg-stone-50/60`}>
-          <label className="inline-flex items-center gap-2 text-xs font-medium text-stone-500 uppercase tracking-wide mb-2">
-            <input type="checkbox" checked={!!a.kondEigen} onChange={(e) => setA({ ...a, kondEigen: e.target.checked, kond: e.target.checked ? (a.kond || { ...LEERE_KOND, ...(projekt?.kond || {}) }) : a.kond })} />
-            Eigene Konditionen für diese Ausschreibung
-          </label>
-          {a.kondEigen
-            ? <KonditionsFelder wert={a.kond} onAendern={(k) => setA({ ...a, kond: k })} />
-            : <p className="text-xs text-stone-500">Neue Bieter übernehmen die Konditionen aus dem Projekt: {(() => { const k = { ...LEERE_KOND, ...(projekt?.kond || {}) }; const t = KOND_FELDER.filter((f) => !f.nurVertrag && Number(k[f.k])).map((f) => `${f.l.replace(" %", "")} ${k[f.k]}%`); return t.length ? t.join(" · ") : "keine hinterlegt"; })()}</p>}
-        </div>
-        <div>
-          <div className="flex items-center justify-between mb-2"><span className="text-xs font-medium text-stone-500 uppercase tracking-wide">Bieter — Stammdaten, Konditionen & Bewertung</span><div className="flex gap-3"><button className="text-orange-800 text-xs hover:underline" onClick={() => setStammOffen(true)}>+ Bieter aus Adressstamm</button><button className="text-stone-500 text-xs hover:underline" onClick={() => setA({ ...a, bieter: [...a.bieter, neuBieter(a)] })}>+ leere Zeile</button></div></div>
-          <div className="overflow-x-auto border border-stone-200 rounded-md"><table className="w-full text-sm">
-            <thead className="bg-stone-50 text-stone-500 text-xs"><tr>
-              <th className="px-2 py-1.5 text-left min-w-[140px]">Firma</th><th className="px-2 py-1.5 text-right min-w-[90px]">Brutto</th><th className="px-2 py-1.5 text-right w-16">Rabatt %</th><th className="px-2 py-1.5 text-right w-20">Pauschal</th><th className="px-2 py-1.5 text-right w-16">Skonto %</th><th className="px-2 py-1.5 text-right w-16">Bauabz. %</th><th className="px-2 py-1.5 text-right w-20">Rundung</th><th className="px-2 py-1.5 text-right min-w-[90px]">Netto</th><th className="px-2 py-1.5 text-right w-16">Ref.</th><th className="px-2 py-1.5 text-right w-16">Lehrl.</th><th className="px-2 py-1.5 text-left min-w-[140px]">Bemerkung</th><th className="px-1 w-8"></th>
-            </tr></thead>
-            <tbody>
-              {a.bieter.map((b, bi) => (
-                <tr key={bi} className="border-t border-stone-100">
-                  <td className="px-2 py-1"><input className="w-full text-xs px-1 py-0.5 border border-stone-200 rounded" placeholder={`Firma ${bi + 1}`} value={b.name} onChange={(e) => setB(bi, "name", e.target.value)} /></td>
-                  <td className="px-2 py-1 text-right tabular-nums text-xs">{isLv ? <span className="font-medium">{chf(bruttoOf(b))}</span> : <input className={cell} value={b.brutto} onChange={(e) => setB(bi, "brutto", e.target.value)} />}</td>
-                  <td className="px-2 py-1"><input className={cell} value={b.rabattPct} onChange={(e) => setB(bi, "rabattPct", e.target.value)} /></td>
-                  <td className="px-2 py-1"><input className={cell} value={b.pauschalabzug} onChange={(e) => setB(bi, "pauschalabzug", e.target.value)} /></td>
-                  <td className="px-2 py-1"><input className={cell} value={b.skontoPct} onChange={(e) => setB(bi, "skontoPct", e.target.value)} /></td>
-                  <td className="px-2 py-1"><input className={cell} value={b.bauabzuegePct} onChange={(e) => setB(bi, "bauabzuegePct", e.target.value)} /></td>
-                  <td className="px-2 py-1"><input className={cell} value={b.rundung} onChange={(e) => setB(bi, "rundung", e.target.value)} /></td>
-                  <td className="px-2 py-1 text-right tabular-nums text-xs font-medium">{chf(konditionenNetto(bruttoOf(b), { rabattPct: parseBetrag(b.rabattPct), pauschalabzug: parseBetrag(b.pauschalabzug), skontoPct: parseBetrag(b.skontoPct), bauabzuegePct: parseBetrag(b.bauabzuegePct), rundung: parseBetrag(b.rundung) }, true))}</td>
-                  <td className="px-2 py-1"><input className={cell} placeholder="0–100" value={b.referenzPunkte} onChange={(e) => setB(bi, "referenzPunkte", e.target.value)} /></td>
-                  <td className="px-2 py-1"><input className={cell} placeholder="0–100" value={b.lehrlingPunkte} onChange={(e) => setB(bi, "lehrlingPunkte", e.target.value)} /></td>
-                  <td className="px-2 py-1"><input className="w-full text-xs px-1 py-0.5 border border-stone-200 rounded" value={b.bemerkung} onChange={(e) => setB(bi, "bemerkung", e.target.value)} placeholder="optional" /></td>
-                  <td className="px-1 text-center"><button className="text-red-500 text-sm" title="Firma entfernen" onClick={() => delB(bi)}>×</button></td>
-                </tr>
-              ))}
-            </tbody>
-          </table></div>
-        </div>
-        {isLv && (a.positionen || []).length > 0 && (
-          <div>
-            <div className="text-xs font-medium text-stone-500 uppercase tracking-wide mb-2">Einheitspreise je Position (CHF/Einheit) — pro Bieter ausfüllen</div>
-            <div className="overflow-auto border border-stone-200 rounded-md max-h-[420px]"><table className="w-full text-xs">
-              <thead className="bg-stone-50 text-stone-500 sticky top-0"><tr><th className="px-2 py-1.5 text-left sticky left-0 bg-stone-50 min-w-[160px]">NPK · Bezeichnung</th><th className="px-2 py-1.5 text-right">Menge</th><th className="px-2 py-1.5">Einh.</th>{a.bieter.map((b, bi) => <th key={bi} className="px-2 py-1.5 text-right min-w-[90px]">{b.name || `Firma ${bi + 1}`}</th>)}</tr></thead>
-              <tbody>{a.positionen.map((p) => (
-                <tr key={p.code} className="border-t border-stone-100">
-                  <td className="px-2 py-1 sticky left-0 bg-white"><span className="tabular-nums text-stone-500">{p.npk}</span> {p.bezeichnung}</td>
-                  <td className="px-2 py-1 text-right tabular-nums">{p.menge}</td>
-                  <td className="px-2 py-1">{p.einheit}</td>
-                  {a.bieter.map((b, bi) => (<td key={bi} className="px-2 py-1"><input className={cell} value={(b.preise || {})[p.code] || ""} onChange={(e) => setEp(bi, p.code, e.target.value)} placeholder="0.00" /></td>))}
-                </tr>
-              ))}</tbody>
-              <tfoot className="bg-stone-50 font-medium"><tr><td className="px-2 py-1.5 sticky left-0 bg-stone-50" colSpan={3}>Total Brutto</td>{a.bieter.map((b, bi) => <td key={bi} className="px-2 py-1.5 text-right tabular-nums">{chf(bruttoOf(b))}</td>)}</tr></tfoot>
-            </table></div>
-          </div>
-        )}
+        <Field label="KV-Betrag manuell (überschreibt KV und KV rev. im Vergabeantrag-PDF)">
+          <input className={inputCls} value={a.kvManuell ?? ""} onChange={(e) => setA({ ...a, kvManuell: e.target.value })} placeholder="leer lassen, um den KV der zugeordneten BKP-Position zu verwenden" />
+        </Field>
         {a.bedingungen && (
           <details className="text-xs"><summary className="cursor-pointer text-stone-500">Importierte Bedingungen / Besondere Bestimmungen anzeigen</summary><div className="mt-2 max-h-48 overflow-y-auto whitespace-pre-wrap text-stone-600 border border-stone-200 rounded p-2">{a.bedingungen}</div></details>
         )}
-        <div className="flex justify-end gap-2"><button className={btnGhost} onClick={onClose}>Abbrechen</button><button className={btnPrimary} disabled={!a.titel} onClick={() => onSave({ ...a, bieter: a.bieter.map((b) => ({ ...b, brutto: parseBetrag(b.brutto), rabattPct: parseBetrag(b.rabattPct), pauschalabzug: parseBetrag(b.pauschalabzug), skontoPct: parseBetrag(b.skontoPct), bauabzuegePct: parseBetrag(b.bauabzuegePct), rundung: parseBetrag(b.rundung), referenzPunkte: parseBetrag(b.referenzPunkte), lehrlingPunkte: parseBetrag(b.lehrlingPunkte) })) })}>Speichern</button></div>
+        <div className="flex justify-end gap-2"><button className={btnGhost} onClick={onClose}>Abbrechen</button><button className={btnPrimary} disabled={!a.titel} onClick={() => onSave({ ...a, kvManuell: a.kvManuell === "" ? "" : parseBetrag(a.kvManuell) })}>Speichern</button></div>
       </div>
     </Modal>
-    </>
   );
 }
 
 function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen, db, ks }) {
-  const rollen = projektRollen(db, projekt);
   const [selId, setSelId] = useState(d.angebote.find((x) => x.modus === "lv")?.id || d.angebote[0]?.id || "");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
-  const [offerFor, setOfferFor] = useState(null);
-  const [vergabeFor, setVergabeFor] = useState(null);
   const [posForm, setPosForm] = useState({ code: "", bezeichnung: "", einheit: "", menge: "" });
   const [waehlerOffen, setWaehlerOffen] = useState(false);
   // Gewählte Katalogpositionen ans Ende der Ausschreibung hängen (Dubletten überspringen)
@@ -6943,7 +7054,6 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen, db,
     if (!frisch.length) { window.alert("Alle gewählten Positionen sind bereits enthalten."); return; }
     dispatch({ type: "update", coll: "angebote", id: a.id, patch: { positionen: [...(a.positionen || []), ...frisch] } });
   };
-  const [showKond, setShowKond] = useState(false);
   const [showAddPos, setShowAddPos] = useState(false);
   const [detail, setDetail] = useState(null);
   const fileRef = useRef(null);
@@ -6982,7 +7092,7 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen, db,
       if (!a.titel || a.titel === "Neue Ausschreibung") patch.titel = parsed.header.titel || parsed.header.projekt || a.titel;
       dispatch({ type: "update", coll: "angebote", id: a.id, patch });
       const kats = [...new Set(parsed.positionen.map((p) => "NPK " + p.catalog))].join(", ");
-      setMsg("✓ " + neu.length + " Positionen importiert (" + kats + "). Jetzt Unternehmer-Offerten einlesen oder Preise direkt in der Matrix eintragen.");
+      setMsg("✓ " + neu.length + " Positionen importiert (" + kats + ").");
     } catch (err) { setMsg("Fehler beim Lesen: " + (err?.message || err)); }
     setBusy(false); if (fileRef.current) fileRef.current.value = "";
   }
@@ -6995,39 +7105,14 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen, db,
     dispatch({ type: "update", coll: "angebote", id: a.id, patch: { modus: "lv", positionen: [...(a.positionen || []), pos] } });
     setPosForm({ code: "", bezeichnung: "", einheit: "", menge: "" }); setMsg("");
   }
-  const setBieter = (arr) => dispatch({ type: "update", coll: "angebote", id: a.id, patch: { bieter: arr } });
-  const addBieter = () => setBieter([...(a.bieter || []), { name: "", preise: {}, bemerkung: "", rabattPct: 0, pauschalabzug: 0, skontoPct: 0, bauabzuegePct: 0, rundung: 0, referenzPunkte: 0, lehrlingPunkte: 0 }]);
-  const patchBieter = (bi, patch) => setBieter(a.bieter.map((b, i) => i === bi ? { ...b, ...patch } : b));
-  const setEp = (bi, code, val) => setBieter(a.bieter.map((b, i) => i === bi ? { ...b, preise: { ...(b.preise || {}), [code]: val } } : b));
   function exportLeer(fmt) {
     if (!a) return;
     const base = (a.titel || "Ausschreibung").replace(/\s+/g, "_");
     if (fmt === "csv") download(new Blob([buildOfferteCsv(a.titel, a.positionen || [], null)], { type: "text/csv;charset=utf-8" }), base + "_Offerte.csv");
     else download(makeCrbxBlob(buildSia451(a.titel || "LV", a.positionen || [], null)), base + ".crbx");
   }
-  function exportBieter(b, fmt) {
-    if (!a || !b) return;
-    const base = (a.titel || "LV").replace(/\s+/g, "_") + "_" + (b.name || "Firma").replace(/\s+/g, "");
-    if (fmt === "csv") download(new Blob([buildOfferteCsv(a.titel, a.positionen || [], b.preise || {})], { type: "text/csv;charset=utf-8" }), base + ".csv");
-    else download(makeCrbxBlob(buildSia451(a.titel || "LV", a.positionen || [], b.preise || {})), base + ".crbx");
-  }
-  function exportVergleich() {
-    if (!a) return;
-    const esc = (s) => '"' + String(s == null ? "" : s).replace(/"/g, '""') + '"';
-    const bs = a.bieter || [];
-    const lines = [["NPK", "Bezeichnung", "Einheit", "Menge"].map(esc).concat(bs.map((b) => esc(b.name || "Firma"))).join(";")];
-    (a.positionen || []).forEach((p) => lines.push([esc(p.npk), esc(p.bezeichnung), esc(p.einheit), p.menge].concat(bs.map((b) => parseBetrag((b.preise || {})[p.code]) || "")).join(";")));
-    lines.push(["", esc("Total Brutto"), "", ""].concat(bs.map((b) => Math.round(bieterBrutto(b, a)))).join(";"));
-    lines.push(["", esc("Total Netto"), "", ""].concat(bs.map((b) => Math.round(bieterNetto(b, a)))).join(";"));
-    download(new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" }), (a.titel || "Vergleich").replace(/\s+/g, "_") + "_Vergleich.csv");
-  }
 
   const positionen = a ? a.positionen || [] : [];
-  const bieter = a ? a.bieter || [] : [];
-  const nw = a ? nutzwerte(a, projekt) : { rows: [], min: 0, w: {} };
-  const nwByB = new Map(nw.rows.map((r) => [r.b, r]));
-  const rangByB = new Map(nw.rows.map((r, i) => [r.b, i + 1]));
-  const cell = "w-20 text-xs px-1 py-1 border border-stone-200 rounded text-right tabular-nums focus:border-orange-600 focus:outline-none";
 
   return (
     <div className="space-y-4">
@@ -7076,118 +7161,40 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen, db,
           </div>
 
           {positionen.length === 0 ? <Empty text="Noch keine Positionen. Importiere ein LV (.crbx) oder füge Positionen manuell hinzu." /> : (
-            <>
-              <div className={`${card} overflow-auto`} style={{ maxHeight: "70vh" }}>
-                <table className="text-xs border-collapse">
-                  <thead className="sticky top-0 z-20">
-                    <tr className="bg-stone-100">
-                      <th className="sticky left-0 z-30 bg-stone-100 text-left px-2 py-2 border-b border-stone-200 min-w-[70px]">NPK</th>
-                      <th className="text-left px-2 py-2 border-b border-stone-200 min-w-[150px]">Bezeichnung</th>
-                      <th className="text-left px-2 py-2 border-b border-stone-200">Art</th>
-                      <th className="text-left px-2 py-2 border-b border-stone-200">Einh.</th>
-                      <th className="text-right px-2 py-2 border-b border-stone-200">Menge</th>
-                      {bieter.map((b, bi) => (
-                        <th key={bi} className="px-2 py-1.5 border-b border-l border-stone-200 align-top min-w-[118px]">
-                          <input className="w-full text-xs px-1 py-0.5 border border-stone-200 rounded font-medium" list="firmenliste-lv" placeholder={"Firma " + (bi + 1)} value={b.name} onChange={(e) => patchBieter(bi, { name: e.target.value })} />
-                          <div className="flex items-center justify-between mt-1">
-                            <span className="text-[11px] text-stone-500 tabular-nums">{chf(bieterBrutto(b, a))}</span>
-                            <span className="flex gap-1.5 text-sm">
-                              <button className="text-orange-800" title="Offerte importieren" onClick={() => setOfferFor({ aId: a.id, bieterIndex: bi })}>⬇</button>
-                              <button className="text-stone-500" title="Export" onClick={() => exportBieter(b, "csv")}>⬆</button>
-                              <button className="text-red-500" title="Entfernen" onClick={() => setBieter(a.bieter.filter((_, x) => x !== bi))}>✕</button>
-                            </span>
-                          </div>
-                        </th>
-                      ))}
-                      <th className="px-2 border-b border-l border-stone-200 align-top whitespace-nowrap">
-                        <button className="text-orange-800 text-xs hover:underline" onClick={addBieter}>+ Firma</button>
-                        <div className="mt-1"><button className="text-orange-800 text-[11px] hover:underline" onClick={() => setOfferFor({ aId: a.id, bieterIndex: null })}>+ Offerte</button></div>
-                      </th>
+            <div className={`${card} overflow-auto`} style={{ maxHeight: "70vh" }}>
+              <table className="w-full text-xs border-collapse">
+                <thead className="sticky top-0 z-20">
+                  <tr className="bg-stone-100">
+                    <th className="text-left px-2 py-2 border-b border-stone-200 min-w-[70px]">NPK</th>
+                    <th className="text-left px-2 py-2 border-b border-stone-200 min-w-[220px]">Bezeichnung</th>
+                    <th className="text-left px-2 py-2 border-b border-stone-200">Art</th>
+                    <th className="text-left px-2 py-2 border-b border-stone-200">Einh.</th>
+                    <th className="text-right px-2 py-2 border-b border-stone-200">Menge</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {positionen.map((p) => (
+                    <tr key={p.code} className={`border-b border-stone-100 hover:bg-stone-50/60 ${istGewertet(p) ? "" : "bg-amber-50/40"}`}>
+                      <td className="px-2 py-1 tabular-nums whitespace-nowrap">{p.npk}</td>
+                      <td className="px-2 py-1">
+                        <span>{p.bezeichnung || <span className="text-stone-300">—</span>}</span>
+                        <button className="ml-1 text-orange-700 text-[10px] hover:underline align-top" title="Langtext, Bemerkung und Fabrikat bearbeiten" onClick={() => setDetail(p)}>ⓘ</button>
+                        {p.fabrikat ? <span className="block text-[10px] text-stone-400">Fabrikat: {p.fabrikat}</span> : null}
+                        {p.bemerkung ? <span className="block text-[10px] text-amber-700">{p.bemerkung}</span> : null}
+                      </td>
+                      <td className="px-2 py-1">
+                        <select className="text-[11px] rounded border border-stone-200 px-1 py-0.5 bg-white" value={p.art || "normal"} title={(POSARTEN.find((x) => x.k === (p.art || "normal")) || {}).hilfe}
+                          onChange={(e) => dispatch({ type: "update", coll: "angebote", id: a.id, patch: { positionen: a.positionen.map((x) => x.code === p.code ? { ...x, art: e.target.value } : x) } })}>
+                          {POSARTEN.map((ar) => <option key={ar.k} value={ar.k}>{ar.l}</option>)}
+                        </select>
+                      </td>
+                      <td className="px-2 py-1 text-stone-500 whitespace-nowrap">{p.einheit}</td>
+                      <td className="px-2 py-1 text-right"><ZahlZelle className="w-16 text-xs text-right tabular-nums bg-transparent border-b border-transparent hover:border-stone-200 focus:border-orange-600 focus:outline-none" wert={p.menge} onSpeichern={(n) => dispatch({ type: "update", coll: "angebote", id: a.id, patch: { positionen: a.positionen.map((x) => x.code === p.code ? { ...x, menge: n } : x) } })} /></td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {positionen.map((p) => {
-                      const eps = bieter.map((b) => parseBetrag((b.preise || {})[p.code]) || 0);
-                      const valid = eps.filter((x) => x > 0); const minEp = valid.length ? Math.min(...valid) : 0;
-                      return (
-                        <tr key={p.code} className={`border-b border-stone-100 hover:bg-stone-50/60 ${istGewertet(p) ? "" : "bg-amber-50/40"}`}>
-                          <td className="sticky left-0 z-10 bg-white px-2 py-1 tabular-nums whitespace-nowrap">{p.npk}</td>
-                          <td className="px-2 py-1">
-                            <span>{p.bezeichnung || <span className="text-stone-300">—</span>}</span>
-                            <button className="ml-1 text-orange-700 text-[10px] hover:underline align-top" title="Langtext, Bemerkung und Fabrikat bearbeiten" onClick={() => setDetail(p)}>ⓘ</button>
-                            {p.fabrikat ? <span className="block text-[10px] text-stone-400">Fabrikat: {p.fabrikat}</span> : null}
-                            {p.bemerkung ? <span className="block text-[10px] text-amber-700">{p.bemerkung}</span> : null}
-                          </td>
-                          <td className="px-2 py-1">
-                            <select className="text-[11px] rounded border border-stone-200 px-1 py-0.5 bg-white" value={p.art || "normal"} title={(POSARTEN.find((x) => x.k === (p.art || "normal")) || {}).hilfe}
-                              onChange={(e) => dispatch({ type: "update", coll: "angebote", id: a.id, patch: { positionen: a.positionen.map((x) => x.code === p.code ? { ...x, art: e.target.value } : x) } })}>
-                              {POSARTEN.map((ar) => <option key={ar.k} value={ar.k}>{ar.l}</option>)}
-                            </select>
-                          </td>
-                          <td className="px-2 py-1 text-stone-500 whitespace-nowrap">{p.einheit}</td>
-                          <td className="px-2 py-1 text-right"><ZahlZelle className="w-16 text-xs text-right tabular-nums bg-transparent border-b border-transparent hover:border-stone-200 focus:border-orange-600 focus:outline-none" wert={p.menge} onSpeichern={(n) => dispatch({ type: "update", coll: "angebote", id: a.id, patch: { positionen: a.positionen.map((x) => x.code === p.code ? { ...x, menge: n } : x) } })} /></td>
-                          {bieter.map((b, bi) => { const ep = eps[bi]; return (
-                            <td key={bi} className={"px-1 py-1 border-l border-stone-100 " + (ep === minEp && ep > 0 ? "bg-emerald-50" : "")}>
-                              <input className={cell} value={(b.preise || {})[p.code] ?? ""} onChange={(e) => setEp(bi, p.code, e.target.value)} placeholder="–" />
-                            </td>
-                          ); })}
-                          <td className="border-l border-stone-100"></td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                  <tfoot className="sticky bottom-0 z-20">
-                    <tr className="bg-stone-50 font-semibold border-t-2 border-stone-300">
-                      <td className="sticky left-0 bg-stone-50 px-2 py-1.5">Total Brutto</td><td></td><td></td><td></td>
-                      {bieter.map((b, bi) => <td key={bi} className="px-2 py-1.5 text-right tabular-nums border-l border-stone-200">{chf(bieterBrutto(b, a))}</td>)}<td className="border-l border-stone-200"></td>
-                    </tr>
-                    <tr className="bg-stone-50">
-                      <td className="sticky left-0 bg-stone-50 px-2 py-1">Total Netto</td><td colSpan={3} className="text-[11px] text-stone-400 px-2">nach Konditionen</td>
-                      {bieter.map((b, bi) => { const n = bieterNetto(b, a); return <td key={bi} className={"px-2 py-1 text-right tabular-nums border-l border-stone-200 " + (n === nw.min && n > 0 ? "text-emerald-600 font-semibold" : "")}>{chf(n)}</td>; })}<td className="border-l border-stone-200"></td>
-                    </tr>
-                    <tr className="bg-stone-50">
-                      <td className="sticky left-0 bg-stone-50 px-2 py-1">Nutzwert</td><td colSpan={3} className="text-[11px] text-stone-400 px-2">Preis {nw.w.preis}% · Ref {nw.w.referenzen}% · Lehrl {nw.w.lehrlinge}%</td>
-                      {bieter.map((b, bi) => { const r = nwByB.get(b); const rang = rangByB.get(b); return <td key={bi} className="px-2 py-1 text-right tabular-nums border-l border-stone-200">{r ? r.nutz.toFixed(1) : "–"}{rang === 1 && r && r.nutz > 0 ? <span className="text-emerald-600"> ★</span> : ""}</td>; })}<td className="border-l border-stone-200"></td>
-                    </tr>
-                    <tr className="bg-emerald-50/40 print:hidden">
-                      <td className="sticky left-0 bg-emerald-50/40 px-2 py-1">Vergeben →</td><td></td><td></td><td></td>
-                      {bieter.map((b, bi) => <td key={bi} className="px-2 py-1 text-right border-l border-stone-200">{b.name ? <button className="text-orange-800 hover:underline" onClick={() => setVergabeFor({ a, b, brutto: bieterBrutto(b, a), netto: bieterNetto(b, a) })}>wählen</button> : ""}</td>)}<td className="border-l border-stone-200"></td>
-                    </tr>
-                  </tfoot>
-                </table>
-              </div>
-
-              <div className="flex flex-wrap gap-2 items-center">
-                <button className={btnGhost} onClick={() => setShowKond(!showKond)}>{showKond ? "Konditionen & Bewertung ausblenden" : "Konditionen & Bewertung"}</button>
-                <button className={btnGhost} onClick={exportVergleich}>Vergleich als CSV exportieren</button>
-                
-                <button className={btnGhost} onClick={() => setOfferFor({ aId: a.id, bieterIndex: null })}>+ Offerte importieren</button>
-              </div>
-              <datalist id="firmenliste-lv">{(firmen || []).map((fa) => <option key={fa.id} value={fa.name} />)}</datalist>
-
-              {showKond && bieter.length > 0 && (
-                <div className={`${card} overflow-x-auto`}>
-                  <div className="px-3 py-2 bg-stone-50 text-sm font-medium border-b border-stone-200">Konditionen (Kaskade auf Brutto) & Bewertungspunkte (0–100)</div>
-                  <table className="w-full text-xs">
-                    <thead className="text-stone-500"><tr><th className="text-left px-2 py-1.5">Unternehmer</th><th className="px-2 py-1.5 text-right">Rabatt %</th><th className="px-2 py-1.5 text-right">Pauschal</th><th className="px-2 py-1.5 text-right">Skonto %</th><th className="px-2 py-1.5 text-right">Bauabz. %</th><th className="px-2 py-1.5 text-right">Rundung</th><th className="px-2 py-1.5 text-right">Netto</th><th className="px-2 py-1.5 text-right">Referenz</th><th className="px-2 py-1.5 text-right">Lehrling</th><th className="px-2 py-1.5 text-left">Bemerkung</th></tr></thead>
-                    <tbody>{bieter.map((b, bi) => (
-                      <tr key={bi} className="border-t border-stone-100">
-                        <td className="px-2 py-1 font-medium whitespace-nowrap">{b.name || ("Firma " + (bi + 1))}</td>
-                        <td className="px-2 py-1"><input className={cell} value={b.rabattPct} onChange={(e) => patchBieter(bi, { rabattPct: e.target.value })} /></td>
-                        <td className="px-2 py-1"><input className={cell} value={b.pauschalabzug} onChange={(e) => patchBieter(bi, { pauschalabzug: e.target.value })} /></td>
-                        <td className="px-2 py-1"><input className={cell} value={b.skontoPct} onChange={(e) => patchBieter(bi, { skontoPct: e.target.value })} /></td>
-                        <td className="px-2 py-1"><input className={cell} value={b.bauabzuegePct} onChange={(e) => patchBieter(bi, { bauabzuegePct: e.target.value })} /></td>
-                        <td className="px-2 py-1"><input className={cell} value={b.rundung} onChange={(e) => patchBieter(bi, { rundung: e.target.value })} /></td>
-                        <td className="px-2 py-1 text-right tabular-nums font-medium">{chf(bieterNetto(b, a))}</td>
-                        <td className="px-2 py-1"><input className={cell} value={b.referenzPunkte} onChange={(e) => patchBieter(bi, { referenzPunkte: e.target.value })} /></td>
-                        <td className="px-2 py-1"><input className={cell} value={b.lehrlingPunkte} onChange={(e) => patchBieter(bi, { lehrlingPunkte: e.target.value })} /></td>
-                        <td className="px-2 py-1"><input className="w-full text-xs px-1 py-0.5 border border-stone-200 rounded" value={b.bemerkung} onChange={(e) => patchBieter(bi, { bemerkung: e.target.value })} /></td>
-                      </tr>
-                    ))}</tbody>
-                  </table>
-                </div>
-              )}
-            </>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
 
           {a.bedingungen && (
@@ -7220,18 +7227,17 @@ function LeistungsverzeichnisView({ d, dispatch, projektId, projekt, firmen, db,
                   <Field label="Fabrikat / Typ"><input className={inputCls} value={detail.fabrikat || ""} onChange={(e) => speichern({ fabrikat: e.target.value })} placeholder="z.B. Swisspor EPS 30 oder gleichwertig" /></Field>
                   <Field label="Bemerkung (intern)"><input className={inputCls} value={detail.bemerkung || ""} onChange={(e) => speichern({ bemerkung: e.target.value })} placeholder="Notiz zur Position" /></Field>
                 </div>
-                <p className="text-xs text-stone-400">Langtext und Fabrikat erscheinen im Leistungsverzeichnis-PDF unter der Position; die Bemerkung bleibt intern.</p>
+                <p className="text-xs text-stone-400">Langtext und Fabrikat erscheinen im Leistungsverzeichnis-PDF unter der Position; die Bemerkung bleibt intern. Bieter, Preise und Vergabe bearbeitest du im Reiter «Angebotsvergleich».</p>
               </div>
             );
           })()}
         </Modal>
       )}
-      {offerFor && <OfferteImportModal a={d.angebote.find((x) => x.id === offerFor.aId)} bieterIndex={offerFor.bieterIndex} dispatch={dispatch} onClose={() => setOfferFor(null)} />}
-      {vergabeFor && <VergabeModal info={vergabeFor} vertraege={d.vertraege} dispatch={dispatch} projektId={projektId} onClose={() => setVergabeFor(null)} db={db} rollen={rollen} />}
       {waehlerOffen && <PositionsWaehler db={db} d={d} dispatch={dispatch} aufnehmen={positionenAufnehmen} onClose={() => setWaehlerOffen(false)} />}
     </div>
   );
 }
+
 
 function OfferteImportModal({ a, bieterIndex, dispatch, onClose }) {
   const [ziel, setZiel] = useState(bieterIndex != null ? String(bieterIndex) : "__new");
