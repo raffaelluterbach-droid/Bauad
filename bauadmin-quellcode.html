@@ -3185,6 +3185,7 @@ function RolleFeld({ wert, onSpeichern }) {
 function ProjektBeteiligteView({ db, dispatch, projektId, firmen }) {
   const beteiligte = projektBeteiligte(db, projektId);
   const [neu, setNeu] = useState({ firmaId: "", rolle: "" });
+  const [q, setQ] = useState("");
   const upd = (id, patch) => dispatch({ type: "update", coll: "beteiligte", id, patch });
   // Rollenvorschläge: Standard + alles, was in irgendeinem Projekt schon verwendet wurde
   const rollenVorschlag = useMemo(() => {
@@ -3192,11 +3193,17 @@ function ProjektBeteiligteView({ db, dispatch, projektId, firmen }) {
     return [...new Set([...ROLLEN_VORSCHLAG, ...verwendet])].sort((a, b) => a.localeCompare(b, "de"));
   }, [db.beteiligte]);
 
+  const gefiltert = useMemo(() => {
+    const t = q.trim().toLowerCase();
+    if (!t) return beteiligte;
+    return beteiligte.filter((b) => [b.firma.name, firmaAdresse(b.firma), b.rolle, personName(b.person), b.person?.email, b.person?.mobile, b.person?.festnetz].filter(Boolean).join(" ").toLowerCase().includes(t));
+  }, [beteiligte, q]);
+
   const gruppiert = useMemo(() => {
     const m = new Map();
-    beteiligte.forEach((b) => { const k = b.rolle || "Ohne Rolle"; if (!m.has(k)) m.set(k, []); m.get(k).push(b); });
+    gefiltert.forEach((b) => { const k = b.rolle || "Ohne Rolle"; if (!m.has(k)) m.set(k, []); m.get(k).push(b); });
     return [...m.entries()].sort((a, b) => a[0].localeCompare(b[0], "de"));
-  }, [beteiligte]);
+  }, [gefiltert]);
 
   const hinzufuegen = () => {
     if (!neu.firmaId) return;
@@ -3223,7 +3230,11 @@ function ProjektBeteiligteView({ db, dispatch, projektId, firmen }) {
         <p className="text-xs text-stone-400 mt-2">Fehlt eine Firma? Sie wird im globalen Bereich «Adressstamm» erfasst und steht dann in allen Projekten zur Verfügung.</p>
       </div>
 
-      {!beteiligte.length ? <Empty text="Noch keine Beteiligten in diesem Projekt. Ordne oben Firmen aus dem Adressstamm zu — Bauherrschaft, Bauleitung, Planer und Unternehmer." /> : gruppiert.map(([rolle, eintraege]) => (
+      {beteiligte.length > 0 && (
+        <input className={`${inputCls} max-w-sm`} placeholder="Suchen nach Firma, Rolle, Person, Ort…" value={q} onChange={(e) => setQ(e.target.value)} />
+      )}
+
+      {!beteiligte.length ? <Empty text="Noch keine Beteiligten in diesem Projekt. Ordne oben Firmen aus dem Adressstamm zu — Bauherrschaft, Bauleitung, Planer und Unternehmer." /> : !gefiltert.length ? <Empty text={`Keine Beteiligten gefunden für «${q}».`} /> : gruppiert.map(([rolle, eintraege]) => (
         <div key={rolle} className={card}>
           <div className="px-4 py-2 border-b border-stone-100 text-xs uppercase tracking-wide text-stone-500 font-medium">{rolle}</div>
           <div className="divide-y divide-stone-100">
@@ -3420,6 +3431,8 @@ function App() {
   const [loaded, setLoaded] = useState(false);
   const [view, setViewRoh] = useState(() => (typeof window !== "undefined" && window.innerWidth < 640 ? "baustelle" : "dashboard"));
   const [menuOffen, setMenuOffen] = useState(false);
+  const [globalOffen, setGlobalOffen] = useState(() => { try { return localStorage.getItem("bauadmin:globalOffen") !== "0"; } catch (e) { return true; } });
+  function toggleGlobal() { setGlobalOffen((o) => { try { localStorage.setItem("bauadmin:globalOffen", o ? "0" : "1"); } catch (e) {} return !o; }); }
   const setView = (v) => { setViewRoh(v); setMenuOffen(false); try { window.scrollTo(0, 0); } catch (e) {} };
   const firstSave = useRef(true);
 
@@ -3539,8 +3552,10 @@ function App() {
       <div className="max-w-[1480px] mx-auto px-3 sm:px-5 py-4 sm:py-5 grid grid-cols-1 lg:grid-cols-[210px_1fr] gap-5 print:block print:max-w-none print:p-0">
         <nav className={`lg:sticky lg:top-5 self-start print:hidden ${menuOffen ? "" : "hidden lg:block"}`}>
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:flex lg:flex-col gap-1 pb-1 bg-white lg:bg-transparent rounded-xl lg:rounded-none border border-stone-200 lg:border-0 p-2 lg:p-0 shadow-sm lg:shadow-none">
-            <div className="col-span-full text-[10px] uppercase tracking-wider text-stone-400 px-3 pt-1 pb-1">Global</div>
-            {navGlobal.map(([key, label]) => (
+            <button className="col-span-full flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-stone-400 px-3 pt-1 pb-1 hover:text-stone-600" aria-expanded={globalOffen} onClick={toggleGlobal}>
+              <span className="inline-block transition-transform" style={{ transform: globalOffen ? "rotate(90deg)" : "none" }}>▶</span>Global
+            </button>
+            {globalOffen && navGlobal.map(([key, label]) => (
               <button key={key} onClick={() => setView(key)} className={`text-left px-3 py-2 rounded-md text-sm leading-snug transition-colors ${view === key ? "bg-orange-800 text-white font-medium" : "text-stone-600 hover:bg-stone-200/60"}`}>{label}</button>
             ))}
             <div className="col-span-full text-[10px] uppercase tracking-wider text-stone-400 px-3 pt-3 pb-1">Projekt</div>
