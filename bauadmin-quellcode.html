@@ -5128,7 +5128,7 @@ async function baueKvPdf(ctx) {
        { l: "Erwartung", w: 74, f: (z) => z.roll.erwartung ? chfPdf(f(z.roll.erwartung)) : "–" },
        { l: "Prognose", w: 82, f: (z) => chfPdf(f(z.roll.prognose)), fett: true },
        { l: "Abw. KV", w: 78, f: (z) => chfPdf(f(z.roll.abwKv)), ampel: (z) => z.roll.abwKv }]
-    : [{ l: "KV revidiert", w: 110, f: (z) => chfPdf(f(z.roll.kvRevidiert)), fett: true }];
+    : [{ l: "KV", w: 110, f: (z) => chfPdf(f(z.roll.kv)), fett: true }];
   const gesamtW = spalten.reduce((a, c) => a + c.w, 0);
   const textB = rechts - RAND - gesamtW;
   const spX = (i) => RAND + textB + spalten.slice(0, i + 1).reduce((a, c) => a + c.w, 0);
@@ -5162,7 +5162,7 @@ async function baueKvPdf(ctx) {
   spalten.forEach((c, i) => bl.text(c.f({ roll: ks.total, pos: {}, depth: 0 }), { rechts: spX(i) - 4, size: 10, fett: true }));
   bl.y -= 20;
   if (!mitMwst) {
-    const basis = voll ? ks.total.prognose : ks.total.kvRevidiert;
+    const basis = voll ? ks.total.prognose : ks.total.kv;
     bl.text(`MwSt ${satz}%`, { size: 9, farbe: grau });
     bl.text(chfPdf(basis * satz / 100), { rechts, size: 9, farbe: grau });
     bl.y -= 14;
