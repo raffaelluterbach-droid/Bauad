@@ -490,7 +490,8 @@ function normalize(db) {
   // Alte Vertragsnummern (z.B. V-2025-01) auf das BKP-Schema 211.02 umstellen
   db.projekte.forEach((pr) => {
     const vs = db.vertraege.filter((v) => v.projektId === pr.id);
-    const alt = vs.filter((v) => !/^\d{3}\.\d{2}$/.test(String(v.nr || "").trim()));
+    // Nur leere und alte V-JJJJ-NN-Nummern umstellen; frei vergebene Nummern bleiben unangetastet
+    const alt = vs.filter((v) => { const nr = String(v.nr || "").trim(); return !nr || /^V-\d{4}-\d+$/i.test(nr); });
     if (!alt.length) return;
     alt.sort((a, b) => (a.datum || "").localeCompare(b.datum || ""));
     alt.forEach((v) => {
@@ -602,7 +603,10 @@ const RSTATUS = { erfasst: "erfasst", geprueft: "geprüft", bezahlt: "bezahlt" }
 
 // Umlaute u.ä. auf WinAnsi beschränken — die Standardschriften können nichts anderes
 function pdfText(t) {
-  return String(t ?? "").replace(/[«»]/g, '"').replace(/[–—−]/g, "-").replace(/[’‘]/g, "'").replace(/…/g, "...").replace(/[^\x20-\xFF\n]/g, "");
+  return String(t ?? "")
+    .replace(/\b(\d{4})-(\d{2})-(\d{2})\b/g, "$3.$2.$1")
+    .replace(/(^|[\s(/])m([23])(?=$|[\s),.;/])/g, (_, vor, h) => vor + "m" + (h === "2" ? "²" : "³"))
+    .replace(/[«»]/g, '"').replace(/[–—−]/g, "-").replace(/[’‘]/g, "'").replace(/…/g, "...").replace(/[^\x20-\xFF\n]/g, "");
 }
 function chfPdf(n) { return (Math.round((Number(n) || 0) * 100) / 100).toLocaleString("de-CH", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).replace(/ | /g, "'"); }
 function pct(n, stellen) { const v = Number(n) || 0; return (v > 0 ? "+" : "") + v.toFixed(stellen === undefined ? 1 : stellen) + "%"; }
@@ -633,14 +637,17 @@ function pdfBlatt(doc, schriften, format, vorlage, logoBild) {
     // Logo und Fusszeilen erst am Schluss auf alle Seiten legen
     abschliessen() {
       const fussZeilen = (v.fuss || []).filter(Boolean);
+      // Seitenzahl über das ganze Dokument zählen (mehrere Blätter, angehängte Belege)
+      const alle = doc.getPages();
       seiten.forEach((sp, i) => {
+        const nr = alle.findIndex((x) => x.ref === sp.ref) + 1 || i + 1;
         if (logoBild) {
           const x = v.logoPos === "rechts" ? f.breite - RAND - logoBreite : (v.logoPos === "mitte" ? (f.breite - logoBreite) / 2 : RAND);
           sp.drawImage(logoBild, { x, y: f.hoehe - RAND + 8 - logoHoehe, width: logoBreite, height: logoHoehe });
         }
         let fy = RAND - 4;
         if (v.seitenzahl !== false) {
-          const t = pdfText(`Seite ${i + 1} von ${seiten.length}`);
+          const t = pdfText(`Seite ${nr} von ${alle.length}`);
           sp.drawText(t, { x: f.breite - RAND - schriften.normal.widthOfTextAtSize(t, 7.5), y: fy, size: 7.5, font: schriften.normal, color: PDFLib.rgb(0.55, 0.52, 0.50) });
         }
         fussZeilen.forEach((zl, k) => {
@@ -3445,7 +3452,7 @@ function App() {
     team.uebernehmen = (neu) => dispatch({ type: "load", db: neu });
     loadDB().then(async (stored) => {
       let start = dbRef.current;
-      if (stored && stored.projekte && stored.projekte.length && stored.positionen && stored.positionen.length) { start = normalize(stored); dispatch({ type: "load", db: start }); }
+      if (stored && Array.isArray(stored.projekte) && stored.projekte.length) { start = normalize(stored); dispatch({ type: "load", db: start }); }
       setLoaded(true);
       if (ORDNER_MOEGLICH) { autoStart(); teamStart(start); }
     });
@@ -4688,7 +4695,7 @@ function MutationenView({ d, dispatch, projektId }) {
       {!d.mutationen.length ? <Empty text="Keine Mutationen erfasst." /> : (
         <div className={`${card} overflow-x-auto`}><table className="w-full text-sm">
           <thead className="bg-stone-50 text-stone-500 text-xs"><tr><th className="text-left font-medium px-3 py-2">Datum</th><th className="text-left font-medium px-3 py-2">Position</th><th className="text-left font-medium px-3 py-2">Grund</th><th className="text-right font-medium px-3 py-2">Betrag</th><th className="w-12"></th></tr></thead>
-          <tbody>{d.mutationen.map((m) => (<tr key={m.id} className="border-t border-stone-100"><td className="px-3 py-2 tabular-nums text-stone-500">{m.datum}</td><td className="px-3 py-2">{posLabel(m.positionId)}</td><td className="px-3 py-2 text-stone-600">{m.grund}</td><td className="px-3 py-2 text-right"><Abw v={m.betrag} /></td><td className="px-3 py-2 text-right"><button className="text-red-600 text-xs hover:underline" onClick={() => dispatch({ type: "remove", coll: "mutationen", id: m.id })}>Lö.</button></td></tr>))}</tbody>
+          <tbody>{d.mutationen.map((m) => (<tr key={m.id} className="border-t border-stone-100"><td className="px-3 py-2 tabular-nums text-stone-500">{m.datum}</td><td className="px-3 py-2">{posLabel(m.positionId)}</td><td className="px-3 py-2 text-stone-600">{m.grund}</td><td className="px-3 py-2 text-right"><Abw v={m.betrag} /></td><td className="px-3 py-2 text-right"><button className="text-red-600 text-xs hover:underline" onClick={() => { if (window.confirm("Mutation löschen?")) dispatch({ type: "remove", coll: "mutationen", id: m.id }); }}>Lö.</button></td></tr>))}</tbody>
         </table></div>
       )}
     </div>
@@ -4715,7 +4722,7 @@ function UmbuchungenView({ d, dispatch, projektId }) {
       {!d.umbuchungen.length ? <Empty text="Keine Umbuchungen erfasst." /> : (
         <div className={`${card} overflow-x-auto`}><table className="w-full text-sm">
           <thead className="bg-stone-50 text-stone-500 text-xs"><tr><th className="text-left font-medium px-3 py-2">Datum</th><th className="text-left font-medium px-3 py-2">Von</th><th className="text-left font-medium px-3 py-2">Nach</th><th className="text-left font-medium px-3 py-2">Grund</th><th className="text-right font-medium px-3 py-2">Betrag</th><th className="w-12"></th></tr></thead>
-          <tbody>{d.umbuchungen.map((u) => (<tr key={u.id} className="border-t border-stone-100"><td className="px-3 py-2 tabular-nums text-stone-500">{u.datum}</td><td className="px-3 py-2">{posLabel(u.vonPositionId)}</td><td className="px-3 py-2">{posLabel(u.nachPositionId)}</td><td className="px-3 py-2 text-stone-600">{u.grund}</td><td className="px-3 py-2 text-right tabular-nums">{chf(u.betrag)}</td><td className="px-3 py-2 text-right"><button className="text-red-600 text-xs hover:underline" onClick={() => dispatch({ type: "remove", coll: "umbuchungen", id: u.id })}>Lö.</button></td></tr>))}</tbody>
+          <tbody>{d.umbuchungen.map((u) => (<tr key={u.id} className="border-t border-stone-100"><td className="px-3 py-2 tabular-nums text-stone-500">{u.datum}</td><td className="px-3 py-2">{posLabel(u.vonPositionId)}</td><td className="px-3 py-2">{posLabel(u.nachPositionId)}</td><td className="px-3 py-2 text-stone-600">{u.grund}</td><td className="px-3 py-2 text-right tabular-nums">{chf(u.betrag)}</td><td className="px-3 py-2 text-right"><button className="text-red-600 text-xs hover:underline" onClick={() => { if (window.confirm("Umbuchung löschen?")) dispatch({ type: "remove", coll: "umbuchungen", id: u.id }); }}>Lö.</button></td></tr>))}</tbody>
         </table></div>
       )}
     </div>
@@ -4799,7 +4806,7 @@ function VertraegeView({ d, dispatch, projektId, projekt, firmen, db }) {
                 const bytes = await baueWerkvertragPdf(v, { pos: d.positionen.find((x) => x.id === v.positionId), projekt, rollen, firma: findFirma(firmen, v.firmaId, v.unternehmer), d, db });
                 pdfSpeichern(bytes, `Werkvertrag_${(v.nr || v.unternehmer || "").replace(/[^\w.]+/g, "_")}.pdf`);
               } catch (e) { window.alert("Der Werkvertrag konnte nicht erzeugt werden: " + e.message); }
-            }}>📄 Werkvertrag</button><button className="text-stone-500 text-xs hover:underline" title="Die im Vertrag eingefrorenen Firmenangaben durch den heutigen Stand aus dem Adressstamm ersetzen" onClick={() => { const fa = findFirma(firmen, v.firmaId, v.unternehmer); if (!fa) { window.alert("Diese Firma steht nicht (mehr) im Adressstamm."); return; } const bet = (db.beteiligte || []).find((x) => x.projektId === projektId && x.firmaId === fa.id); if (window.confirm(`Firmenangaben im Vertrag durch den heutigen Stand von «${fa.name}» ersetzen?`)) dispatch({ type: "update", coll: "vertraege", id: v.id, patch: { firmaId: fa.id, unternehmer: fa.name, firmaSnap: firmaSnapshot(fa, bet?.hauptpersonId) } }); }}>Adresse aktualisieren</button><button className="text-orange-800 text-xs hover:underline" onClick={() => setNtFor({ vertragId: v.id, _v: v, bezeichnung: "", betrag: "", status: "pendent", datum: today() })}>+ Nachtrag</button><button className="text-orange-800 text-xs hover:underline" onClick={() => setVForm(v)}>Bearbeiten</button><button className="text-red-600 text-xs hover:underline" onClick={() => dispatch({ type: "remove", coll: "vertraege", id: v.id })}>Löschen</button></div>
+            }}>📄 Werkvertrag</button><button className="text-stone-500 text-xs hover:underline" title="Die im Vertrag eingefrorenen Firmenangaben durch den heutigen Stand aus dem Adressstamm ersetzen" onClick={() => { const fa = findFirma(firmen, v.firmaId, v.unternehmer); if (!fa) { window.alert("Diese Firma steht nicht (mehr) im Adressstamm."); return; } const bet = (db.beteiligte || []).find((x) => x.projektId === projektId && x.firmaId === fa.id); if (window.confirm(`Firmenangaben im Vertrag durch den heutigen Stand von «${fa.name}» ersetzen?`)) dispatch({ type: "update", coll: "vertraege", id: v.id, patch: { firmaId: fa.id, unternehmer: fa.name, firmaSnap: firmaSnapshot(fa, bet?.hauptpersonId) } }); }}>Adresse aktualisieren</button><button className="text-orange-800 text-xs hover:underline" onClick={() => setNtFor({ vertragId: v.id, _v: v, bezeichnung: "", betrag: "", status: "pendent", datum: today() })}>+ Nachtrag</button><button className="text-orange-800 text-xs hover:underline" onClick={() => setVForm(v)}>Bearbeiten</button><button className="text-red-600 text-xs hover:underline" onClick={() => { const nts = d.nachtraege.filter((x) => x.vertragId === v.id); const rgs = d.rechnungen.filter((x) => x.vertragId === v.id); const raps = d.rapporte.filter((x) => x.vertragId === v.id); if (rgs.length) { window.alert(`Vertrag ${v.nr || ""} «${v.unternehmer || ""}» kann nicht gelöscht werden: ${rgs.length} Rechnung${rgs.length === 1 ? " ist" : "en sind"} ihm zugeordnet (${rgs.map((r) => r.nr || r.buchungsNr || "ohne Nr.").join(", ")}).\n\nBitte zuerst die Rechnungen löschen oder einem anderen Vertrag zuordnen.`); return; } const mit = [nts.length ? `${nts.length} Nachtr${nts.length === 1 ? "ag" : "äge"}` : "", raps.length ? `${raps.length} Rapport${raps.length === 1 ? "" : "e"}` : ""].filter(Boolean); if (!window.confirm(`Vertrag ${v.nr || ""} «${v.unternehmer || ""}» löschen?` + (mit.length ? `\n\nEbenfalls gelöscht werden: ${mit.join(" und ")}.` : ""))) return; nts.forEach((x) => dispatch({ type: "remove", coll: "nachtraege", id: x.id })); raps.forEach((x) => dispatch({ type: "remove", coll: "rapporte", id: x.id })); dispatch({ type: "remove", coll: "vertraege", id: v.id }); }}>Löschen</button></div>
           </div>
           {!nts.length ? <div className="text-xs text-stone-400">keine Nachträge</div> : (
             <table className="w-full text-sm"><tbody>{nts.map((n) => (
@@ -4808,7 +4815,7 @@ function VertraegeView({ d, dispatch, projektId, projekt, firmen, db }) {
                 <td className="py-1.5"><select className="text-xs border border-stone-200 rounded px-1.5 py-0.5" value={n.status} onChange={(e) => dispatch({ type: "update", coll: "nachtraege", id: n.id, patch: { status: e.target.value } })}><option value="pendent">pendent</option><option value="genehmigt">genehmigt</option><option value="abgelehnt">abgelehnt</option></select></td>
                 <td className="py-1.5 text-right tabular-nums text-stone-500">{chf(n.betrag)} brutto</td>
                 <td className="py-1.5 text-right tabular-nums font-medium">{chf(konditionenNetto(n.betrag, v, false))} netto</td>
-                <td className="py-1.5 text-right w-8"><button className="text-red-600 text-xs" onClick={() => dispatch({ type: "remove", coll: "nachtraege", id: n.id })}>×</button></td>
+                <td className="py-1.5 text-right w-8"><button className="text-red-600 text-xs" onClick={() => { if (window.confirm(`Nachtrag «${n.bezeichnung || "ohne Bezeichnung"}» löschen?`)) dispatch({ type: "remove", coll: "nachtraege", id: n.id }); }}>×</button></td>
               </tr>))}</tbody></table>
           )}
         </div>
@@ -4935,10 +4942,14 @@ function VertragEditor({ v, positionen, firmen, onClose, onSave, vertraege }) {
 function pdfStaffel(bl, zeilen, breite) {
   const rechts = breite - RAND;
   zeilen.forEach((z) => {
+    // optionale Zeilen (Abzüge, Rundung) nur drucken, wenn sie etwas bewirken
+    if (z.optional && !Math.round((Number(z.wert) || 0) * 100)) return;
     bl.platz(18);
     if (z.trenner) { bl.y -= 4; bl.linie(RAND, rechts, bl.y + 13, z.dick ? 1.2 : 0.4, z.dick ? PDFLib.rgb(0.13, 0.12, 0.11) : undefined); }
     bl.text(z.l, { size: z.fett ? 10 : 9, fett: z.fett, farbe: z.grau ? PDFLib.rgb(0.45, 0.42, 0.40) : undefined });
-    if (z.wert !== undefined) bl.text((z.neg ? "- " : "") + chfPdf(z.wert), { rechts, size: z.fett ? 10 : 9, fett: z.fett, farbe: z.grau ? PDFLib.rgb(0.45, 0.42, 0.40) : undefined });
+    const w = Number(z.wert) || 0;
+    const vz = (z.neg ? w > 0 : w < 0) ? "- " : (z.plus && w > 0 ? "+ " : "");
+    if (z.wert !== undefined) bl.text(vz + chfPdf(Math.abs(w)), { rechts, size: z.fett ? 10 : 9, fett: z.fett, farbe: z.grau ? PDFLib.rgb(0.45, 0.42, 0.40) : undefined });
     else if (z.text !== undefined) bl.text(z.text, { rechts, size: 9 });
     bl.y -= z.fett ? 17 : 14;
   });
@@ -4955,6 +4966,23 @@ function pdfPaare(bl, paare, breite) {
     if (spalte === 1 || i === paare.length - 1) bl.y -= 28;
     i++;
   });
+}
+
+// Zwei Unterschriftsfelder mit «Ort, Datum» — rutschen bei Platzmangel auf eine neue Seite
+function pdfUnterschriften(bl, parteien, breite) {
+  const rechts = breite - RAND, uB = (rechts - RAND - 40) / 2;
+  const grau = PDFLib.rgb(0.45, 0.42, 0.40);
+  bl.platz(70);
+  bl.y -= 34;
+  parteien.forEach(([rolle, name], i) => {
+    const x = RAND + i * (uB + 40);
+    bl.linie(x, x + uB * 0.38, bl.y); bl.linie(x + uB * 0.44, x + uB, bl.y);
+    bl.text("Ort, Datum", { x, size: 7.5, farbe: grau, y: bl.y - 11 });
+    const b = uB * 0.56;
+    bl.text(bl.umbruch(rolle, b, 8)[0] || "", { x: x + uB * 0.44, size: 8, farbe: grau, y: bl.y - 11 });
+    if (name) bl.text(bl.umbruch(name, b, 8, true)[0] || "", { x: x + uB * 0.44, size: 8, fett: true, farbe: grau, y: bl.y - 21 });
+  });
+  bl.y -= 32;
 }
 
 async function baueWerkvertragPdf(v, ctx) {
@@ -5001,11 +5029,11 @@ async function baueWerkvertragPdf(v, ctx) {
   bl.text("Vergütung (exkl. MwSt)", { size: 7.5, farbe: grau }); bl.y -= 14;
   pdfStaffel(bl, [
     { l: "Vertragssumme brutto", wert: b, trenner: true },
-    { l: `Rabatt ${Number(v.rabattPct) || 0}%`, wert: b - s1, neg: true, grau: true },
-    { l: "Pauschalabzug", wert: s1 - s2, neg: true, grau: true },
-    { l: `Skonto ${Number(v.skontoPct) || 0}%`, wert: s2 - s3, neg: true, grau: true },
-    { l: `Allg. Bauabzüge ${Number(v.bauabzuegePct) || 0}%`, wert: s3 - s4, neg: true, grau: true },
-    { l: "Rundung", wert: Number(v.rundung) || 0, grau: true },
+    { l: `Rabatt ${Number(v.rabattPct) || 0}%`, wert: b - s1, neg: true, grau: true, optional: true },
+    { l: "Pauschalabzug", wert: s1 - s2, neg: true, grau: true, optional: true },
+    { l: `Skonto ${Number(v.skontoPct) || 0}%`, wert: s2 - s3, neg: true, grau: true, optional: true },
+    { l: `Allg. Bauabzüge ${Number(v.bauabzuegePct) || 0}%`, wert: s3 - s4, neg: true, grau: true, optional: true },
+    { l: "Rundung", wert: Number(v.rundung) || 0, grau: true, optional: true, plus: true },
     { l: "Werkvertragssumme netto", wert: netto, fett: true, trenner: true, dick: true },
   ], A4.breite);
   bl.y -= 12;
@@ -5025,12 +5053,7 @@ async function baueWerkvertragPdf(v, ctx) {
   ], A4.breite);
 
   // Unterschriften
-  bl.y = Math.max(bl.y - 20, RAND + 70);
-  const uB = (rechts - RAND - 40) / 2;
-  bl.linie(RAND, RAND + uB, bl.y);
-  bl.linie(RAND + uB + 40, rechts, bl.y);
-  bl.text("Bauherrschaft: " + (bh.bauherr || ""), { size: 8, farbe: grau, y: bl.y - 12 });
-  bl.text("Unternehmer: " + uName, { x: RAND + uB + 40, size: 8, farbe: grau, y: bl.y - 12 });
+  pdfUnterschriften(bl, [["Bauherrschaft", bh.bauherr || ""], ["Unternehmer", uName]], A4.breite);
   bl.abschliessen();
   return doc.save();
 }
@@ -5056,13 +5079,16 @@ async function baueZahlungsfreigabePdf(r, ctx) {
     { l: "Werkvertrag + Nachträge netto", wert: soll, trenner: true },
     { l: "bisher fakturiert", wert: faktTotal, grau: true },
     { l: "davon bezahlt", wert: bezahltTotal, grau: true },
-    { l: "diese Rechnung", wert: Number(r.betrag) || 0, fett: true, trenner: true, dick: true },
+    { l: "diese Rechnung netto", wert: Number(r.betrag) || 0, fett: true, trenner: true, dick: true },
   ], A4.breite);
-  bl.y -= 30;
-  const rechts = A4.breite - RAND, uB = (rechts - RAND - 40) / 2;
-  bl.linie(RAND, RAND + uB, bl.y); bl.linie(RAND + uB + 40, rechts, bl.y);
-  bl.text("Geprüft Bauleitung: " + (rollen?.bauleitung || ""), { size: 8, farbe: grau, y: bl.y - 12 });
-  bl.text("Freigabe Bauherrschaft: " + (rollen?.bauherr || ""), { x: RAND + uB + 40, size: 8, farbe: grau, y: bl.y - 12 });
+  const satzZf = Number(projekt?.mwstSatz) || 8.1;
+  const mwstZf = Math.round((Number(r.betrag) || 0) * satzZf) / 100;
+  bl.y -= 4;
+  pdfStaffel(bl, [
+    { l: `MwSt ${satzZf}%`, wert: mwstZf, grau: true },
+    { l: "Zahlbetrag inkl. MwSt", wert: (Number(r.betrag) || 0) + mwstZf, fett: true, trenner: true },
+  ], A4.breite);
+  pdfUnterschriften(bl, [["Geprüft Bauleitung", rollen?.bauleitung || ""], ["Freigabe Bauherrschaft", rollen?.bauherr || ""]], A4.breite);
   bl.abschliessen();
   return doc.save();
 }
@@ -5094,8 +5120,8 @@ async function baueListePdf(liste, ctx) {
       bl.y -= 11;
       bl.text(z.adresse || "—", { x: sp.firma, size: 7.5, farbe: grau });
       if (z.person?.funktion) bl.text(z.person.funktion, { x: sp.person, size: 7.5, farbe: grau });
-      bl.y -= 14;
-      bl.linie(RAND, rechts, bl.y + 5, 0.3, PDFLib.rgb(0.91, 0.90, 0.89));
+      bl.y -= 17;
+      bl.linie(RAND, rechts, bl.y + 11, 0.3, PDFLib.rgb(0.91, 0.90, 0.89));
     });
   });
   bl.y -= 8;
@@ -5124,10 +5150,10 @@ async function baueKvPdf(ctx) {
   const spalten = voll
     ? [{ l: "KV", w: 78, f: (z) => chfPdf(f(z.roll.kv)) },
        { l: "KV revidiert", w: 82, f: (z) => chfPdf(f(z.roll.kvRevidiert)) },
-       { l: "Beauftragt", w: 82, f: (z) => chfPdf(f(z.roll.beauftragt)) },
+       { l: "Beauftragt", w: 82, f: (z) => z.roll.beauftragt ? chfPdf(f(z.roll.beauftragt)) : "–" },
        { l: "Erwartung", w: 74, f: (z) => z.roll.erwartung ? chfPdf(f(z.roll.erwartung)) : "–" },
        { l: "Prognose", w: 82, f: (z) => chfPdf(f(z.roll.prognose)), fett: true },
-       { l: "Abw. KV", w: 78, f: (z) => chfPdf(f(z.roll.abwKv)), ampel: (z) => z.roll.abwKv }]
+       { l: "Abw. KV", w: 78, f: (z) => (f(z.roll.abwKv) >= 0.005 ? "+" : "") + chfPdf(f(z.roll.abwKv)), ampel: (z) => z.roll.abwKv }]
     : [{ l: "KV", w: 110, f: (z) => chfPdf(f(z.roll.kv)), fett: true }];
   const gesamtW = spalten.reduce((a, c) => a + c.w, 0);
   const textB = rechts - RAND - gesamtW;
@@ -5152,7 +5178,7 @@ async function baueKvPdf(ctx) {
       bl.text(c.f(z), { rechts: spX(i) - 4, size, fett: gruppe || c.fett, farbe });
     });
     bl.y -= gruppe ? 15 : 13;
-    if (gruppe) bl.linie(RAND, rechts, bl.y + 5, 0.3, PDFLib.rgb(0.91, 0.90, 0.89));
+    if (gruppe) bl.linie(RAND, rechts, bl.y + 9, 0.3, PDFLib.rgb(0.91, 0.90, 0.89));
   });
 
   // Summen
@@ -5164,10 +5190,10 @@ async function baueKvPdf(ctx) {
   if (!mitMwst) {
     const basis = voll ? ks.total.prognose : ks.total.kv;
     bl.text(`MwSt ${satz}%`, { size: 9, farbe: grau });
-    bl.text(chfPdf(basis * satz / 100), { rechts, size: 9, farbe: grau });
+    bl.text(chfPdf(basis * satz / 100), { rechts: rechts - 4, size: 9, farbe: grau });
     bl.y -= 14;
     bl.text("Total inkl. MwSt", { size: 10, fett: true });
-    bl.text("CHF " + chfPdf(basis * (1 + satz / 100)), { rechts, size: 10, fett: true });
+    bl.text("CHF " + chfPdf(basis * (1 + satz / 100)), { rechts: rechts - 4, size: 10, fett: true });
   }
   bl.abschliessen();
   return doc.save();
@@ -5223,16 +5249,16 @@ async function baueAusmassPdf(version, ctx) {
         bl.y -= 11;
       });
     }
-    if (gruppe) bl.linie(RAND, rechts, bl.y + 5, 0.3, PDFLib.rgb(0.91, 0.90, 0.89));
+    if (gruppe) bl.linie(RAND, rechts, bl.y + 9, 0.3, PDFLib.rgb(0.91, 0.90, 0.89));
   });
 
   bl.platz(70);
   bl.y -= 8; bl.linie(RAND, rechts, bl.y, 1.2, PDFLib.rgb(0.13, 0.12, 0.11)); bl.y -= 17;
   bl.text("Total", { size: 10, fett: true });
-  bl.text(chfPdf(total), { rechts, size: 10, fett: true });
+  bl.text(chfPdf(total), { rechts: rechts - 4, size: 10, fett: true });
   bl.y -= 16;
-  if (gf > 0) { bl.text(`CHF/m² Geschossfläche (${chfPdf(gf)} m²)`, { size: 8.5, farbe: grau }); bl.text(chfPdf(total / gf), { rechts, size: 8.5, farbe: grau }); bl.y -= 12; }
-  if (gv > 0) { bl.text(`CHF/m³ Gebäudevolumen (${chfPdf(gv)} m³)`, { size: 8.5, farbe: grau }); bl.text(chfPdf(total / gv), { rechts, size: 8.5, farbe: grau }); bl.y -= 12; }
+  if (gf > 0) { bl.text(`CHF/m² Geschossfläche (${chfPdf(gf)} m²)`, { size: 8.5, farbe: grau }); bl.text(chfPdf(total / gf), { rechts: rechts - 4, size: 8.5, farbe: grau }); bl.y -= 12; }
+  if (gv > 0) { bl.text(`CHF/m³ Gebäudevolumen (${chfPdf(gv)} m³)`, { size: 8.5, farbe: grau }); bl.text(chfPdf(total / gv), { rechts: rechts - 4, size: 8.5, farbe: grau }); bl.y -= 12; }
   bl.abschliessen();
   return doc.save();
 }
@@ -5287,32 +5313,63 @@ async function baueLvPdf(a, ctx) {
     if (zln[1]) { bl.text(zln[1], { x: sp.bez, size: 7.5, farbe: grau }); bl.y -= 10; }
     (pz.langtext || []).filter(Boolean).forEach((lt) => bl.umbruch(lt, sp.menge - sp.bez - 50, 7).forEach((t) => { bl.platz(10); bl.text(t, { x: sp.bez, size: 7, farbe: grau }); bl.y -= 9; }));
     if (pz.fabrikat) { bl.platz(10); bl.text("Fabrikat / Typ: " + pz.fabrikat, { x: sp.bez, size: 7, farbe: grau }); bl.y -= 9; }
-    bl.linie(RAND, rechts, bl.y + 4, 0.25, PDFLib.rgb(0.93, 0.92, 0.91));
+    // Trennlinie mittig zwischen dieser und der nächsten Position
+    bl.y -= 3; bl.linie(RAND, rechts, bl.y + 6, 0.25, PDFLib.rgb(0.90, 0.89, 0.88)); bl.y -= 3;
   });
 
-  bl.platz(50);
-  bl.y -= 6; bl.linie(RAND, rechts, bl.y, 1.2, PDFLib.rgb(0.13, 0.12, 0.11)); bl.y -= 16;
-  if (mitPreisen) {
-    bl.text("Total netto (gewertete Positionen)", { size: 10.5, fett: true });
-    bl.text("CHF " + chfPdf(total), { rechts, size: 10.5, fett: true });
-    if (ausserhalb) {
-      bl.y -= 15;
-      bl.text("Eventual- und Per-Positionen (nicht im Total)", { size: 9, farbe: grau });
-      bl.text("CHF " + chfPdf(ausserhalb), { rechts, size: 9, farbe: grau });
-    }
-  } else {
-    bl.text("Total netto", { size: 10.5, fett: true });
-    bl.linie(rechts - 120, rechts, bl.y - 2, 0.5);
-    bl.y -= 26;
-    bl.text("Datum / Firma / Unterschrift", { size: 8, farbe: grau });
-    bl.linie(RAND, RAND + 260, bl.y - 14, 0.5);
-  }
+  // Besondere Bestimmungen gehören vor Total und Unterschrift
   if (a.bedingungen) {
-    bl.y -= 26; bl.platz(50);
+    bl.y -= 10; bl.platz(50);
     bl.text("Besondere Bestimmungen", { size: 7.5, farbe: grau }); bl.y -= 12;
     String(a.bedingungen).split("\n").forEach((abs) => {
       bl.umbruch(abs, rechts - RAND, 8).forEach((t) => { bl.platz(12); bl.text(t, { size: 8, farbe: grau }); bl.y -= 10; });
     });
+  }
+
+  const satzLv = Number(projekt?.mwstSatz) || 8.1;
+  bl.platz(mitPreisen ? 120 : 230);
+  bl.y -= 6; bl.linie(RAND, rechts, bl.y, 1.2, PDFLib.rgb(0.13, 0.12, 0.11)); bl.y -= 16;
+  if (mitPreisen) {
+    const b = bieter;
+    const s1 = total * (1 - (Number(b.rabattPct) || 0) / 100);
+    const s2 = s1 - (Number(b.pauschalabzug) || 0);
+    const s3 = s2 * (1 - (Number(b.skontoPct) || 0) / 100);
+    const s4 = s3 * (1 - (Number(b.bauabzuegePct) || 0) / 100);
+    const netto = bieterNetto(b, a);
+    pdfStaffel(bl, [
+      { l: "Total brutto (gewertete Positionen)", wert: total },
+      { l: `Rabatt ${Number(b.rabattPct) || 0}%`, wert: total - s1, neg: true, grau: true, optional: true },
+      { l: "Pauschalabzug", wert: s1 - s2, neg: true, grau: true, optional: true },
+      { l: `Skonto ${Number(b.skontoPct) || 0}%`, wert: s2 - s3, neg: true, grau: true, optional: true },
+      { l: `Allg. Bauabzüge ${Number(b.bauabzuegePct) || 0}%`, wert: s3 - s4, neg: true, grau: true, optional: true },
+      { l: "Rundung", wert: netto - s4, grau: true, optional: true, plus: true },
+      { l: "Angebot netto exkl. MwSt", wert: netto, fett: true, trenner: true },
+      { l: `MwSt ${satzLv}%`, wert: netto * satzLv / 100, grau: true },
+      { l: "Angebot netto inkl. MwSt", wert: netto * (1 + satzLv / 100), fett: true, trenner: true, dick: true },
+    ], A4.breite);
+    if (ausserhalb) {
+      bl.y -= 4;
+      bl.text("Eventual- und Per-Positionen (nicht im Total)", { size: 9, farbe: grau });
+      bl.text("CHF " + chfPdf(ausserhalb), { rechts, size: 9, farbe: grau });
+    }
+  } else {
+    // Felder, die der Unternehmer ausfüllt
+    const feld = (label, opt) => {
+      const o = opt || {};
+      bl.text(label, { size: o.fett ? 10 : 9, fett: o.fett });
+      if (o.prozent) { bl.linie(rechts - 215, rechts - 172, bl.y - 2, 0.5); bl.text("%", { x: rechts - 168, size: 9, farbe: grau }); }
+      bl.linie(rechts - 120, rechts, bl.y - 2, o.fett ? 0.9 : 0.5);
+      bl.y -= o.fett ? 22 : 19;
+    };
+    feld("Total brutto");
+    feld("Rabatt", { prozent: true });
+    feld("Pauschalabzug");
+    feld("Skonto", { prozent: true });
+    feld("Allg. Bauabzüge", { prozent: true });
+    feld("Angebot netto exkl. MwSt", { fett: true });
+    feld(`MwSt ${satzLv}%`);
+    feld("Angebot netto inkl. MwSt", { fett: true });
+    pdfUnterschriften(bl, [["Unternehmer (Firmenstempel und Unterschrift)", ""]], A4.breite);
   }
   bl.abschliessen();
   return doc.save();
@@ -5339,17 +5396,18 @@ async function baueVergabeantragPdf(a, ctx) {
 
   // Zeilen des Vergleichs
   const zeilen = [
-    { l: "Angebot brutto", f: (r) => chfPdf(r.brutto), kv: kv ? chfPdf(kv) : "–", kvRev: kvRev ? chfPdf(kvRev) : "–" },
+    { l: "Angebot brutto", f: (r) => chfPdf(r.brutto) },
     { l: "Rabatt", f: (r) => Number(r.b.rabattPct) ? r.b.rabattPct + "%" : "–", klein: true },
-    { l: "Pauschalabzug", f: (r) => Number(r.b.pauschalabzug) ? chfPdf(r.b.pauschalabzug) : "–", klein: true },
+    { l: "Pauschalabzug", f: (r) => Number(r.b.pauschalabzug) ? "- " + chfPdf(r.b.pauschalabzug) : "–", klein: true },
     { l: "Skonto", f: (r) => Number(r.b.skontoPct) ? r.b.skontoPct + "%" : "–", klein: true },
     { l: "Bauabzüge", f: (r) => Number(r.b.bauabzuegePct) ? r.b.bauabzuegePct + "%" : "–", klein: true },
-    { l: "Rundung", f: (r) => Number(r.b.rundung) ? chfPdf(r.b.rundung) : "–", klein: true },
+    { l: "Rundung", f: (r) => Number(r.b.rundung) ? (Number(r.b.rundung) > 0 ? "+ " : "- ") + chfPdf(Math.abs(Number(r.b.rundung))) : "–", klein: true },
     { l: "Angebot netto", f: (r) => chfPdf(r.netto), fett: true, linieVor: true, kv: kv ? chfPdf(kv) : "–", kvRev: kvRev ? chfPdf(kvRev) : "–" },
     { l: "gegenüber günstigstem", f: (r) => guenstigst > 0 && r.netto > 0 ? pct(100 * (r.netto - guenstigst) / guenstigst) : "–", ampel: true },
     { l: "gegenüber KV revidiert", f: (r) => kvRev > 0 && r.netto > 0 ? chfPdf(r.netto - kvRev) : "–", ampelBetrag: true },
-    { l: "Referenzpunkte", f: (r) => String(Number(r.b.referenzPunkte) || 0), klein: true, linieVor: true },
-    { l: "Lehrlingspunkte", f: (r) => String(Number(r.b.lehrlingPunkte) || 0), klein: true },
+    { l: `Preispunkte (Gewicht ${nw.w.preis}%)`, f: (r) => (Number(r.pP) || 0).toFixed(1), klein: true, linieVor: true },
+    { l: `Referenzpunkte (Gewicht ${nw.w.referenzen}%)`, f: (r) => String(Number(r.b.referenzPunkte) || 0), klein: true },
+    { l: `Lehrlingspunkte (Gewicht ${nw.w.lehrlinge}%)`, f: (r) => String(Number(r.b.lehrlingPunkte) || 0), klein: true },
     { l: "Nutzwert", f: (r) => (Number(r.nutz) || 0).toFixed(1), fett: true },
   ];
 
@@ -5420,17 +5478,23 @@ async function baueVergabeantragPdf(a, ctx) {
     // Vergabevorschlag — knapp, nur auf dem letzten Blatt
     if (gi === gruppen.length - 1) {
       const sieger = reihen.find((r) => r.b.name === vorschlagName) || reihen[0] || null;
-      const kastenB = 300, kastenH = 62;
-      const kx = rechts - kastenB, ky = Math.max(RAND, bl.y - kastenH);
+      const kastenB = 300, kastenH = 78;
+      bl.platz(kastenH + 80);
+      const kx = rechts - kastenB, ky = bl.y - kastenH;
       bl.seite.drawRectangle({ x: kx, y: ky, width: kastenB, height: kastenH, borderWidth: 1.4, borderColor: PDFLib.rgb(0.13, 0.12, 0.11) });
       bl.text("Vergabevorschlag", { x: kx + 12, y: ky + kastenH - 18, size: 8, farbe: grau });
       if (sieger) {
         bl.text(sieger.b.name, { x: kx + 12, y: ky + kastenH - 36, size: 12, fett: true });
-        bl.text("Vergabesumme netto", { x: kx + 12, y: ky + 12, size: 8, farbe: grau });
-        bl.text("CHF " + chfPdf(sieger.netto), { rechts: kx + kastenB - 12, y: ky + 11, size: 11, fett: true });
+        const satzVa = Number(projekt?.mwstSatz) || 8.1;
+        bl.text("Vergabesumme netto exkl. MwSt", { x: kx + 12, y: ky + 28, size: 8, farbe: grau });
+        bl.text("CHF " + chfPdf(sieger.netto), { rechts: kx + kastenB - 12, y: ky + 27, size: 11, fett: true });
+        bl.text(`inkl. MwSt ${satzVa}%`, { x: kx + 12, y: ky + 11, size: 8, farbe: grau });
+        bl.text("CHF " + chfPdf(sieger.netto * (1 + satzVa / 100)), { rechts: kx + kastenB - 12, y: ky + 11, size: 9, farbe: grau });
       } else {
         bl.text("kein Anbieter erfasst", { x: kx + 12, y: ky + kastenH - 36, size: 10, farbe: grau });
       }
+      bl.y = ky - 4;
+      pdfUnterschriften(bl, [["Antrag Bauleitung", rollen?.bauleitung || ""], ["Genehmigung Bauherrschaft", rollen?.bauherr || ""]], A4Q.breite);
     }
   }
   blaetter.forEach((b) => b.abschliessen());
@@ -5444,7 +5508,9 @@ async function bauePositionsvergleichPdf(a, ctx) {
   const schriften = { normal: await doc.embedFont(PDFLib.StandardFonts.Helvetica), fett: await doc.embedFont(PDFLib.StandardFonts.HelveticaBold) };
   const { v: vorlage, logoBild } = await pdfVorlage(doc, ctxDb, projekt);
   const grau = PDFLib.rgb(0.45, 0.42, 0.40), rot = PDFLib.rgb(0.86, 0.15, 0.15), gruen = PDFLib.rgb(0.08, 0.50, 0.24);
-  const bieter = (a.bieter || []).filter((b) => b.name);
+  // gleiche Reihenfolge wie im Vergabeantrag: nach Nutzwert
+  const rangIdx = new Map(nutzwerte(a, projekt).rows.map((r, i) => [r.b, i]));
+  const bieter = (a.bieter || []).filter((b) => b.name).sort((x, y) => (rangIdx.has(x) ? rangIdx.get(x) : 999) - (rangIdx.has(y) ? rangIdx.get(y) : 999));
   const positionen = a.positionen || [];
   const blaetter = [];
   const gruppen = [];
@@ -5470,7 +5536,8 @@ async function bauePositionsvergleichPdf(a, ctx) {
     };
     kopf(false);
 
-    const totale = gruppe.map((b) => positionen.reduce((s, pz) => s + (Number(pz.menge) || 0) * (parseBetrag((b.preise || {})[pz.code]) || 0), 0));
+    const totale = gruppe.map((b) => bieterBrutto(b, a));
+    const nettos = gruppe.map((b) => bieterNetto(b, a));
 
     positionen.forEach((pz) => {
       if (bl.y - 30 < RAND + 60) { bl.neueSeite(); kopf(true); }
@@ -5479,7 +5546,9 @@ async function bauePositionsvergleichPdf(a, ctx) {
       const gueltig = preise.filter((x) => x > 0);
       const min = gueltig.length ? Math.min(...gueltig) : 0;
       bl.text(pz.npk || pz.code || "", { size: 7.5, farbe: grau });
-      bl.text(bl.umbruch(pz.bezeichnung || "", labelB - 115, 8.5)[0] || "", { x: RAND + 48, size: 8.5 });
+      const bzl = bl.umbruch(pz.bezeichnung || "", labelB - 115, 8.5);
+      bl.text(bzl[0] || "", { x: RAND + 48, size: 8.5 });
+      if (bzl[1]) bl.text(bl.umbruch(bzl.slice(1).join(" "), labelB - 125, 7.5)[0] + (bl.umbruch(bzl.slice(1).join(" "), labelB - 125, 7.5).length > 1 ? " ..." : ""), { x: RAND + 48, y: bl.y - 9, size: 7.5, farbe: grau });
       bl.text(`${menge.toLocaleString("de-CH")} ${pz.einheit || ""}`, { rechts: RAND + labelB - 8, size: 8, farbe: grau });
       preise.forEach((ep, i) => {
         if (!ep) { bl.text("–", { rechts: spR(i), size: 8.5, farbe: grau }); return; }
@@ -5489,23 +5558,26 @@ async function bauePositionsvergleichPdf(a, ctx) {
         bl.text(pct(auf), { rechts: spR(i) - 62, y: bl.y - 9, size: 7.5, farbe: auf > 0 ? rot : gruen });
       });
       bl.y -= 22;
-      bl.linie(RAND, rechts, bl.y + 6, 0.25, PDFLib.rgb(0.93, 0.92, 0.91));
+      bl.linie(RAND, rechts, bl.y + 8.5, 0.25, PDFLib.rgb(0.90, 0.89, 0.88));
     });
 
-    bl.platz(46);
+    bl.platz(70);
     bl.y -= 8; bl.linie(RAND, rechts, bl.y, 1.2, PDFLib.rgb(0.13, 0.12, 0.11)); bl.y -= 18;
-    const gueltigT = totale.filter((x) => x > 0);
-    const minTotal = gueltigT.length ? Math.min(...gueltigT) : 0;
-    bl.text("Total netto", { size: 10, fett: true });
-    totale.forEach((t, i) => {
+    bl.text("Total brutto (gewertete Positionen)", { size: 9 });
+    totale.forEach((t, i) => bl.text(chfPdf(t), { rechts: spR(i), size: 9 }));
+    bl.y -= 16;
+    const gueltigN = nettos.filter((x) => x > 0);
+    const minNetto = gueltigN.length ? Math.min(...gueltigN) : 0;
+    bl.text("Angebot netto (nach Konditionen)", { size: 10, fett: true });
+    nettos.forEach((t, i) => {
       bl.text(chfPdf(t), { rechts: spR(i), size: 10, fett: true });
-      if (t > 0 && minTotal > 0) {
-        const auf = 100 * (t - minTotal) / minTotal;
+      if (t > 0 && minNetto > 0) {
+        const auf = 100 * (t - minNetto) / minNetto;
         bl.text(pct(auf), { rechts: spR(i), y: bl.y - 11, size: 8, farbe: auf > 0 ? rot : gruen });
       }
     });
     bl.y -= 26;
-    bl.text("Prozentwerte je Position gegenüber dem günstigsten Angebot dieser Position.", { size: 7.5, farbe: grau });
+    bl.text("Prozentwerte je Position gegenüber dem günstigsten Angebot dieser Position, beim Total gegenüber dem günstigsten Netto-Angebot. Eventual- und Per-Positionen zählen nicht ins Total.", { size: 7.5, farbe: grau });
   }
   blaetter.forEach((b) => b.abschliessen());
   return doc.save();
@@ -5541,7 +5613,7 @@ async function baueAbrechnungPdf(ctx) {
   const spR = (i) => RAND + textB + (i + 1) * spW - 6;
   const spL = (i) => RAND + textB + i * spW + 8;
   const linieHell = PDFLib.rgb(0.88, 0.86, 0.84), band = PDFLib.rgb(0.955, 0.945, 0.93), bandDunkel = PDFLib.rgb(0.92, 0.905, 0.885);
-  const wertText = (c, v) => (c.ampel && Math.abs(v) >= 0.005 ? (v > 0 ? "+" : "") + chfPdf(v) : chfPdf(v));
+  const wertText = (c, v) => (c.ampel ? (Math.abs(v) >= 0.005 && v > 0 ? "+" : "") + chfPdf(v) : (Math.abs(v) < 0.005 ? "–" : chfPdf(v)));
   const wertFarbe = (c, v) => (c.ampel ? (v > 0.004 ? rot : (v < -0.004 ? gruen : grau)) : undefined);
   const detailInfo = (t) => String(t || "").replace(/\s*·\s*nicht verbucht/, "").replace(/(\d{4})-(\d{2})-(\d{2})/g, "$3.$2.$1");
   const werteZeichnen = (roll, size, fett) => cols.forEach((c, i) => {
@@ -5634,16 +5706,16 @@ async function baueAbrechnungPdf(ctx) {
   bl.y -= 22;
   if (!brutto) {
     bl.text(`MwSt ${satz}% auf Prognose`, { x: RAND + 4, size: 9, farbe: grau });
-    bl.text(chfPdf(ks.total.prognose * satz / 100), { rechts, size: 9, farbe: grau });
+    bl.text(chfPdf(ks.total.prognose * satz / 100), { rechts: rechts - 6, size: 9, farbe: grau });
     bl.y -= 14;
     bl.linie(RAND + textB, rechts, bl.y + 10, 0.4, linieHell);
     bl.text("Prognose inkl. MwSt", { x: RAND + 4, size: 10, fett: true });
-    bl.text("CHF " + chfPdf(ks.total.prognose * (1 + satz / 100)), { rechts, size: 10, fett: true });
+    bl.text("CHF " + chfPdf(ks.total.prognose * (1 + satz / 100)), { rechts: rechts - 6, size: 10, fett: true });
     bl.y -= 14;
   }
   if (ks.reserve) {
     bl.text(`Teuerungsreserve ${ks.resSatz}% auf KV revidiert (nicht in der Prognose enthalten)`, { x: RAND + 4, size: 8.5, farbe: grau });
-    bl.text(chfPdf(ks.reserve * f), { rechts, size: 8.5, farbe: grau });
+    bl.text(chfPdf(ks.reserve * f), { rechts: rechts - 6, size: 8.5, farbe: grau });
     bl.y -= 14;
   }
   bl.y -= 8;
@@ -5806,7 +5878,7 @@ async function baueVergauftragPdf(auftrag, rechnungen, ctx) {
     bl.text(chfPdf(netto + mwst), { rechts: sp.brutto, size: 8.5 });
     if (!r.beleg) bl.text("kein Beleg", { x: sp.firma, y: bl.y - 9, size: 6.5, farbe: PDFLib.rgb(0.71, 0.33, 0.05) });
     bl.y -= r.beleg ? 15 : 22;
-    bl.linie(RAND, rechts, bl.y + 5, 0.3, PDFLib.rgb(0.91, 0.90, 0.89));
+    bl.linie(RAND, rechts, bl.y + 9, 0.3, PDFLib.rgb(0.91, 0.90, 0.89));
   });
 
   const sumMwst = sumNetto * satz / 100;
@@ -5822,11 +5894,13 @@ async function baueVergauftragPdf(auftrag, rechnungen, ctx) {
   if (auftrag.bemerkung) { bl.y -= 24; bl.umbruch(auftrag.bemerkung, rechts - RAND, 8.5).forEach((z) => { bl.text(z, { size: 8.5, farbe: grau }); bl.y -= 11; }); }
 
   // ---- Je Rechnung: Deckblatt, dahinter der Beleg ----
+  const blaetter = [bl];
   for (const r of rechnungen) {
     const st = belegStaffel(r, d, ks);
     const firma = st.v ? findFirma(firmen, st.v.firmaId, st.v.unternehmer) : null;
     const snap = st.v?.firmaSnap || null;
     const db2 = pdfBlatt(doc, schriften, A4, vorlage, logoBild);
+    blaetter.push(db2);
     pdfKopf(db2, "Rechnungsdeckblatt", projekt, rollen, `${auftrag.nr || ""}  ·  Buchung ${r.buchungsNr || "–"}  ·  ${RTYP[r.typ] || "Rechnung"} ${r.nr || ""}`, vorlage);
 
     // Empfänger: Adresse aus dem Adressstamm, dazu der Vertragsname
@@ -5864,7 +5938,7 @@ async function baueVergauftragPdf(auftrag, rechnungen, ctx) {
     zeile(st.art === "vertrag" ? "Vertragssumme netto inkl. genehmigter Nachträge" : "KV revidiert (Budget)", st.summe, "100%");
     zeile("bisher verrechnet", st.vorher, anteil(st.vorher), { grau: true });
     zeile("diese Rechnung", st.betrag, anteil(st.betrag), { fett: true });
-    db2.linie(RAND, rechts, db2.y + 6, 0.5);
+    db2.y -= 3; db2.linie(RAND, rechts, db2.y + 9.5, 0.5);
     zeile("total verrechnet", st.total, anteil(st.total));
     zeile("noch offen", st.offen, anteil(st.offen), { grau: true });
 
@@ -5898,7 +5972,7 @@ async function baueVergauftragPdf(auftrag, rechnungen, ctx) {
     }
   }
 
-  bl.abschliessen();
+  blaetter.forEach((b) => b.abschliessen());
   return doc.save();
 }
 
@@ -6466,7 +6540,7 @@ function RechnungenView({ d, dispatch, projektId, projekt, db }) {
                     const bytes = await baueZahlungsfreigabePdf(r, { v, posLabel: v ? posLabel(v.positionId) : posLabel(r.positionId), projekt, rollen, soll: pv ? pv.soll : 0, faktTotal: pv ? pv.fakt : Number(r.betrag) || 0, bezahltTotal: bez, db });
                     pdfSpeichern(bytes, `Zahlungsfreigabe_${(r.nr || "").replace(/[^\w.]+/g, "_") || "Rechnung"}.pdf`);
                   } catch (e) { window.alert("Die Zahlungsfreigabe konnte nicht erzeugt werden: " + e.message); }
-                }}>📄</button><button className="text-red-600 text-xs hover:underline" onClick={() => dispatch({ type: "remove", coll: "rechnungen", id: r.id })}>Lö.</button></td>
+                }}>📄</button><button className="text-red-600 text-xs hover:underline" onClick={() => { const va = vaFuerRechnung(db.vergauftraege, r.id); if (!window.confirm(`Rechnung ${r.nr || ""} löschen?` + (va ? `\n\nSie ist im Vergütungsauftrag ${va.nr || ""} enthalten und wird dort ebenfalls entfernt.` : ""))) return; if (va) dispatch({ type: "update", coll: "vergauftraege", id: va.id, patch: { rechnungIds: (va.rechnungIds || []).filter((x) => x !== r.id) } }); dispatch({ type: "remove", coll: "rechnungen", id: r.id }); }}>Lö.</button></td>
               </tr>
             );
           })}</tbody>
