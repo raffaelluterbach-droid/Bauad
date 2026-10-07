@@ -1001,9 +1001,10 @@ const HILFE = {
   beteiligte: ["Hier ordnest du Firmen aus dem Adressstamm diesem Projekt zu — mit frei wählbarer Rolle.", "Je Firma bestimmst du die Hauptperson für dieses Projekt; sie erscheint auf Verträgen und Listen.", "Dieselbe Firma kann in einem anderen Projekt eine andere Rolle und Person haben."],
   listen: ["Aus den Beteiligten entstehen beliebig viele Listen — Unternehmerliste, Planerliste oder eine eigene.", "Die Submittentenliste zieht die Anbieter aus einer Ausschreibung statt aus den Beteiligten.", "Jede Liste lässt sich drucken — nach Rolle gruppiert, mit Person, Telefon und E-Mail."],
   dashboard: ["Hier siehst du den aktuellen Kostenstand: KV revidiert (Budget), beauftragt, Prognose und bezahlt.", "Mit «Kostenstand festhalten» speicherst du den heutigen Stand — so entsteht die Verlaufskurve über die Bauzeit.", "Rot = über Budget, grün = im Budget."],
-  kv: ["① KV importieren (CSV mit BKP; Bezeichnung; Betrag), Positionen einzeln erfassen — oder den BKP-Katalog einblenden und dort Preise eintippen (auch 0).",
-    "«+ Bem.» hinterlegt je Position eine interne Bemerkung zur Herleitung des Betrags — sie erscheint auf keinem Druckdokument.",
-    "«↶ Rückgängig» nimmt die letzten Schritte zurück; Änderungen und Löschungen werden vorher abgefragt.", "② Unterpositionen (z.B. 211.1) werden automatisch der Hauptposition (211) zugeordnet.", "Das KV ist die Budget-Basis — alle anderen Reiter bauen darauf auf."],
+  kv: ["① «Katalog einblenden» zeigt alle BKP-Nummern in der Tabelle — Betrag direkt in die Zeile tippen, Enter springt zur nächsten. Oder KV als CSV importieren.",
+    "② Die Gliederung ergibt sich aus der BKP-Nummer (1 → 10 → 101 → 101.1); Gruppen summieren sich selbst. «Ansicht Stufe» klappt auf die gewünschte Tiefe.",
+    "Doppelklick auf eine Position: Betrag, MwSt-Satz (z.B. 0% für Grundstück, Gebühren) und Bemerkung. Bemerkungen bleiben intern.",
+    "Suche: eine BKP-Nummer springt zur Zeile, Text oder Betrag filtert. «↶ Rückgängig» nimmt die letzten Schritte zurück.", "Das KV ist die Budget-Basis — KV revidiert, Vergaben und Prognose siehst du in Kostenübersicht und Bauabrechnung."],
   ausmass: ["Kostenschätzung nach Ausmass und Kennwerten — wahlweise nach eBKP-H (Elemente) oder direkt nach BKP (Gewerke).",
     "① Version anlegen (System + Genauigkeitsgrad wählen). ② Positionen aus dem Katalog hinzufügen. ③ Je Position Einheit, Kennwert (CHF/Einheit) und Ausmass-Zeilen (Formel) erfassen.",
     "eBKP-H-Kosten werden über den Umschlüsselungs-Schlüssel den BKP-Codes zugeordnet — mit Prozentsatz, falls ein Element mehrere Gewerke betrifft.",
@@ -3537,7 +3538,7 @@ function App() {
   const navGlobal = [["adressstamm", "Adressstamm"], ["vorlage", "PDF-Vorlage"], ["sicherung", "Sicherung"]];
   const nav = [
     ["projekt", "Projekt"], ["beteiligte", "Beteiligte"], ["listen", "Listen"],
-    ["dashboard", "Kostenübersicht"], ["ausmass", "KV Ausmass"], ["kv", "KV / BKP-Positionen"], ["mutationen", "Mutationen"], ["umbuchungen", "Umbuchungen"],
+    ["dashboard", "Kostenübersicht"], ["ausmass", "KV Ausmass"], ["kv", "KV-Original"], ["mutationen", "Mutationen"], ["umbuchungen", "Umbuchungen"],
     ["lv", "Leistungsverzeichnisse"], ["angebote", "Angebotsvergleich und Vergabeanträge"], ["vertraege", "Verträge & Nachträge"],
     ["rapporte", "Rapporte"], ["rechnungen", "Rechnungen"], ["vergauftraege", "Vergütungsaufträge"],
     ["erwartungen", "Erwartungen"], ["abrechnung", "Bauabrechnung"], ["baustelle", "Kompaktansicht"],
@@ -4135,118 +4136,88 @@ function Dashboard({ ks, d, dispatch, projektId, projekt, db }) {
   );
 }
 
-// Katalogbereich: BKP wählen, Preis eintippen (auch 0) — die Position wandert in den KV
-function BkpKatalogPanel({ db, d, dispatch, projektId, onSchliessen, merken }) {
-  const [q, setQ] = useState("");
-  const [zu, setZu] = useState({});
-  const dateiRef = useRef(null);
-  const katalog = useMemo(() => db.bkpKatalog ? db.bkpKatalog : bkpKatalogLesen(BKP_KATALOG_ROH), [db.bkpKatalog]);
-  const vorhanden = useMemo(() => new Map(d.positionen.map((p) => [String(p.bkp), p])), [d.positionen]);
-
-  // Beim Suchen wird der ganze Baum flach gezeigt, sonst nur offene Äste
-  const hatKinder = useMemo(() => {
-    const m = new Set();
-    katalog.forEach((x, i) => { const n = katalog[i + 1]; if (n && n.tiefe > x.tiefe) m.add(x.code); });
-    return m;
-  }, [katalog]);
-  const sichtbar = useMemo(() => {
-    const t = q.trim().toLowerCase();
-    if (t) return katalog.filter((x) => (x.code + " " + x.bez).toLowerCase().includes(t)).slice(0, 300);
-    const out = [];
-    let zugeklappt = null;
-    katalog.forEach((x) => {
-      if (zugeklappt !== null) { if (x.tiefe > zugeklappt) return; zugeklappt = null; }
-      out.push(x);
-      if (zu[x.code]) zugeklappt = x.tiefe;
-    });
-    return out;
-  }, [katalog, q, zu]);
-
-  // Position samt fehlender übergeordneter Ebenen anlegen
-  const aufnehmen = (eintrag, kv) => {
-    if (vorhanden.has(eintrag.code)) { window.alert(`BKP ${eintrag.code} ist bereits im KV.`); return; }
-    const neue = [];
-    const idVon = new Map(d.positionen.map((p) => [String(p.bkp), p.id]));
-    const kette = [];
-    const ganz = eintrag.code.split(".")[0];
-    for (let i = 1; i <= ganz.length; i++) kette.push(ganz.slice(0, i));
-    if (eintrag.code.includes(".")) kette.push(eintrag.code);
-    kette.forEach((code) => {
-      if (idVon.has(code)) return;
-      const kat = katalog.find((x) => x.code === code);
-      const eltern = kette[kette.indexOf(code) - 1];
-      const id = uid();
-      neue.push({ id, projektId, bkp: code, bezeichnung: kat ? kat.bez : code, kv: code === eintrag.code ? kv : 0, notiz: "", parentId: eltern ? (idVon.get(eltern) || null) : null });
-      idVon.set(code, id);
-    });
-    if (neue.length) { merken(); dispatch({ type: "addMany", coll: "positionen", items: neue }); }
-  };
-
-  const csvErsetzen = async (datei) => {
-    if (!datei) return;
-    try {
-      const neu = bkpKatalogAusCsv(await datei.text());
-      if (!neu.length) { window.alert("In dieser Datei wurden keine BKP-Positionen gefunden."); return; }
-      if (window.confirm(`${neu.length} Positionen gelesen. Den mitgelieferten Katalog dadurch ersetzen? Bestehende KV-Positionen bleiben unverändert.`)) dispatch({ type: "setBkpKatalog", katalog: neu });
-    } catch (e) { window.alert("Die Datei konnte nicht gelesen werden: " + e.message); }
-  };
-
-  return (
-    <div className={`${card} flex flex-col`} style={{ maxHeight: "78vh" }}>
-      <div className="px-3 py-2.5 border-b border-stone-100 space-y-2">
-        <div className="flex items-center gap-2">
-          <span className="font-medium text-sm">BKP-Katalog</span>
-          <span className="text-xs text-stone-400">{katalog.length} Positionen{db.bkpKatalog ? " · eigene Liste" : ""}</span>
-          <button className="ml-auto text-stone-400 hover:text-stone-700 text-sm" title="Katalog ausblenden" onClick={onSchliessen}>✕</button>
-        </div>
-        <input className={inputCls} placeholder="BKP-Code oder Stichwort suchen…" value={q} onChange={(e) => setQ(e.target.value)} />
-        <div className="flex items-center gap-3">
-          <input ref={dateiRef} type="file" accept=".csv,text/csv" className="hidden" onChange={(e) => { csvErsetzen(e.target.files[0]); e.target.value = ""; }} />
-          <button className="text-xs text-stone-500 hover:underline" onClick={() => dateiRef.current?.click()}>Katalog ersetzen (CSV)</button>
-          {db.bkpKatalog ? <button className="text-xs text-stone-500 hover:underline" onClick={() => { if (window.confirm("Zum mitgelieferten Katalog zurückkehren?")) dispatch({ type: "setBkpKatalog", katalog: null }); }}>Standard wiederherstellen</button> : null}
-        </div>
-        <p className="text-xs text-stone-400">Preis eintippen (auch 0) und Enter — oder Doppelklick auf die Zeile. Übergeordnete Positionen entstehen automatisch.</p>
-      </div>
-      <div className="overflow-y-auto divide-y divide-stone-50">
-        {!sichtbar.length ? <div className="p-4 text-sm text-stone-500">Nichts gefunden.</div> : sichtbar.map((x) => {
-          const drin = vorhanden.get(x.code);
-          const gruppe = x.tiefe <= 1;
-          return (
-            <div key={x.code} className={`flex items-center gap-2 px-3 py-1 hover:bg-stone-50 ${drin ? "bg-emerald-50/40" : ""}`}
-              style={{ paddingLeft: 12 + x.tiefe * 12 }}
-              onDoubleClick={() => { if (!drin) aufnehmen(x, 0); }}>
-              {!q && hatKinder.has(x.code) ? <button className="text-stone-300 hover:text-stone-600 text-[9px] w-3 shrink-0" onClick={() => setZu({ ...zu, [x.code]: !zu[x.code] })}>{zu[x.code] ? "▶" : "▼"}</button> : <span className="w-3 shrink-0" />}
-              <span className={`tabular-nums text-xs shrink-0 w-[52px] ${gruppe ? "font-semibold text-stone-600" : "text-stone-500"}`}>{x.code}</span>
-              <span className={`flex-1 min-w-0 truncate text-sm ${gruppe ? "font-medium" : ""}`}>{x.bez}</span>
-              {drin
-                ? <span className="text-xs text-emerald-700 shrink-0 tabular-nums">✓ {chf(drin.kv)}</span>
-                : <KatalogPreis onAufnehmen={(kv) => aufnehmen(x, kv)} />}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
+// ---------- KV-Original: Gliederung aus der BKP-Nummer ----------
+// Übergeordnete BKP-Nummer: 101.1 → 101 → 10 → 1; 113.02 → 113
+function bkpEltern(code) {
+  const c = String(code || "").trim();
+  if (!c) return null;
+  if (c.includes(".")) return c.slice(0, c.lastIndexOf("."));
+  return c.length > 1 ? c.slice(0, -1) : null;
+}
+function bkpStufe(code) { let n = 1, c = bkpEltern(code); while (c) { n++; c = bkpEltern(c); } return n; }
+// Sortierung wie im BKP: erster Teil als Text (1 < 10 < 101 < 11), Unterteile numerisch (101.2 < 101.10)
+function bkpVergleich(a, b) {
+  const x = String(a).split("."), y = String(b).split(".");
+  if (x[0] !== y[0]) return x[0] < y[0] ? -1 : 1;
+  for (let i = 1; i < Math.max(x.length, y.length); i++) {
+    if (x[i] === undefined) return -1;
+    if (y[i] === undefined) return 1;
+    const d = (parseInt(x[i], 10) || 0) - (parseInt(y[i], 10) || 0);
+    if (d) return d;
+    if (x[i] !== y[i]) return x[i] < y[i] ? -1 : 1;
+  }
+  return 0;
+}
+// parentId jeder Position aus ihrer BKP-Nummer: nächste vorhandene übergeordnete Position
+function elternAusBkp(positionen) {
+  const nachBkp = new Map();
+  positionen.forEach((p) => { const k = String(p.bkp || "").trim(); if (k && !nachBkp.has(k)) nachBkp.set(k, p.id); });
+  const aenderungen = [];
+  positionen.forEach((p) => {
+    let c = bkpEltern(p.bkp), ziel = null;
+    while (c) { if (nachBkp.has(c) && nachBkp.get(c) !== p.id) { ziel = nachBkp.get(c); break; } c = bkpEltern(c); }
+    if ((p.parentId || null) !== ziel) aenderungen.push({ id: p.id, parentId: ziel });
+  });
+  return aenderungen;
+}
+function positionVerknuepft(d, id) {
+  const z = [];
+  const n = (l, t) => { if (l.length) z.push(`${l.length} ${t}`); };
+  n(d.vertraege.filter((x) => x.positionId === id), "Vertrag/Verträge");
+  n(d.rechnungen.filter((x) => x.positionId === id), "Rechnung(en)");
+  n(d.mutationen.filter((x) => x.positionId === id), "Mutation(en)");
+  n(d.umbuchungen.filter((x) => x.vonPositionId === id || x.nachPositionId === id), "Umbuchung(en)");
+  n(d.erwartungen.filter((x) => x.positionId === id), "Erwartung(en)");
+  n(d.angebote.filter((x) => x.positionId === id), "Ausschreibung(en)");
+  return z;
 }
 
-// Preisfeld im Katalog: Enter oder Verlassen nimmt die Position auf — auch mit 0
-function KatalogPreis({ onAufnehmen }) {
-  const [wert, setWert] = useState("");
-  const uebernehmen = () => { if (wert.trim() === "") return; onAufnehmen(parseBetrag(wert)); setWert(""); };
+// Betragszelle: anklicken, tippen, Enter springt zur nächsten Betragszelle
+function KvZelle({ wert, leer, onSpeichern }) {
+  const [entwurf, setEntwurf] = useState("");
+  const [aktiv, setAktiv] = useState(false);
+  const anzeige = leer ? "" : chf(wert);
+  const weiter = (el, richtung) => {
+    const alle = [...document.querySelectorAll("input[data-kvzelle]")];
+    const i = alle.indexOf(el);
+    const z = alle[i + richtung];
+    if (z) { z.focus(); z.select(); }
+  };
   return (
-    <input
-      className="w-[86px] shrink-0 text-xs text-right tabular-nums rounded border border-stone-200 px-1.5 py-0.5 focus:border-orange-600 focus:outline-none"
-      placeholder="Preis" value={wert}
-      onChange={(e) => setWert(e.target.value)}
-      onBlur={uebernehmen}
-      onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); uebernehmen(); } if (e.key === "Escape") setWert(""); }}
-      onDoubleClick={(e) => e.stopPropagation()}
+    <input data-kvzelle="1"
+      className="w-full text-right tabular-nums bg-transparent px-1.5 py-0.5 rounded border border-transparent hover:border-stone-300 focus:border-orange-600 focus:bg-white focus:outline-none"
+      value={aktiv ? entwurf : anzeige}
+      onFocus={(e) => { setAktiv(true); setEntwurf(leer ? "" : String(Number(wert) || 0)); const t = e.target; setTimeout(() => t.select(), 0); }}
+      onChange={(e) => setEntwurf(e.target.value)}
+      onBlur={() => {
+        setAktiv(false);
+        if (entwurf.trim() === "" && leer) return;
+        const n = parseBetrag(entwurf);
+        if (leer || n !== (Number(wert) || 0)) onSpeichern(n);
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || (e.key === "Tab" && !e.shiftKey)) { e.preventDefault(); const el = e.currentTarget; el.blur(); setTimeout(() => weiter(el, 1), 0); }
+        else if (e.key === "Tab" && e.shiftKey) { e.preventDefault(); const el = e.currentTarget; el.blur(); setTimeout(() => weiter(el, -1), 0); }
+        else if (e.key === "Escape") { setEntwurf(leer ? "" : String(Number(wert) || 0)); setAktiv(false); e.currentTarget.blur(); }
+      }}
+      placeholder={leer ? "–" : ""}
     />
   );
 }
 
 function KvView({ d, dispatch, projektId, ks, projekt, db }) {
   const rollen = projektRollen(db, projekt);
+  const satzProjekt = Number(projekt?.mwstSatz) || 8.1;
   // Rückgängig: vor jeder Änderung den bisherigen Stand der Projektpositionen merken
   const [historie, setHistorie] = useState([]);
   const merken = () => setHistorie((h) => [...h.slice(-24), d.positionen.map((x) => ({ ...x }))]);
@@ -4257,18 +4228,117 @@ function KvView({ d, dispatch, projektId, ks, projekt, db }) {
     dispatch({ type: "positionenZurueck", projektId, items: stand });
   };
   const [katalogOffen, setKatalogOffen] = useState(false);
-  const [notizFuer, setNotizFuer] = useState(null);
+  const [stufe, setStufeRoh] = useState(() => { try { return Number(localStorage.getItem("bauadmin:kvStufe")) || 5; } catch (e) { return 5; } });
+  const setStufe = (n) => { setStufeRoh(n); try { localStorage.setItem("bauadmin:kvStufe", String(n)); } catch (e) {} };
+  const [suche, setSuche] = useState("");
+  const [markiert, setMarkiert] = useState("");
   const [kvUmfang, setKvUmfang] = useState("kv");
   const [kvMwst, setKvMwst] = useState(false);
   const [kvBusy, setKvBusy] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
-  const [edit, setEdit] = useState(null);
+  const [detail, setDetail] = useState(null);
+  const katRef = useRef(null);
+  async function katalogCsv(e) {
+    const datei = e.target.files?.[0]; e.target.value = "";
+    if (!datei) return;
+    try {
+      const neu = bkpKatalogAusCsv(await datei.text());
+      if (!neu.length) { window.alert("Keine BKP-Zeilen gefunden. Erwartet werden die Spalten BKP;Bezeichnung."); return; }
+      if (window.confirm(`${neu.length} Positionen gelesen. Den mitgelieferten Katalog dadurch ersetzen? Bestehende KV-Positionen bleiben unverändert.`)) dispatch({ type: "setBkpKatalog", katalog: neu });
+    } catch (err) { window.alert("Die Datei konnte nicht gelesen werden: " + (err.message || err)); }
+  }
+  const katalog = useMemo(() => db.bkpKatalog || bkpKatalogLesen(BKP_KATALOG_ROH), [db.bkpKatalog]);
+  const katalogName = useMemo(() => new Map(katalog.map((x) => [x.code, x.bez])), [katalog]);
+
+  // Gliederung aus den BKP-Nummern nachführen (auch nach Import oder Änderungen anderswo)
+  useEffect(() => {
+    const ch = elternAusBkp(d.positionen);
+    ch.forEach((c) => dispatch({ type: "update", coll: "positionen", id: c.id, patch: { parentId: c.parentId } }));
+  }, [d.positionen]);
+
+  // Zeilen: alle Positionen, ihre übergeordneten Gruppen und bei offenem Katalog alle Katalognummern
+  const zeilen = useMemo(() => {
+    const posNachBkp = new Map();
+    d.positionen.forEach((p) => { const k = String(p.bkp || "").trim(); if (!posNachBkp.has(k)) posNachBkp.set(k, []); posNachBkp.get(k).push(p); });
+    const codes = new Set();
+    const mitEltern = (c) => { let x = c; while (x) { codes.add(x); x = bkpEltern(x); } };
+    d.positionen.forEach((p) => mitEltern(String(p.bkp || "").trim()));
+    if (katalogOffen) katalog.forEach((k) => codes.add(k.code));
+    codes.delete("");
+    const sortiert = [...codes].sort(bkpVergleich);
+    // Summen: Betrag einer Position zählt nur, wenn unter ihr keine weiteren Positionen liegen
+    const hatUnter = new Set();
+    d.positionen.forEach((p) => { let c = bkpEltern(p.bkp); while (c) { hatUnter.add(c); c = bkpEltern(c); } });
+    const summe = new Map(), mwst = new Map();
+    d.positionen.forEach((p) => {
+      const k = String(p.bkp || "").trim();
+      if (hatUnter.has(k)) return;
+      const kv = Number(p.kv) || 0;
+      const satz = p.mwstSatz === undefined || p.mwstSatz === null || p.mwstSatz === "" ? satzProjekt : Number(p.mwstSatz) || 0;
+      let c = k;
+      while (c) { summe.set(c, (summe.get(c) || 0) + kv); mwst.set(c, (mwst.get(c) || 0) + kv * satz / 100); c = bkpEltern(c); }
+    });
+    const out = [];
+    sortiert.forEach((code) => {
+      const ps = posNachBkp.get(code) || [null];
+      ps.forEach((p, i) => out.push({
+        key: p ? p.id : "k-" + code, code, pos: p, stufe: bkpStufe(code), gruppe: hatUnter.has(code),
+        name: p?.bezeichnung || katalogName.get(code) || BKP_GROUPS[code] || "",
+        kv: summe.get(code) || 0, mwst: mwst.get(code) || 0, belegt: summe.has(code) || !!p, doppelt: i > 0,
+      }));
+    });
+    return out;
+  }, [d.positionen, katalogOffen, katalog, katalogName, satzProjekt]);
+
+  const total = zeilen.filter((z) => z.stufe === 1 && !z.doppelt).reduce((s, z) => ({ kv: s.kv + z.kv, mwst: s.mwst + z.mwst }), { kv: 0, mwst: 0 });
+
+  // Suche: BKP-Nummer springt hin, Text oder Betrag filtert
+  const q = suche.trim();
+  const istNummer = /^\d{1,3}(\.\d+)*$/.test(q);
+  const istBetrag = !istNummer && /^[\d'’.,\s]+$/.test(q) && /\d/.test(q);
+  const sichtbar = useMemo(() => {
+    let l = zeilen.filter((z) => z.stufe <= stufe);
+    if (q && !istNummer) {
+      const treffer = new Set();
+      zeilen.forEach((z) => {
+        const ok = istBetrag
+          ? Math.round(z.kv) === Math.round(parseBetrag(q)) || chf(z.kv).replace(/\D/g, "").includes(q.replace(/\D/g, ""))
+          : `${z.code} ${z.name} ${z.pos?.notiz || ""}`.toLowerCase().includes(q.toLowerCase());
+        if (ok && (z.belegt || !istBetrag)) { let c = z.code; while (c) { treffer.add(c); c = bkpEltern(c); } }
+      });
+      l = zeilen.filter((z) => treffer.has(z.code));
+    }
+    return l;
+  }, [zeilen, stufe, q, istNummer, istBetrag]);
+  useEffect(() => {
+    if (!istNummer) { setMarkiert(""); return; }
+    const z = zeilen.find((x) => x.code === q) || zeilen.find((x) => x.code.startsWith(q));
+    if (!z) return;
+    if (z.stufe > stufe) setStufe(5);
+    setMarkiert(z.code);
+    setTimeout(() => { const el = document.querySelector(`[data-bkpzeile="${CSS.escape(z.code)}"]`); if (el) el.scrollIntoView({ block: "center", behavior: "smooth" }); }, 50);
+  }, [q]);
+
+  function betragSpeichern(z, n) {
+    merken();
+    if (z.pos) dispatch({ type: "update", coll: "positionen", id: z.pos.id, patch: { kv: n } });
+    else dispatch({ type: "add", coll: "positionen", item: { id: uid(), projektId, bkp: z.code, bezeichnung: z.name, kv: n, parentId: null, notiz: "" } });
+  }
+  function loeschen(p) {
+    const verkn = positionVerknuepft(d, p.id);
+    if (verkn.length) { window.alert(`BKP ${p.bkp} ${p.bezeichnung} kann nicht gelöscht werden — daran hängen: ${verkn.join(", ")}.\n\nBitte diese zuerst einer anderen Position zuordnen oder löschen.`); return false; }
+    if (!window.confirm(`BKP ${p.bkp} ${p.bezeichnung} (${chf(p.kv)}) löschen?`)) return false;
+    merken(); dispatch({ type: "remove", coll: "positionen", id: p.id });
+    return true;
+  }
+
+  const stufen = [[1, "nur Hauptgruppen (1, 2, 4 …)"], [2, "bis Gruppen (10, 21 …)"], [3, "bis Positionen (101, 211 …)"], [4, "bis Unterpositionen (101.1)"], [5, "alles"]];
   return (
-    <div className="space-y-4">
-      <div className="flex gap-2 flex-wrap print:hidden">
-        <button className={btnPrimary} onClick={() => setEdit({ bkp: "", bezeichnung: "", kv: "", parentId: null })}>+ Hauptposition</button>
+    <div className="space-y-3">
+      <div className="flex gap-2 flex-wrap items-center print:hidden">
+        <button className={btnPrimary} onClick={() => setDetail({ bkp: "", bezeichnung: "", kv: "", notiz: "", mwstSatz: "" })}>+ Position</button>
+        <button className={katalogOffen ? btnPrimary : btnGhost} onClick={() => setKatalogOffen(!katalogOffen)}>{katalogOffen ? "Katalog ausblenden" : "Katalog einblenden"}</button>
         <button className={btnGhost} onClick={() => setImportOpen(true)}>KV importieren (CSV)</button>
-        <button className={katalogOffen ? btnPrimary : btnGhost} onClick={() => setKatalogOffen(!katalogOffen)}>{katalogOffen ? "BKP-Katalog ausblenden" : "BKP-Katalog einblenden"}</button>
         <button className={btnGhost} disabled={!historie.length} title={historie.length ? `${historie.length} Schritte rückgängig möglich` : "Nichts rückgängig zu machen"} onClick={zurueck}>↶ Rückgängig{historie.length ? ` (${historie.length})` : ""}</button>
         <div className="flex items-center gap-2 ml-auto">
           <select className="text-xs rounded border border-stone-300 px-2 py-1.5 bg-white" value={kvUmfang} onChange={(e) => setKvUmfang(e.target.value)}>
@@ -4287,102 +4357,118 @@ function KvView({ d, dispatch, projektId, ks, projekt, db }) {
           <button className={btnGhost} disabled={!ks.ordered.length} onClick={() => excelSpeichern([excelBlattKv(ks, projekt)], projektDateiname("Kostenvoranschlag", projekt))}>📊 Excel</button>
         </div>
       </div>
-      <div className={katalogOffen ? "grid grid-cols-1 xl:grid-cols-[minmax(380px,460px)_1fr] gap-4 items-start" : ""}>
-      {katalogOffen ? <BkpKatalogPanel db={db} d={d} dispatch={dispatch} projektId={projektId} merken={merken} onSchliessen={() => setKatalogOffen(false)} /> : null}
-      <div className="min-w-0 space-y-4">
-      {!ks.ordered.length ? <Empty text={katalogOffen ? "Noch keine Positionen. Tippe links im Katalog einen Preis ein oder klicke eine Zeile doppelt." : "Noch keine BKP-Positionen. Blende den BKP-Katalog ein, importiere den KV oder erfasse Positionen einzeln."} /> : (
+      <div className="flex gap-3 flex-wrap items-center print:hidden">
+        <div className="flex items-center gap-1.5 text-sm text-stone-600">
+          <span>Ansicht Stufe</span>
+          {stufen.map(([n, t]) => <button key={n} title={`Stufe ${n}: ${t}`} onClick={() => setStufe(n)} className={`w-7 h-7 rounded border text-sm font-medium ${stufe === n ? "bg-orange-800 text-white border-orange-800" : "border-stone-300 text-stone-600 hover:bg-stone-100"}`}>{n}</button>)}
+        </div>
+        <input className={`${inputCls} max-w-xs`} value={suche} onChange={(e) => setSuche(e.target.value)} placeholder="Suchen: BKP-Nummer, Text oder Betrag" />
+        {katalogOffen ? <span className="flex items-center gap-2 text-xs text-stone-500">
+          <input ref={katRef} type="file" accept=".csv,.txt" className="hidden" onChange={katalogCsv} />
+          <button className="hover:underline" onClick={() => katRef.current?.click()}>Eigener Katalog (CSV)…</button>
+          {db.bkpKatalog ? <button className="hover:underline" onClick={() => { if (window.confirm("Zum mitgelieferten BKP-Katalog zurückkehren?")) dispatch({ type: "setBkpKatalog", katalog: null }); }}>Standardkatalog</button> : null}
+        </span> : null}
+        {q ? <span className="text-xs text-stone-500">{istNummer ? (markiert ? `springt zu BKP ${markiert}` : "keine passende BKP-Nummer") : `${sichtbar.filter((z) => z.belegt).length} Treffer`}</span> : null}
+      </div>
+
+      {!zeilen.length ? <Empty text="Noch keine BKP-Positionen. Blende den Katalog ein und tippe Beträge direkt in die Zeilen, importiere den KV oder erfasse Positionen einzeln." /> : (
         <div className={`${card} overflow-x-auto`}>
           <table className="w-full text-sm">
             <thead className="bg-stone-50 text-stone-500 text-xs"><tr>
-              <th className="text-left font-medium px-3 py-2">BKP / Bezeichnung</th><th className="text-right font-medium px-3 py-2">KV</th><th className="text-right font-medium px-3 py-2">KV rev.</th><th className="text-right font-medium px-3 py-2">Beauftragt</th><th className="text-right font-medium px-3 py-2">Erwartung</th><th className="text-right font-medium px-3 py-2">Prognose</th><th className="text-right font-medium px-3 py-2">Abw. KV</th><th className="px-3 py-2 w-28"></th>
+              <th className="text-left font-medium px-3 py-2 w-24">BKP</th>
+              <th className="text-left font-medium px-3 py-2">Bezeichnung</th>
+              <th className="text-right font-medium px-3 py-2 w-36">KV</th>
+              <th className="text-right font-medium px-3 py-2 w-28">MWST</th>
+              <th className="text-left font-medium px-3 py-2 w-[28%]">Bemerkungen</th>
             </tr></thead>
             <tbody>
-              {ks.ordered.map((z) => (
-                <tr key={z.pos.id} className={`border-t border-stone-100 hover:bg-stone-50/60 ${z.hasChildren ? "bg-stone-50/40" : ""}`}>
-                  <td className="px-3 py-2" style={{ paddingLeft: 12 + z.depth * 18 }}><span className={`tabular-nums ${z.hasChildren ? "font-semibold" : "font-medium"}`}>{z.pos.bkp}</span> <span className={z.hasChildren ? "font-semibold" : ""}>{z.pos.bezeichnung}</span></td>
-                  <td className={`px-3 py-2 text-right ${z.hasChildren ? "" : "cursor-pointer"}`}
-                    title={z.hasChildren ? "Summe aus den Unterpositionen" : (z.pos.notiz ? z.pos.notiz : "Doppelklick für eine interne Notiz")}
-                    onDoubleClick={() => { if (!z.hasChildren) setNotizFuer(z.pos); }}>
-                    <Num v={z.roll.kv} />{!z.hasChildren && z.pos.notiz ? <span className="text-orange-700 ml-1" title={z.pos.notiz}>✎</span> : null}
-                  </td>
-                  <td className="px-3 py-2 text-right"><Num v={z.roll.kvRevidiert} /></td>
-                  <td className="px-3 py-2 text-right text-stone-600"><Num v={z.roll.beauftragt} /></td>
-                  <td className="px-3 py-2 text-right text-stone-600">{z.roll.erwartung ? <Abw v={z.roll.erwartung} /> : "–"}</td>
-                  <td className="px-3 py-2 text-right font-medium"><Num v={z.roll.prognose} /></td>
-                  <td className="px-3 py-2 text-right"><Abw v={z.roll.abwKv} /></td>
-                  <td className="px-3 py-2 text-right whitespace-nowrap">
-                    <button className="text-stone-500 hover:underline text-xs mr-2" onClick={() => setEdit({ bkp: "", bezeichnung: "", kv: "", parentId: z.pos.id })}>+ Unter</button>
-                    <button className="text-orange-800 hover:underline text-xs mr-2" onClick={() => setEdit(z.pos)}>Bearb.</button>
-                    {!z.hasChildren ? <button className={`hover:underline text-xs mr-2 ${z.pos.notiz ? "text-orange-800" : "text-stone-500"}`} title={z.pos.notiz || "Interne Bemerkung zur Herleitung des Betrags"} onClick={() => setNotizFuer(z.pos)}>{z.pos.notiz ? "✎ Bem." : "+ Bem."}</button> : null}
-                    <button className="text-red-600 hover:underline text-xs" onClick={() => {
-                      const kinder = (function zaehle(id) { const k = d.positionen.filter((x) => x.parentId === id); return k.length + k.reduce((s2, x) => s2 + zaehle(x.id), 0); })(z.pos.id);
-                      const frage = kinder
-                        ? `BKP ${z.pos.bkp} ${z.pos.bezeichnung} und ${kinder} Unterposition${kinder === 1 ? "" : "en"} löschen?`
-                        : `BKP ${z.pos.bkp} ${z.pos.bezeichnung} (${chf(z.roll.kv)}) löschen?`;
-                      if (window.confirm(frage)) { merken(); dispatch({ type: "remove", coll: "positionen", id: z.pos.id }); }
-                    }}>Lö.</button>
-                  </td>
-                </tr>
-              ))}
+              {sichtbar.map((z, i) => {
+                const abstand = i > 0 && z.stufe <= 2 && !z.doppelt;
+                const fett = z.stufe <= 2;
+                const satz = z.pos && z.pos.mwstSatz !== undefined && z.pos.mwstSatz !== null && z.pos.mwstSatz !== "" ? Number(z.pos.mwstSatz) : null;
+                return (
+                  <React.Fragment key={z.key}>
+                    {abstand ? <tr aria-hidden="true"><td colSpan={5} className="h-3"></td></tr> : null}
+                    <tr data-bkpzeile={z.code}
+                      className={`border-t border-stone-100 ${markiert === z.code ? "bg-orange-100" : z.belegt ? "hover:bg-stone-50/70" : "text-stone-400 hover:bg-stone-50/70"} ${z.pos ? "cursor-default" : ""}`}
+                      onDoubleClick={() => { if (z.pos) setDetail(z.pos); }}>
+                      <td className={`px-3 py-1 tabular-nums whitespace-nowrap ${fett ? "font-semibold" : ""}`}>{z.code}</td>
+                      <td className={`px-3 py-1 ${fett ? "font-semibold" : ""}`} title={z.pos ? "Doppelklick: Betrag, MwSt-Satz und Bemerkung" : ""}>{z.name || <span className="text-stone-300">—</span>}{z.doppelt ? <span className="text-xs text-amber-700 ml-2">(BKP-Nummer doppelt)</span> : null}</td>
+                      <td className={`px-2 py-0.5 text-right ${fett ? "font-semibold" : ""}`}>
+                        {z.gruppe ? <span className="tabular-nums px-1.5">{chf(z.kv)}</span> : <KvZelle wert={z.pos ? z.pos.kv : 0} leer={!z.pos} onSpeichern={(n) => betragSpeichern(z, n)} />}
+                      </td>
+                      <td className={`px-3 py-1 text-right tabular-nums ${fett ? "font-semibold" : "text-stone-600"}`} title={satz !== null ? `MwSt ${satz}% (abweichend vom Projekt)` : z.belegt ? `MwSt ${satzProjekt}%` : ""}>
+                        {z.belegt ? chf(z.mwst) : ""}{satz !== null && !z.gruppe ? <span className="text-[10px] text-orange-800 ml-1">{satz}%</span> : null}
+                      </td>
+                      <td className="px-3 py-1 text-stone-600 text-xs"><span className="line-clamp-2" title={z.pos?.notiz || ""}>{z.pos?.notiz || ""}</span></td>
+                    </tr>
+                  </React.Fragment>
+                );
+              })}
             </tbody>
-            <tfoot><tr className="border-t-2 border-stone-300 font-semibold bg-stone-50">
-              <td className="px-3 py-2">Total netto</td><td className="px-3 py-2 text-right"><Num v={ks.total.kv} /></td><td className="px-3 py-2 text-right"><Num v={ks.total.kvRevidiert} /></td><td className="px-3 py-2 text-right"><Num v={ks.total.beauftragt} /></td><td className="px-3 py-2 text-right"><Abw v={ks.total.erwartung} /></td><td className="px-3 py-2 text-right"><Num v={ks.total.prognose} /></td><td className="px-3 py-2 text-right"><Abw v={ks.total.abwKv} /></td><td></td>
-            </tr></tfoot>
+            <tfoot>
+              <tr className="border-t-2 border-stone-300 font-semibold bg-stone-50">
+                <td className="px-3 py-2" colSpan={2}>Total KV netto</td>
+                <td className="px-3 py-2 text-right tabular-nums">{chf(total.kv)}</td>
+                <td className="px-3 py-2 text-right tabular-nums">{chf(total.mwst)}</td>
+                <td></td>
+              </tr>
+              <tr className="bg-stone-50 font-semibold">
+                <td className="px-3 py-2" colSpan={2}>Total KV inkl. MwSt</td>
+                <td className="px-3 py-2 text-right tabular-nums" colSpan={2}>CHF {chf(total.kv + total.mwst)}</td>
+                <td></td>
+              </tr>
+            </tfoot>
           </table>
         </div>
       )}
-      </div>
-      </div>
-      {notizFuer && (
-        <Modal title={`Notiz zu BKP ${notizFuer.bkp} ${notizFuer.bezeichnung}`} onClose={() => setNotizFuer(null)}>
-          <Field label="Interne Notiz zum Preis">
-            <textarea className={`${inputCls} min-h-[120px]`} autoFocus value={notizFuer.notiz || ""} placeholder="z.B. Annahme 1'200 m2 à CHF 180, Offerte Steiner vom 12.3."
-              onChange={(e) => { const t = e.target.value; setNotizFuer({ ...notizFuer, notiz: t }); dispatch({ type: "update", coll: "positionen", id: notizFuer.id, patch: { notiz: t } }); }} />
-          </Field>
-          <p className="text-xs text-stone-400 mt-2">Die Notiz bleibt intern und erscheint auf keinem Druckdokument.</p>
-          <div className="flex justify-end mt-3"><button className={btnPrimary} onClick={() => setNotizFuer(null)}>Fertig</button></div>
-        </Modal>
-      )}
-      {edit && <PositionEditor pos={edit} positionen={d.positionen} onClose={() => setEdit(null)} onSave={(pp) => {
-        if (pp.id) {
-          const alt = d.positionen.find((x) => x.id === pp.id);
-          const neuKv = parseBetrag(pp.kv), altKv = Number(alt?.kv) || 0;
-          if (alt && neuKv !== altKv && !window.confirm(`KV-Betrag von BKP ${alt.bkp} ${alt.bezeichnung} von ${chf(altKv)} auf ${chf(neuKv)} ändern?`)) return;
-          merken();
-          dispatch({ type: "update", coll: "positionen", id: pp.id, patch: pp });
-        } else { merken(); dispatch({ type: "add", coll: "positionen", item: { id: uid(), projektId, ...pp } }); }
-        setEdit(null);
-      }} />}
+      {detail && <KvPositionDialog pos={detail} d={d} satzProjekt={satzProjekt} katalogName={katalogName}
+        onClose={() => setDetail(null)}
+        onLoeschen={(p) => { if (loeschen(p)) setDetail(null); }}
+        onSave={(pp) => {
+          if (pp.id) {
+            const alt = d.positionen.find((x) => x.id === pp.id);
+            if (alt && (Number(pp.kv) || 0) !== (Number(alt.kv) || 0) && !window.confirm(`KV-Betrag von BKP ${alt.bkp} ${alt.bezeichnung} von ${chf(alt.kv)} auf ${chf(pp.kv)} ändern?`)) return;
+            merken(); dispatch({ type: "update", coll: "positionen", id: pp.id, patch: pp });
+          } else { merken(); dispatch({ type: "add", coll: "positionen", item: { id: uid(), projektId, parentId: null, ...pp } }); }
+          setDetail(null);
+        }} />}
       {importOpen && <KvImport onClose={() => setImportOpen(false)} onImport={(rows) => { merken(); dispatch({ type: "addMany", coll: "positionen", items: nestImported(rows, projektId) }); setImportOpen(false); }} />}
     </div>
   );
 }
 
-function PositionEditor({ pos, positionen, onClose, onSave }) {
-  const [f, setF] = useState({ bkp: pos.bkp || "", bezeichnung: pos.bezeichnung || "", kv: pos.kv ?? "", parentId: pos.parentId ?? null });
-  const exclude = pos.id ? descendantIds(positionen, pos.id) : new Set();
-  const opts = posSelectOptions(positionen).filter((o) => o.id !== pos.id && !exclude.has(o.id));
-  const hatKinder = (positionen || []).some((x) => x.parentId === pos.id);
+function KvPositionDialog({ pos, d, satzProjekt, katalogName, onClose, onSave, onLoeschen }) {
+  const [f, setF] = useState({ bkp: pos.bkp || "", bezeichnung: pos.bezeichnung || "", kv: pos.kv ?? "", mwstSatz: pos.mwstSatz ?? "", notiz: pos.notiz || "" });
+  const code = String(f.bkp).trim();
+  const hatUnter = d.positionen.some((x) => x.id !== pos.id && String(x.bkp || "").trim() !== code && String(x.bkp || "").trim().startsWith(code) && bkpStufe(x.bkp) > bkpStufe(code) && (() => { let c = bkpEltern(x.bkp); while (c) { if (c === code) return true; c = bkpEltern(c); } return false; })());
+  const doppelt = !!code && d.positionen.some((x) => x.id !== pos.id && String(x.bkp || "").trim() === code);
+  const kv = parseBetrag(f.kv);
+  const satz = f.mwstSatz === "" ? satzProjekt : parseBetrag(f.mwstSatz);
   return (
-    <Modal title={pos.id ? "Position bearbeiten" : (pos.parentId ? "Neue Unterposition" : "Neue BKP-Hauptposition")} onClose={onClose}>
+    <Modal title={pos.id ? `BKP ${pos.bkp} ${pos.bezeichnung}` : "Neue KV-Position"} onClose={onClose}>
       <div className="space-y-3">
         <div className="grid grid-cols-3 gap-3">
-          <Field label="BKP-Nr."><input className={inputCls} value={f.bkp} onChange={(e) => setF({ ...f, bkp: e.target.value })} placeholder="211 / 211.1" /></Field>
+          <Field label="BKP-Nr."><input className={inputCls} autoFocus={!pos.id} value={f.bkp} onChange={(e) => { const b = e.target.value; setF({ ...f, bkp: b, bezeichnung: f.bezeichnung || katalogName.get(b.trim()) || "" }); }} placeholder="z.B. 211.1" /></Field>
           <div className="col-span-2"><Field label="Bezeichnung"><input className={inputCls} value={f.bezeichnung} onChange={(e) => setF({ ...f, bezeichnung: e.target.value })} /></Field></div>
         </div>
-        <Field label="Übergeordnete Position (optional)">
-          <select className={inputCls} value={f.parentId || ""} onChange={(e) => setF({ ...f, parentId: e.target.value || null })}>
-            <option value="">— keine (Hauptposition) —</option>
-            {opts.map((o) => <option key={o.id} value={o.id}>{o.label.trim()}</option>)}
-          </select>
+        {doppelt ? <div className="text-xs text-amber-700">Diese BKP-Nummer gibt es in diesem Projekt bereits.</div> : null}
+        <div className="grid grid-cols-3 gap-3">
+          <div className="col-span-2"><Field label="KV-Betrag netto (CHF)">
+            <input className={inputCls} value={hatUnter ? "" : f.kv} disabled={hatUnter} onChange={(e) => setF({ ...f, kv: e.target.value })} placeholder={hatUnter ? "Summe aus den Unterpositionen" : "0"} />
+          </Field></div>
+          <Field label={`MwSt-Satz % (Projekt ${satzProjekt}%)`}><input className={inputCls} value={f.mwstSatz} onChange={(e) => setF({ ...f, mwstSatz: e.target.value })} placeholder={String(satzProjekt)} /></Field>
+        </div>
+        {!hatUnter ? <div className="text-xs text-stone-500">MwSt {satz}%: CHF {chf(kv * satz / 100)} · inkl. MwSt CHF {chf(kv * (1 + satz / 100))}</div> : null}
+        <Field label="Bemerkungen (intern, z.B. Herleitung des Betrags)">
+          <textarea className={`${inputCls} min-h-[100px]`} value={f.notiz} onChange={(e) => setF({ ...f, notiz: e.target.value })} placeholder="z.B. Annahme 1'200 m² à CHF 180, Offerte Steiner vom 12.3." />
         </Field>
-        <Field label="KV-Betrag netto (CHF)">
-          <input className={inputCls} value={hatKinder ? "" : f.kv} disabled={hatKinder} onChange={(e) => setF({ ...f, kv: e.target.value })} placeholder={hatKinder ? "Summe aus den Unterpositionen" : "850000"} />
-          {hatKinder ? <div className="text-xs text-stone-500 mt-1">Diese Position hat Unterpositionen — ihr Betrag ergibt sich aus deren Summe.</div> : null}
-        </Field>
-        <div className="flex justify-end gap-2 pt-1">
-          <button className={btnGhost} onClick={onClose}>Abbrechen</button>
-          <button className={btnPrimary} disabled={!f.bezeichnung} onClick={() => onSave({ ...pos, bkp: f.bkp, bezeichnung: f.bezeichnung, kv: parseBetrag(f.kv), parentId: f.parentId })}>Speichern</button>
+        <div className="flex justify-between gap-2 pt-1">
+          <div>{pos.id ? <button className="text-red-600 text-sm hover:underline" onClick={() => onLoeschen(pos)}>Position löschen</button> : null}</div>
+          <div className="flex gap-2">
+            <button className={btnGhost} onClick={onClose}>Abbrechen</button>
+            <button className={btnPrimary} disabled={!code || !f.bezeichnung} onClick={() => onSave({ ...(pos.id ? pos : {}), bkp: code, bezeichnung: f.bezeichnung, kv: hatUnter ? (Number(pos.kv) || 0) : kv, mwstSatz: f.mwstSatz === "" ? "" : parseBetrag(f.mwstSatz), notiz: f.notiz })}>Speichern</button>
+          </div>
         </div>
       </div>
     </Modal>
@@ -5462,11 +5548,15 @@ async function baueKvPdf(ctx) {
   bl.y -= 20;
   if (!mitMwst) {
     const basis = voll ? ks.total.prognose : ks.total.kv;
-    bl.text(`MwSt ${satz}%`, { size: 9, farbe: grau });
-    bl.text(chfPdf(basis * satz / 100), { rechts: rechts - 4, size: 9, farbe: grau });
+    // Im KV gilt der MwSt-Satz je Position (z.B. 0% für Grundstück); die Übersicht rechnet mit dem Projektsatz
+    const satzVon = (p) => (p.mwstSatz === undefined || p.mwstSatz === null || p.mwstSatz === "" ? satz : Number(p.mwstSatz) || 0);
+    const gemischt = !voll && ks.ordered.some((z) => !z.hasChildren && satzVon(z.pos) !== satz);
+    const mwst = voll ? basis * satz / 100 : ks.ordered.filter((z) => !z.hasChildren).reduce((s, z) => s + (Number(z.roll.kv) || 0) * satzVon(z.pos) / 100, 0);
+    bl.text(gemischt ? "MwSt (Sätze je Position)" : `MwSt ${satz}%`, { size: 9, farbe: grau });
+    bl.text(chfPdf(mwst), { rechts: rechts - 4, size: 9, farbe: grau });
     bl.y -= 14;
     bl.text("Total inkl. MwSt", { size: 10, fett: true });
-    bl.text("CHF " + chfPdf(basis * (1 + satz / 100)), { rechts: rechts - 4, size: 10, fett: true });
+    bl.text("CHF " + chfPdf(basis + mwst), { rechts: rechts - 4, size: 10, fett: true });
   }
   bl.abschliessen();
   return doc.save();
