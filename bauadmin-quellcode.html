@@ -530,7 +530,7 @@ function normalize(db) {
     });
   });
   db.vertraege = db.vertraege.map((v) => {
-    const n = { rabattPct: 0, pauschalabzug: 0, skontoPct: 0, bauabzuegePct: 0, rundung: 0, regieBudget: 0, teuerung: 0, rueckbehaltPct: 0, abnahme: "", garantieJahre: 2, buergschaft: false, pauschal: false, garantieArt: "", nrAlt: "", ...v };
+    const n = { rabattPct: 0, pauschalabzug: 0, skontoPct: 0, bauabzuegePct: 0, rundung: 0, regieBudget: 0, teuerung: 0, rueckbehaltPct: 0, abnahme: "", garantieJahre: 2, buergschaft: false, pauschal: false, garantieArt: "", nrAlt: "", zahlungsfristTage: 60, skontofristTage: 10, ...v };
     // Das frühere Häkchen «Bürgschaft» geht in der Garantieart auf
     if (!n.garantieArt) n.garantieArt = n.buergschaft ? "solidarbuergschaft" : (Number(n.rueckbehaltPct) > 0 ? "rueckbehalt" : "");
     return n;
@@ -2193,6 +2193,33 @@ function vertragsNrVorschlag(vertraege, positionen, positionId) {
   return `${gruppe}.${String(i).padStart(2, "0")}`;
 }
 
+// Zahlungs- und Skontofrist einer Rechnung, gerechnet ab Rechnungsdatum mit den Tagen aus dem Vertrag
+function tagePlus(iso, tage) {
+  if (!iso) return "";
+  const d = new Date(String(iso).slice(0, 10) + "T00:00:00");
+  if (isNaN(d)) return "";
+  d.setDate(d.getDate() + (Number(tage) || 0));
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function tageBis(iso) {
+  if (!iso) return null;
+  return Math.round((new Date(iso + "T00:00:00") - new Date(today() + "T00:00:00")) / 86400000);
+}
+function datumCh(iso) { return iso ? String(iso).slice(0, 10).split("-").reverse().join(".") : ""; }
+const STANDARD_ZAHLUNGSFRIST = 60, STANDARD_SKONTOFRIST = 10;
+const fristTage = (wert, standard) => (wert === undefined || wert === null || wert === "" ? standard : Number(wert) || 0);
+function rechnungFristen(r, v) {
+  const frist = fristTage(v?.zahlungsfristTage, STANDARD_ZAHLUNGSFRIST);
+  const skontoPct = v ? Number(v.skontoPct) || 0 : 0;
+  const skontoTage = fristTage(v?.skontofristTage, STANDARD_SKONTOFRIST);
+  return { frist, faellig: tagePlus(r.datum, frist), skontoPct, skontoTage, skontoBis: skontoPct > 0 ? tagePlus(r.datum, skontoTage) : "" };
+}
+function zahlungsbedingungen(v) {
+  const frist = fristTage(v?.zahlungsfristTage, STANDARD_ZAHLUNGSFRIST);
+  const t = `${frist} Tage netto ab Rechnungsdatum`;
+  return Number(v?.skontoPct) ? `${t}, ${v.skontoPct}% Skonto innert ${fristTage(v.skontofristTage, STANDARD_SKONTOFRIST)} Tagen` : t;
+}
+
 function garantieBis(v) {
   if (!v.abnahme) return null;
   const d = new Date(v.abnahme);
@@ -3801,7 +3828,218 @@ function ProjektView({ projekt, dispatch, db }) {
   );
 }
 
+// ---------- Monatlicher Kostenbericht ----------
+const MONATSNAMEN = ["Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober", "November", "Dezember"];
+function monatLabel(m) { const [j, mo] = String(m || "").split("-"); return `${MONATSNAMEN[Number(mo) - 1] || ""} ${j || ""}`.trim(); }
+function kurzChf(v) { const n = Number(v) || 0; return Math.abs(n) >= 1e6 ? (n / 1e6).toFixed(2) + " Mio." : Math.round(n / 1000) + "k"; }
+
+async function baueKostenberichtPdf(ctx) {
+  const { ks, d, projekt, rollen, db: ctxDb, monat, kommentar } = ctx;
+  const doc = await PDFLib.PDFDocument.create();
+  const schriften = { normal: await doc.embedFont(PDFLib.StandardFonts.Helvetica), fett: await doc.embedFont(PDFLib.StandardFonts.HelveticaBold) };
+  const { v: vorlage, logoBild } = await pdfVorlage(doc, ctxDb, projekt);
+  const grau = PDFLib.rgb(0.45, 0.42, 0.40), rot = PDFLib.rgb(0.86, 0.15, 0.15), gruen = PDFLib.rgb(0.08, 0.50, 0.24);
+  const hell = PDFLib.rgb(0.90, 0.89, 0.88), orange = PDFLib.rgb(0.60, 0.20, 0.07), kachel = PDFLib.rgb(0.965, 0.955, 0.94);
+  const bl = pdfBlatt(doc, schriften, A4, vorlage, logoBild);
+  const rechts = A4.breite - RAND;
+  const satz = Number(ks.satz) || 8.1;
+  const t = ks.total;
+  const imMonat = (iso) => String(iso || "").slice(0, 7) === monat;
+  const posTxt = (id) => { const p = d.positionen.find((x) => x.id === id); return p ? `${p.bkp} ${p.bezeichnung}` : "—"; };
+  const vz = (n) => (n >= 0.005 ? "+" : "") + chfPdf(n);
+  const ampel = (n) => (n > 0.004 ? rot : n < -0.004 ? gruen : grau);
+
+  const kopf = (fortsetzung) => pdfKopf(bl, "Kostenbericht", projekt, rollen, `${monatLabel(monat)}  ·  Beträge in CHF exkl. MwSt` + (fortsetzung ? "  ·  Fortsetzung" : ""), vorlage);
+  const platz = (h) => { if (bl.y - h < bl.untenRand + 6) { bl.neueSeite(); kopf(true); } };
+  const abschnitt = (titel, mindestens) => {
+    platz(mindestens || 70);
+    bl.y -= 6;
+    bl.text(titel.toUpperCase(), { size: 8, fett: true, farbe: grau }); bl.y -= 5;
+    bl.linie(RAND, rechts, bl.y, 0.6, PDFLib.rgb(0.55, 0.52, 0.50)); bl.y -= 14;
+  };
+  // Einfache Tabelle: Spalten mit x (linksbündig, Breite w) oder rechts (rechtsbündig)
+  const tabelle = (spalten, zeilen, leer, summe) => {
+    const kopfZeile = () => { spalten.forEach((c) => bl.text(c.l, c.rechts ? { rechts: c.rechts, size: 7, farbe: grau } : { x: c.x, size: 7, farbe: grau })); bl.y -= 12; };
+    platz(30); kopfZeile();
+    if (!zeilen.length) { bl.text(leer || "keine", { size: 8.5, farbe: grau }); bl.y -= 18; return; }
+    const zelle = (c, w, size, fett) => {
+      if (w === undefined || w === null || w === "") return;
+      const o = typeof w === "object" ? w : { t: w };
+      const opt = { size, fett: fett || o.fett, farbe: o.farbe };
+      if (c.rechts) bl.text(String(o.t), { ...opt, rechts: c.rechts });
+      else bl.text(bl.umbruch(String(o.t), c.w || 200, size, opt.fett)[0] || "", { ...opt, x: c.x });
+    };
+    zeilen.forEach((z) => {
+      if (bl.y - 13 < bl.untenRand + 6) { bl.neueSeite(); kopf(true); kopfZeile(); }
+      spalten.forEach((c, i) => zelle(c, z[i], 8.5));
+      bl.y -= 13;
+    });
+    if (summe) {
+      platz(18);
+      bl.linie(RAND, rechts, bl.y + 9, 0.5, PDFLib.rgb(0.55, 0.52, 0.50));
+      bl.y -= 3;
+      spalten.forEach((c, i) => zelle(c, summe[i], 8.5, true));
+      bl.y -= 13;
+    }
+    bl.y -= 8;
+  };
+
+  kopf(false);
+
+  // ---- Kennzahlen ----
+  const snaps = [...(d.snapshots || [])].sort((a, b) => String(a.datum).localeCompare(String(b.datum)));
+  const vormonat = [...snaps].reverse().find((s) => String(s.datum) < monat + "-01");
+  const vergeben = t.kvRevidiert > 0 ? 100 * t.beauftragt / t.kvRevidiert : 0;
+  const kacheln = [
+    { l: "KV", w: chfPdf(t.kv) },
+    { l: "KV revidiert", w: chfPdf(t.kvRevidiert), s: t.kvRevidiert !== t.kv ? `${vz(t.kvRevidiert - t.kv)} gegenüber KV` : "" },
+    { l: "Beauftragt", w: chfPdf(t.beauftragt), s: `${vergeben.toFixed(0)}% des KV revidiert vergeben` },
+    { l: "Prognose", w: chfPdf(t.prognose), s: vormonat ? `Vormonat ${chfPdf(vormonat.prognose)} (${vz(t.prognose - vormonat.prognose)})` : `inkl. MwSt ${chfPdf(t.prognose * (1 + satz / 100))}` },
+    { l: "Abweichung zum KV", w: vz(t.abwKv), farbe: ampel(t.abwKv), s: t.kv > 0 ? `${vz(100 * t.abwKv / t.kv).replace(/'/g, "")}%` : "" },
+    { l: "Bezahlt", w: chfPdf(t.bezahlt), s: t.prognose > 0 ? `${(100 * t.bezahlt / t.prognose).toFixed(0)}% der Prognose` : "" },
+  ];
+  const kB = (rechts - RAND - 2 * 8) / 3, kH = 46;
+  kacheln.forEach((k, i) => {
+    const sp = i % 3, ze = Math.floor(i / 3);
+    const x = RAND + sp * (kB + 8), yo = bl.y - ze * (kH + 8);
+    bl.kasten(x, yo - kH + 10, kB, kH, kachel);
+    bl.text(k.l, { x: x + 8, y: yo - 2, size: 7.5, farbe: grau });
+    bl.text(k.w, { x: x + 8, y: yo - 17, size: 12, fett: true, farbe: k.farbe });
+    if (k.s) bl.text(k.s, { x: x + 8, y: yo - 30, size: 7, farbe: grau });
+  });
+  bl.y -= 2 * (kH + 8) + 6;
+
+  // ---- Kommentar ----
+  if (String(kommentar || "").trim()) {
+    abschnitt("Kommentar der Bauleitung", 50);
+    String(kommentar).split("\n").forEach((abs) => {
+      if (!abs.trim()) { bl.y -= 6; return; }
+      bl.umbruch(abs, rechts - RAND, 9).forEach((zl) => { platz(13); bl.text(zl, { size: 9 }); bl.y -= 12; });
+    });
+    bl.y -= 6;
+  }
+
+  // ---- Kostenstand nach BKP ----
+  abschnitt("Kostenstand nach BKP (aktueller Stand)", 90);
+  const sp = { bkp: RAND, bez: RAND + 40, kvr: RAND + 270, bea: RAND + 335, pro: RAND + 400, bez2: RAND + 455, abw: rechts };
+  const bkpZeilen = ks.ordered.filter((z) => z.depth === 0).map((z) => [z.pos.bkp, z.pos.bezeichnung, chfPdf(z.roll.kvRevidiert), z.roll.beauftragt ? chfPdf(z.roll.beauftragt) : "–", { t: chfPdf(z.roll.prognose), fett: true }, z.roll.bezahlt ? chfPdf(z.roll.bezahlt) : "–", { t: vz(z.roll.abwKv), farbe: ampel(z.roll.abwKv) }]);
+  tabelle([
+    { l: "BKP", x: sp.bkp, w: 36 }, { l: "Bezeichnung", x: sp.bez, w: 165 }, { l: "KV revidiert", rechts: sp.kvr }, { l: "Beauftragt", rechts: sp.bea },
+    { l: "Prognose", rechts: sp.pro }, { l: "Bezahlt", rechts: sp.bez2 }, { l: "Abw. KV", rechts: sp.abw },
+  ], bkpZeilen, "keine BKP-Positionen", ["", "Total", chfPdf(t.kvRevidiert), chfPdf(t.beauftragt), chfPdf(t.prognose), chfPdf(t.bezahlt), { t: vz(t.abwKv), farbe: ampel(t.abwKv) }]);
+
+  // ---- Prognoseverlauf ----
+  abschnitt("Verlauf von Prognose und KV revidiert", 190);
+  const live = { datum: today(), live: true, kvRevidiert: t.kvRevidiert, prognose: t.prognose };
+  const punkte = [...snaps.filter((s) => s.datum !== today()), live].slice(-18);
+  if (punkte.length < 2) {
+    bl.umbruch("Für den Verlauf braucht es mindestens einen früher gespeicherten Kostenstand. Den Kostenstand hältst du in der Kostenübersicht mit «Kostenstand festhalten» fest – am einfachsten einmal pro Monat beim Erstellen dieses Berichts.", rechts - RAND, 8.5).forEach((zl) => { bl.text(zl, { size: 8.5, farbe: grau }); bl.y -= 11; });
+    bl.y -= 8;
+  } else {
+    const h = 120, x0 = RAND + 46, x1 = rechts - 12, oben = bl.y - 4, y0 = oben - h;
+    const werte = punkte.flatMap((p) => [Number(p.kvRevidiert) || 0, Number(p.prognose) || 0]);
+    let min = Math.min(...werte), max = Math.max(...werte);
+    const rand = (max - min) * 0.15 || Math.abs(max) * 0.05 || 1; min -= rand; max += rand;
+    const X = (i) => x0 + (x1 - x0) * i / (punkte.length - 1);
+    const Y = (v) => y0 + h * ((Number(v) || 0) - min) / (max - min);
+    for (let k = 0; k <= 3; k++) { const v = min + (max - min) * k / 3; bl.linie(x0, x1, Y(v), 0.3, hell); bl.text(kurzChf(v), { rechts: x0 - 5, y: Y(v) - 2.5, size: 6.5, farbe: grau }); }
+    const serie = (key, farbe, dicke) => {
+      for (let i = 1; i < punkte.length; i++) bl.seite.drawLine({ start: { x: X(i - 1), y: Y(punkte[i - 1][key]) }, end: { x: X(i), y: Y(punkte[i][key]) }, thickness: dicke, color: farbe });
+      punkte.forEach((p, i) => bl.seite.drawCircle({ x: X(i), y: Y(p[key]), size: dicke + 0.8, color: farbe }));
+    };
+    serie("kvRevidiert", grau, 1);
+    serie("prognose", orange, 1.6);
+    const schritt = Math.ceil(punkte.length / 9);
+    punkte.forEach((p, i) => { if (i % schritt && i !== punkte.length - 1) return; bl.text(p.live ? "heute" : datumCh(p.datum).slice(0, 6) + datumCh(p.datum).slice(8), { mitte: X(i), y: y0 - 11, size: 6.5, farbe: grau }); });
+    bl.y = y0 - 26;
+    bl.linie(RAND, RAND + 16, bl.y + 3, 1.6, orange); bl.text("Prognose", { x: RAND + 20, size: 7.5 });
+    bl.linie(RAND + 80, RAND + 96, bl.y + 3, 1, grau); bl.text("KV revidiert", { x: RAND + 100, size: 7.5 });
+    bl.y -= 18;
+  }
+
+  // ---- Bewegungen im Monat ----
+  const vertragVon = (id) => d.vertraege.find((x) => x.id === id);
+  const vergaben = d.vertraege.filter((v) => imMonat(v.datum)).sort((a, b) => String(a.datum).localeCompare(String(b.datum)));
+  abschnitt(`Vergaben im ${monatLabel(monat)}`, 60);
+  tabelle([{ l: "Datum", x: RAND, w: 50 }, { l: "Vertrag", x: RAND + 55, w: 45 }, { l: "Unternehmer", x: RAND + 105, w: 150 }, { l: "BKP", x: RAND + 262, w: 170 }, { l: "netto", rechts }],
+    vergaben.map((v) => [datumCh(v.datum), v.nr || "", v.unternehmer || "", posTxt(v.positionId), chfPdf(konditionenNetto(v.betrag, v, true))]),
+    "keine neuen Verträge", vergaben.length > 1 ? ["", "", "Total", "", chfPdf(vergaben.reduce((s, v) => s + konditionenNetto(v.betrag, v, true), 0))] : null);
+
+  const nts = d.nachtraege.filter((n) => imMonat(n.datum));
+  abschnitt(`Nachträge im ${monatLabel(monat)}`, 60);
+  tabelle([{ l: "Datum", x: RAND, w: 50 }, { l: "Vertrag", x: RAND + 55, w: 150 }, { l: "Nachtrag", x: RAND + 210, w: 170 }, { l: "Status", x: RAND + 385, w: 50 }, { l: "netto", rechts }],
+    nts.map((n) => { const v = vertragVon(n.vertragId); return [datumCh(n.datum), v ? `${v.nr || ""} ${v.unternehmer || ""}`.trim() : "—", n.bezeichnung || "", n.status || "", chfPdf(v ? konditionenNetto(n.betrag, v, false) : Number(n.betrag) || 0)]; }),
+    "keine neuen Nachträge");
+
+  const bew = [
+    ...d.mutationen.filter((m) => imMonat(m.datum)).map((m) => [datumCh(m.datum), "Mutation", posTxt(m.positionId), m.grund || "", vz(Number(m.betrag) || 0)]),
+    ...d.umbuchungen.filter((u) => imMonat(u.datum)).map((u) => [datumCh(u.datum), "Umbuchung", `${posTxt(u.vonPositionId)} → ${posTxt(u.nachPositionId)}`, u.grund || "", chfPdf(Number(u.betrag) || 0)]),
+    ...d.erwartungen.filter((e) => imMonat(e.datum)).map((e) => [datumCh(e.datum), "Erwartung", posTxt(e.positionId), e.bezeichnung || "", vz(Number(e.betrag) || 0)]),
+  ].sort((a, b) => a[0].split(".").reverse().join("").localeCompare(b[0].split(".").reverse().join("")));
+  abschnitt(`Budgetänderungen und erwartete Mehrkosten im ${monatLabel(monat)}`, 60);
+  tabelle([{ l: "Datum", x: RAND, w: 50 }, { l: "Art", x: RAND + 55, w: 55 }, { l: "BKP", x: RAND + 112, w: 170 }, { l: "Grund", x: RAND + 290, w: 140 }, { l: "Betrag", rechts }], bew, "keine Mutationen, Umbuchungen oder Erwartungen");
+
+  const rgs = d.rechnungen.filter((r) => imMonat(r.datum)).sort((a, b) => String(a.datum).localeCompare(String(b.datum)));
+  abschnitt(`Rechnungen im ${monatLabel(monat)}`, 60);
+  tabelle([{ l: "Datum", x: RAND, w: 50 }, { l: "Buchung", x: RAND + 55, w: 45 }, { l: "Unternehmer", x: RAND + 105, w: 175 }, { l: "Rg-Nr.", x: RAND + 285, w: 90 }, { l: "Status", x: RAND + 380, w: 50 }, { l: "netto", rechts }],
+    rgs.map((r) => { const v = vertragVon(r.vertragId); return [datumCh(r.datum), r.buchungsNr || "", v ? v.unternehmer : posTxt(r.positionId), `${RTYP[r.typ] || "Rechnung"} ${r.nr || ""}`.trim(), RSTATUS[r.status] || r.status, chfPdf(r.betrag)]; }),
+    "keine Rechnungen mit Datum in diesem Monat", rgs.length > 1 ? ["", "", "Total", "", "", chfPdf(rgs.reduce((s, r) => s + (Number(r.betrag) || 0), 0))] : null);
+
+  // ---- Offene Zahlungen ----
+  const offen = offeneFristen(d);
+  abschnitt("Offene Zahlungen und Fristen (Stand heute)", 60);
+  tabelle([{ l: "Fällig", x: RAND, w: 50 }, { l: "Unternehmer", x: RAND + 55, w: 165 }, { l: "Rg-Nr.", x: RAND + 225, w: 85 }, { l: "Hinweis", x: RAND + 315, w: 120 }, { l: "netto", rechts }],
+    offen.map((x) => {
+      const hin = x.tf < 0 ? { t: `${-x.tf} Tage überfällig`, farbe: rot } : x.tf <= 7 ? { t: `in ${x.tf} Tagen fällig`, farbe: orange } : (x.fr.skontoBis && x.ts >= 0 ? { t: `Skonto ${x.fr.skontoPct}% bis ${datumCh(x.fr.skontoBis)}`, farbe: grau } : "");
+      return [datumCh(x.fr.faellig), x.v ? x.v.unternehmer : posTxt(x.r.positionId), `${RTYP[x.r.typ] || "Rechnung"} ${x.r.nr || ""}`.trim(), hin, chfPdf(x.r.betrag)];
+    }),
+    "keine offenen Rechnungen", offen.length > 1 ? ["", "Total offen", "", "", chfPdf(offen.reduce((s, x) => s + (Number(x.r.betrag) || 0), 0))] : null);
+
+  platz(30);
+  bl.umbruch(`Kostenstand, Prognose und offene Zahlungen entsprechen dem Datenstand vom ${datumCh(today())}. Vergaben, Nachträge, Budgetänderungen und Rechnungen beziehen sich auf den ${monatLabel(monat)} (Datum des Eintrags). Prognose = beauftragte Leistungen plus pendente Nachträge und erwartete Mehrkosten; ohne Vertrag gilt der revidierte KV.`, rechts - RAND, 7).forEach((zl) => { bl.text(zl, { size: 7, farbe: grau }); bl.y -= 9; });
+  bl.abschliessen();
+  return doc.save();
+}
+
+function KostenberichtModal({ ks, d, dispatch, projekt, db, festhalten, onClose }) {
+  const jetzt = today().slice(0, 7);
+  const [monat, setMonat] = useState(jetzt);
+  const [kommentar, setKommentar] = useState((projekt?.kostenberichte || {})[jetzt] || "");
+  const [stand, setStand] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const wechsle = (m) => { setMonat(m); setKommentar((projekt?.kostenberichte || {})[m] || ""); };
+  const aktuell = monat === jetzt;
+  async function erzeugen() {
+    if (!/^\d{4}-\d{2}$/.test(monat)) return;
+    setBusy(true);
+    try {
+      dispatch({ type: "update", coll: "projekte", id: projekt.id, patch: { kostenberichte: { ...(projekt.kostenberichte || {}), [monat]: kommentar } } });
+      if (aktuell && stand) festhalten();
+      const bytes = await baueKostenberichtPdf({ ks, d, projekt, rollen: projektRollen(db, projekt), db, monat, kommentar });
+      pdfSpeichern(bytes, `Kostenbericht_${monat}_${(projekt?.name || "").replace(/[^\w]+/g, "_")}.pdf`);
+      onClose();
+    } catch (e) { window.alert("Der Kostenbericht konnte nicht erzeugt werden: " + e.message); }
+    setBusy(false);
+  }
+  return (
+    <Modal title="Monatlicher Kostenbericht" onClose={onClose}>
+      <div className="space-y-4">
+        <Field label="Berichtsmonat"><input type="month" className={`${inputCls} max-w-[200px]`} value={monat} onChange={(e) => wechsle(e.target.value)} /></Field>
+        <Field label="Kommentar der Bauleitung (erscheint im Bericht, wird je Monat gespeichert)">
+          <textarea className={`${inputCls} min-h-[120px]`} value={kommentar} onChange={(e) => setKommentar(e.target.value)} placeholder="z.B. Vergabe Gipserarbeiten erfolgt, Mehrkosten Baugrube durch Grundwasser, nächste Schritte …" />
+        </Field>
+        {aktuell
+          ? <label className="inline-flex items-center gap-2 text-sm"><input type="checkbox" checked={stand} onChange={(e) => setStand(e.target.checked)} /> Heutigen Kostenstand festhalten (für den Verlauf in späteren Berichten)</label>
+          : <p className="text-xs text-stone-500">Für einen vergangenen Monat zeigt der Bericht den heutigen Kostenstand und die Einträge mit Datum im {monatLabel(monat)}.</p>}
+        <p className="text-xs text-stone-500">Inhalt: Kennzahlen, Kostenstand nach BKP, Verlauf der Prognose, Vergaben, Nachträge, Budgetänderungen und Rechnungen im Monat sowie offene Zahlungen mit Fristen.</p>
+        <div className="flex justify-end gap-2"><button className={btnGhost} onClick={onClose}>Abbrechen</button><button className={btnPrimary} disabled={busy || !monat} onClick={erzeugen}>{busy ? "erzeugt…" : "📄 Bericht erzeugen"}</button></div>
+      </div>
+    </Modal>
+  );
+}
+
 function Dashboard({ ks, d, dispatch, projektId, projekt, db }) {
+  const [berichtOffen, setBerichtOffen] = useState(false);
   const t = ks.total;
   if (!ks.ordered.length) return <Empty text="Noch keine BKP-Positionen erfasst. Importiere zuerst den Kostenvoranschlag." />;
   const over = ks.ordered.filter((z) => !z.hasChildren && z.roll.abwKv > 0).sort((a, b) => b.roll.abwKv - a.roll.abwKv).slice(0, 5);
@@ -3816,7 +4054,9 @@ function Dashboard({ ks, d, dispatch, projektId, projekt, db }) {
   }
   return (
     <div className="space-y-5">
-      <div className="flex justify-end print:hidden -mb-2">
+      {berichtOffen && <KostenberichtModal ks={ks} d={d} dispatch={dispatch} projekt={projekt} db={db} festhalten={festhalten} onClose={() => setBerichtOffen(false)} />}
+      <div className="flex justify-end gap-2 print:hidden -mb-2">
+        <button className={btnPrimary} title="Monatlicher Kostenbericht für die Bauherrschaft als PDF" onClick={() => setBerichtOffen(true)}>📄 Monatsbericht</button>
         <button className={btnGhost} title="Eine Excel-Datei mit KV, Verträgen, Nachträgen, Rechnungen, Mutationen und Erwartungen" onClick={() => excelSpeichern([excelBlattKv(ks, projekt), excelBlattVertraege(d, projekt), excelBlattNachtraege(d, projekt), excelBlattRechnungen(d, db, projekt), excelBlattBewegungen(d, projekt)], projektDateiname("BauAdmin", projekt))}>📊 Alles als Excel</button>
       </div>
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
@@ -4882,7 +5122,7 @@ function VertraegeView({ d, dispatch, projektId, projekt, firmen, db }) {
 }
 
 function VertragEditor({ v, positionen, firmen, onClose, onSave, vertraege }) {
-  const [f, setF] = useState({ pauschal: !!v.pauschal, garantieArt: v.garantieArt || "", positionId: v.positionId || "", unternehmer: v.unternehmer || "", firmaId: v.firmaId || "", firmaSnap: v.firmaSnap || null, bauherrSnap: v.bauherrSnap || null, nr: v.nr || "", betrag: v.betrag ?? "", rabattPct: v.rabattPct ?? "", pauschalabzug: v.pauschalabzug ?? "", skontoPct: v.skontoPct ?? "", bauabzuegePct: v.bauabzuegePct ?? "", rundung: v.rundung ?? "", regieBudget: v.regieBudget ?? "", teuerung: v.teuerung ?? "", rueckbehaltPct: v.rueckbehaltPct ?? "", abnahme: v.abnahme || "", garantieJahre: v.garantieJahre ?? 2, buergschaft: !!v.buergschaft, datum: v.datum || today() });
+  const [f, setF] = useState({ pauschal: !!v.pauschal, garantieArt: v.garantieArt || "", positionId: v.positionId || "", unternehmer: v.unternehmer || "", firmaId: v.firmaId || "", firmaSnap: v.firmaSnap || null, bauherrSnap: v.bauherrSnap || null, nr: v.nr || "", betrag: v.betrag ?? "", rabattPct: v.rabattPct ?? "", pauschalabzug: v.pauschalabzug ?? "", skontoPct: v.skontoPct ?? "", bauabzuegePct: v.bauabzuegePct ?? "", rundung: v.rundung ?? "", regieBudget: v.regieBudget ?? "", teuerung: v.teuerung ?? "", rueckbehaltPct: v.rueckbehaltPct ?? "", abnahme: v.abnahme || "", garantieJahre: v.garantieJahre ?? 2, buergschaft: !!v.buergschaft, datum: v.datum || today(), zahlungsfristTage: v.zahlungsfristTage ?? STANDARD_ZAHLUNGSFRIST, skontofristTage: v.skontofristTage ?? STANDARD_SKONTOFRIST });
   const opts = posSelectOptions(positionen);
   // Bei neuen Verträgen die Nummer aus der BKP-Gruppe vorbelegen
   useEffect(() => {
@@ -4917,6 +5157,14 @@ function VertragEditor({ v, positionen, firmen, onClose, onSave, vertraege }) {
           </div>
           <div className="text-sm mt-2">Werkvertragssumme netto: <span className="font-semibold tabular-nums">{chf(netto)}</span></div>
         </div>
+        <div className={`${card} p-3 bg-stone-50/60`}>
+          <div className="text-xs font-medium text-stone-500 uppercase tracking-wide mb-2">Zahlungsbedingungen — gelten für alle Rechnungen dieses Vertrags, gerechnet ab Rechnungsdatum</div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 items-end">
+            <Field label="Zahlungsfrist (Tage)"><input className={inputCls} value={f.zahlungsfristTage} onChange={(e) => setF({ ...f, zahlungsfristTage: e.target.value })} placeholder={String(STANDARD_ZAHLUNGSFRIST)} /></Field>
+            <Field label="Skontofrist (Tage)"><input className={inputCls} disabled={!parseBetrag(f.skontoPct)} value={parseBetrag(f.skontoPct) ? f.skontofristTage : ""} onChange={(e) => setF({ ...f, skontofristTage: e.target.value })} placeholder={parseBetrag(f.skontoPct) ? String(STANDARD_SKONTOFRIST) : "kein Skonto"} /></Field>
+            <div className="md:col-span-2 text-xs text-stone-500 pb-2">{zahlungsbedingungen({ zahlungsfristTage: f.zahlungsfristTage === "" ? undefined : parseBetrag(f.zahlungsfristTage), skontoPct: parseBetrag(f.skontoPct), skontofristTage: f.skontofristTage === "" ? undefined : parseBetrag(f.skontofristTage) })}</div>
+          </div>
+        </div>
         <Field label="Regiebudget im Vertrag (CHF netto) — Rapporte bis zu diesem Betrag erhöhen die Erwartung nicht">
           <input className={inputCls} value={f.regieBudget} onChange={(e) => setF({ ...f, regieBudget: e.target.value })} placeholder="0" />
         </Field>
@@ -4930,7 +5178,7 @@ function VertragEditor({ v, positionen, firmen, onClose, onSave, vertraege }) {
           </div>
           {f.abnahme && <div className="text-xs text-stone-500 mt-2">Garantie läuft bis <span className="font-medium tabular-nums">{garantieBis({ abnahme: f.abnahme, garantieJahre: parseBetrag(f.garantieJahre) }) || "—"}</span></div>}
         </div>
-        <div className="flex justify-end gap-2"><button className={btnGhost} onClick={onClose}>Abbrechen</button><button className={btnPrimary} disabled={!f.positionId || !f.unternehmer} onClick={() => onSave({ ...v, ...f, betrag: parseBetrag(f.betrag), rabattPct: parseBetrag(f.rabattPct), pauschalabzug: parseBetrag(f.pauschalabzug), skontoPct: parseBetrag(f.skontoPct), bauabzuegePct: parseBetrag(f.bauabzuegePct), rundung: parseBetrag(f.rundung), regieBudget: parseBetrag(f.regieBudget), teuerung: parseBetrag(f.teuerung), rueckbehaltPct: parseBetrag(f.rueckbehaltPct), garantieJahre: parseBetrag(f.garantieJahre), buergschaft: !!f.buergschaft, pauschal: !!f.pauschal, garantieArt: f.garantieArt || "" })}>Speichern</button></div>
+        <div className="flex justify-end gap-2"><button className={btnGhost} onClick={onClose}>Abbrechen</button><button className={btnPrimary} disabled={!f.positionId || !f.unternehmer} onClick={() => onSave({ ...v, ...f, betrag: parseBetrag(f.betrag), rabattPct: parseBetrag(f.rabattPct), pauschalabzug: parseBetrag(f.pauschalabzug), skontoPct: parseBetrag(f.skontoPct), bauabzuegePct: parseBetrag(f.bauabzuegePct), rundung: parseBetrag(f.rundung), regieBudget: parseBetrag(f.regieBudget), teuerung: parseBetrag(f.teuerung), rueckbehaltPct: parseBetrag(f.rueckbehaltPct), garantieJahre: parseBetrag(f.garantieJahre), buergschaft: !!f.buergschaft, pauschal: !!f.pauschal, garantieArt: f.garantieArt || "", zahlungsfristTage: f.zahlungsfristTage === "" ? STANDARD_ZAHLUNGSFRIST : parseBetrag(f.zahlungsfristTage), skontofristTage: f.skontofristTage === "" ? STANDARD_SKONTOFRIST : parseBetrag(f.skontofristTage) })}>Speichern</button></div>
       </div>
     </Modal>
   );
@@ -5050,6 +5298,7 @@ async function baueWerkvertragPdf(v, ctx) {
     ["Garantiefrist", `${Number(v.garantieJahre) || 0} Jahre${gBis ? "  ·  bis " + gBis : ""}`],
     ["Abnahmedatum", v.abnahme || "offen"],
     ["Vertragsdatum", v.datum || "—"],
+    ["Zahlungsbedingungen", zahlungsbedingungen(v)],
   ], A4.breite);
 
   // Unterschriften
@@ -5072,6 +5321,8 @@ async function baueZahlungsfreigabePdf(r, ctx) {
     ["Vertrag", v ? (v.nr || "—") : "direkt auf Position"],
     ["Position", posLabel || "—"],
     ["Status", RSTATUS[r.status] || r.status],
+    ["Rechnungsdatum", r.datum || "—"],
+    ["Zahlbar bis", (() => { const fr = rechnungFristen(r, v); return fr.faellig ? `${fr.faellig}  (${fr.frist} Tage)` + (fr.skontoBis ? `  ·  Skonto ${fr.skontoPct}% bis ${fr.skontoBis}` : "") : "—"; })()],
   ], A4.breite);
   bl.y -= 6;
   bl.text("Stand", { size: 7.5, farbe: grau }); bl.y -= 14;
@@ -5950,7 +6201,8 @@ async function baueVergauftragPdf(auftrag, rechnungen, ctx) {
     zeile("Zahlbetrag brutto", netto + mwst, null, { fett: true });
 
     db2.y -= 10;
-    db2.text(`Rechnungsdatum ${r.datum || "—"}   ·   Status ${RSTATUS[r.status] || r.status}`, { size: 8, farbe: grau });
+    const frD = rechnungFristen(r, st.v);
+    db2.text(`Rechnungsdatum ${r.datum || "—"}   ·   zahlbar bis ${frD.faellig || "—"}${frD.skontoBis ? `   ·   Skonto ${frD.skontoPct}% bis ${frD.skontoBis}` : ""}   ·   Status ${RSTATUS[r.status] || r.status}`, { size: 8, farbe: grau });
 
     // Beleg anhängen
     if (r.beleg) {
@@ -6514,17 +6766,25 @@ function RechnungenView({ d, dispatch, projektId, projekt, db }) {
           }}>Erfassen</button>
         </div>
       </div>
+      <FristenHinweis d={d} />
       {d.rechnungen.length > 0 && <div className="flex justify-end -mb-2 print:hidden"><button className={btnGhost} onClick={() => excelSpeichern([excelBlattRechnungen(d, db, projekt)], projektDateiname("Rechnungen", projekt))}>📊 Excel</button></div>}
       {!d.rechnungen.length ? <Empty text="Keine Rechnungen erfasst." /> : (
         <div className={`${card} overflow-x-auto`}><table className="w-full text-sm">
-          <thead className="bg-stone-50 text-stone-500 text-xs"><tr><th className="text-left font-medium px-3 py-2">Buchungsnr.</th><th className="text-left font-medium px-3 py-2">Datum</th><th className="text-left font-medium px-3 py-2">Buchung</th><th className="text-left font-medium px-3 py-2">Typ</th><th className="text-left font-medium px-3 py-2">Rg-Nr.</th><th className="text-right font-medium px-3 py-2">Betrag</th><th className="text-left font-medium px-3 py-2">Status</th><th className="text-right font-medium px-3 py-2">fakt./soll</th><th className="text-left font-medium px-3 py-2">Beleg</th><th className="w-12"></th></tr></thead>
+          <thead className="bg-stone-50 text-stone-500 text-xs"><tr><th className="text-left font-medium px-3 py-2">Buchungsnr.</th><th className="text-left font-medium px-3 py-2">Datum</th><th className="text-left font-medium px-3 py-2">Fällig</th><th className="text-left font-medium px-3 py-2">Buchung</th><th className="text-left font-medium px-3 py-2">Typ</th><th className="text-left font-medium px-3 py-2">Rg-Nr.</th><th className="text-right font-medium px-3 py-2">Betrag</th><th className="text-left font-medium px-3 py-2">Status</th><th className="text-right font-medium px-3 py-2">fakt./soll</th><th className="text-left font-medium px-3 py-2">Beleg</th><th className="w-12"></th></tr></thead>
           <tbody>{d.rechnungen.map((r) => {
             const pv = r.vertragId ? (proVertrag[r.vertragId] || { soll: 0, fakt: 0 }) : null;
             const ueber = pv && pv.fakt > pv.soll;
+            const fr = rechnungFristen(r, d.vertraege.find((x) => x.id === r.vertragId));
+            const bezahlt = r.status === "bezahlt";
+            const tf = tageBis(fr.faellig), ts = tageBis(fr.skontoBis);
             return (
               <tr key={r.id} className="border-t border-stone-100">
                 <td className="px-3 py-2 tabular-nums text-stone-600 font-medium whitespace-nowrap">{r.buchungsNr || "–"}</td>
                 <td className="px-3 py-2 tabular-nums text-stone-500 whitespace-nowrap">{String(r.datum || "").split("-").reverse().join(".")}</td>
+                <td className="px-3 py-2 whitespace-nowrap text-xs tabular-nums" title={`Zahlungsfrist ${fr.frist} Tage ab Rechnungsdatum`}>
+                  {!fr.faellig ? "–" : <div className={bezahlt ? "text-stone-400" : tf < 0 ? "text-red-600 font-semibold" : tf <= 7 ? "text-amber-700 font-medium" : "text-stone-600"}>{datumCh(fr.faellig)}{bezahlt ? "" : tf < 0 ? ` · ${-tf} T. überfällig` : tf <= 7 ? ` · in ${tf} T.` : ""}</div>}
+                  {fr.skontoBis && !bezahlt ? <div className={ts < 0 ? "text-stone-300 line-through" : ts <= 3 ? "text-amber-700 font-medium" : "text-stone-400"}>Skonto {fr.skontoPct}% bis {datumCh(fr.skontoBis)}</div> : null}
+                </td>
                 <td className="px-3 py-2">{r.vertragId ? vLabel(r.vertragId) : <span>{posLabel(r.positionId)} <span className="text-xs text-stone-400">(ohne Vertrag)</span></span>}</td>
                 <td className="px-3 py-2"><span className={`text-xs rounded px-1.5 py-0.5 ${typCol[r.typ] || typCol.rechnung}`}>{RTYP[r.typ] || r.typ}</span></td>
                 <td className="px-3 py-2 text-stone-500 whitespace-nowrap">{r.nr}</td>
@@ -6547,6 +6807,31 @@ function RechnungenView({ d, dispatch, projektId, projekt, db }) {
         </table></div>
       )}
           </div>
+  );
+}
+
+// Hinweisleiste über der Rechnungsliste: Überfälliges, bald Fälliges, auslaufendes Skonto
+function offeneFristen(d) {
+  return d.rechnungen.filter((r) => r.status !== "bezahlt").map((r) => {
+    const v = d.vertraege.find((x) => x.id === r.vertragId);
+    const fr = rechnungFristen(r, v);
+    return { r, v, fr, tf: tageBis(fr.faellig), ts: tageBis(fr.skontoBis) };
+  }).sort((a, b) => String(a.fr.faellig).localeCompare(String(b.fr.faellig)));
+}
+function FristenHinweis({ d }) {
+  const offen = offeneFristen(d);
+  const ueber = offen.filter((x) => x.fr.faellig && x.tf < 0);
+  const bald = offen.filter((x) => x.fr.faellig && x.tf >= 0 && x.tf <= 7);
+  const skonto = offen.filter((x) => x.fr.skontoBis && x.ts >= 0 && x.ts <= 5);
+  if (!ueber.length && !bald.length && !skonto.length) return null;
+  const summe = (l) => chf(l.reduce((s, x) => s + (Number(x.r.betrag) || 0), 0));
+  const wer = (x) => `${x.v ? x.v.unternehmer : "ohne Vertrag"} ${x.r.nr || ""}`.trim();
+  return (
+    <div className="space-y-1.5 print:hidden">
+      {ueber.length ? <div className="text-sm bg-red-50 border border-red-200 text-red-800 rounded-md px-3 py-2"><strong>{ueber.length} Rechnung{ueber.length === 1 ? "" : "en"} überfällig</strong> ({summe(ueber)} netto): {ueber.map((x) => `${wer(x)} seit ${-x.tf} T.`).join(" · ")}</div> : null}
+      {bald.length ? <div className="text-sm bg-amber-50 border border-amber-200 text-amber-900 rounded-md px-3 py-2"><strong>{bald.length} Rechnung{bald.length === 1 ? "" : "en"} in den nächsten 7 Tagen fällig</strong> ({summe(bald)} netto): {bald.map((x) => `${wer(x)} am ${datumCh(x.fr.faellig)}`).join(" · ")}</div> : null}
+      {skonto.length ? <div className="text-sm bg-amber-50 border border-amber-200 text-amber-900 rounded-md px-3 py-2"><strong>Skonto läuft ab:</strong> {skonto.map((x) => `${wer(x)} ${x.fr.skontoPct}% (CHF ${chfPdf((Number(x.r.betrag) || 0) * x.fr.skontoPct / 100)}) bis ${datumCh(x.fr.skontoBis)}`).join(" · ")}</div> : null}
+    </div>
   );
 }
 
@@ -7412,10 +7697,10 @@ function VergabeModal({ info, vertraege, dispatch, projektId, onClose, db, rolle
   function vergeben() {
     if (!a.positionId) { alert("Bitte zuerst eine BKP-Position der Ausschreibung zuordnen."); return; }
     if (modus === "neu") {
-      dispatch({ type: "add", coll: "vertraege", item: { id: uid(), projektId, positionId: a.positionId, unternehmer: b.name, nr: a.titel, betrag: brutto, rabattPct: Number(b.rabattPct) || 0, pauschalabzug: Number(b.pauschalabzug) || 0, skontoPct: Number(b.skontoPct) || 0, bauabzuegePct: Number(b.bauabzuegePct) || 0, rundung: Number(b.rundung) || 0, regieBudget: 0, teuerung: 0, datum: today(), rueckbehaltPct: kvVorgabe.rueckbehaltPct || 0, garantieJahre: kvVorgabe.garantieJahre || 2, garantieArt: kvVorgabe.garantieArt || "", ausschreibungen: [a.titel], firmaId: (findFirma(db.firmen, b.firmaId, b.name) || {}).id || "", firmaSnap: firmaSnapshot(findFirma(db.firmen, b.firmaId, b.name), ""), bauherrSnap: { bauherr: rollen.bauherr, bauherrAdresse: rollen.bauherrAdresse, bauherrPerson: rollen.bauherrPerson } } });
+      dispatch({ type: "add", coll: "vertraege", item: { id: uid(), projektId, positionId: a.positionId, unternehmer: b.name, nr: vertragsNrVorschlag(vertraege, db.positionen, a.positionId), ausschreibungen: [a.titel], betrag: brutto, rabattPct: Number(b.rabattPct) || 0, pauschalabzug: Number(b.pauschalabzug) || 0, skontoPct: Number(b.skontoPct) || 0, bauabzuegePct: Number(b.bauabzuegePct) || 0, rundung: Number(b.rundung) || 0, regieBudget: 0, teuerung: 0, datum: today(), rueckbehaltPct: kvVorgabe.rueckbehaltPct || 0, garantieJahre: kvVorgabe.garantieJahre || 2, garantieArt: kvVorgabe.garantieArt || "", ausschreibungen: [a.titel], firmaId: (findFirma(db.firmen, b.firmaId, b.name) || {}).id || "", firmaSnap: firmaSnapshot(findFirma(db.firmen, b.firmaId, b.name), ""), bauherrSnap: { bauherr: rollen.bauherr, bauherrAdresse: rollen.bauherrAdresse, bauherrPerson: rollen.bauherrPerson } } });
     } else {
       const v = vertraege.find((x) => x.id === vertragId); if (!v) return;
-      dispatch({ type: "update", coll: "vertraege", id: v.id, patch: { betrag: (Number(v.betrag) || 0) + brutto, nr: [v.nr, a.titel].filter(Boolean).join(" + "), ausschreibungen: [...(v.ausschreibungen || []), a.titel] } });
+      dispatch({ type: "update", coll: "vertraege", id: v.id, patch: { betrag: (Number(v.betrag) || 0) + brutto, ausschreibungen: [...(v.ausschreibungen || []), a.titel] } });
     }
     onClose();
   }
